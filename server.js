@@ -11,6 +11,7 @@ const PARSER_PATH = path.join(__dirname, 'scripts', 'parse_spreadsheet.py');
 const sessions = new Map();
 
 const TYPE_OPTIONS = ['Cliente', 'Projeto', 'Prestador de Serviço', 'Fornecedor', 'Estrutura Interna', 'Financeiro / Não Operacional', 'Conta / Cartão', 'Pendente de Classificação'];
+const BLOCKING_ISSUES = ['DESPESA_SEM_PROJETO', 'ESTRUTURA_COMO_CLIENTE', 'MUTUO_COMO_CLIENTE', 'MUTUO_CLASSIFICACAO', 'VALOR_INVALIDO', 'DATA_INVALIDA'];
 
 const OFFICIAL_CLIENTS = ['BRB', 'SEBRAE TO', 'SEBRAE-AC'];
 const OFFICIAL_PROJECTS = ['BRB-PDL', 'SEBRAE 10º CICLO', 'SEBRAE 9º CICLO', 'PS SEBRAE 2022', 'CESAMA CARTA-CONTRATO 20/2023 ETAPA 4'];
@@ -87,11 +88,31 @@ function normalizeName(name) {
   return ALIAS_RULES[n] || n;
 }
 
+function parseDateValue(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return null;
+
+  const br = raw.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/);
+  if (br) {
+    const dd = Number(br[1]);
+    const mm = Number(br[2]);
+    const yy = Number(br[3].length === 2 ? `20${br[3]}` : br[3]);
+    return new Date(Date.UTC(yy, mm - 1, dd));
+  }
+
+  const iso = new Date(raw);
+  if (!Number.isNaN(iso.getTime())) {
+    return new Date(Date.UTC(iso.getUTCFullYear(), iso.getUTCMonth(), iso.getUTCDate()));
+  }
+
+  return null;
+}
+
 function inferType(name) {
   const n = normalizeName(name);
   if (!n) return 'Pendente de Classificação';
   if (FORBIDDEN_AS_CLIENT.includes(n)) return 'Estrutura Interna';
-  if (n.includes('MÚTUO') || n.includes('PRONAMPE')) return 'Financeiro / Não Operacional';
+  if (n.includes('MÚTUO') || n.includes('MUTUO') || n.includes('PRONAMPE')) return 'Financeiro / Não Operacional';
   if (n.includes('CARTÃO') || n.includes('CARTAO') || n.includes('CARD')) return 'Conta / Cartão';
   if (OFFICIAL_PROJECTS.includes(n) || n.includes('CICLO') || n.includes('ETAPA') || n.includes('CONTRATO')) return 'Projeto';
   if (OFFICIAL_CLIENTS.includes(n)) return 'Cliente';
@@ -123,15 +144,28 @@ function normalizeRowHeaders(row) {
   return out;
 }
 
+function normalizeMoney(value) {
+  const raw = String(value || '0').trim();
+  if (!raw) return 0;
+  const normalized = raw.includes(',') ? raw.replace(/\./g, '').replace(',', '.') : raw;
+  return Number(normalized);
+}
+
 function applySavedRulesToEntry(entry, db) {
-  for (const rule of db.savedRules || []) {
-    if (!rule.active) continue;
-    if (rule.type === 'alias' && normalizeName(entry[rule.field]) === normalizeName(rule.matchValue)) {
-      entry[rule.field] = normalizeName(rule.targetValue);
+  const rules = (db.savedRules || []).filter((rule) => rule.active);
+  for (const rule of rules) {
+    if (rule.type === 'alias') {
+      for (const field of ['cliente', 'projeto', 'parceiro']) {
+        if (normalizeName(entry[field]) === normalizeName(rule.matchValue)) {
+          entry[field] = normalizeName(rule.targetValue);
+        }
+      }
     }
+
     if (rule.type === 'project_client_link' && normalizeName(entry.projeto) === normalizeName(rule.projectName)) {
       entry.cliente = normalizeName(rule.clientName);
     }
+
     if (rule.type === 'entry_update' && normalizeName(entry[rule.field]) === normalizeName(rule.matchValue)) {
       Object.assign(entry, rule.updates || {});
     }
@@ -159,11 +193,13 @@ function parseRowsWithPython(fileName, buffer) {
 function parseEntries(rows, uploadId, db) {
   return rows.map((raw) => {
     const r = normalizeRowHeaders(raw);
-    const valor = Number(String(r.valor || '0').replace('.', '').replace(',', '.'));
+    const valor = normalizeMoney(r.valor);
+    const parsedDate = parseDateValue(r.data);
     const entry = {
       id: crypto.randomUUID(),
       uploadId,
       data: r.data || '',
+      dataISO: parsedDate ? parsedDate.toISOString().slice(0, 10) : '',
       descricao: r.descricao || '',
       cliente: normalizeName(r.cliente || ''),
       projeto: normalizeName(r.projeto || ''),
@@ -184,21 +220,49 @@ function parseEntries(rows, uploadId, db) {
   });
 }
 
-function buildIssues(entries) {
+function buildIssues(entries, db) {
   const issues = [];
+  const newNames = new Set();
+  const knownNames = new Set((db.reviewRegistry || []).map((item) => normalizeName(item.nomeOficial)));
+
   for (const e of entries) {
     const desc = normalizeName(e.descricao);
     const client = normalizeName(e.cliente);
     const project = normalizeName(e.projeto);
 
-    if (e.natureza === 'Custo Direto do Projeto' && !project) issues.push({ entryId: e.id, level: 'erro', code: 'DESPESA_SEM_PROJETO', message: 'Despesa direta sem projeto.' });
-    if (client && inferType(client) !== 'Cliente' && inferType(client) !== 'Projeto') issues.push({ entryId: e.id, level: 'erro', code: 'CLIENTE_INVALIDO', message: 'Nome lançado no cliente não é cliente válido.' });
-    if (desc.includes('MÚTUO') && e.natureza !== 'Movimentação Financeira Não Operacional') issues.push({ entryId: e.id, level: 'erro', code: 'MUTUO_CLASSIFICACAO', message: 'Mútuo classificado incorretamente.' });
-    if (!e.data || Number.isNaN(new Date(e.data).getTime())) issues.push({ entryId: e.id, level: 'erro', code: 'DATA_INVALIDA', message: 'Data inválida.' });
-    if (!Number.isFinite(e.valor)) issues.push({ entryId: e.id, level: 'erro', code: 'VALOR_INVALIDO', message: 'Valor inválido.' });
-    if (inferType(client) === 'Pendente de Classificação') issues.push({ entryId: e.id, level: 'alerta', code: 'NOME_FORA_PADRAO', message: 'Cliente/projeto fora do padrão conhecido.' });
-    if (e.conta && e.conta.toUpperCase().includes('CARTAO') && !e.detalhe) issues.push({ entryId: e.id, level: 'alerta', code: 'CARTAO_SEM_DETALHE', message: 'Cartão sem detalhamento completo.' });
+    if (e.natureza === 'Custo Direto do Projeto' && !project) issues.push({ entryId: e.id, level: 'erro', code: 'DESPESA_SEM_PROJETO', message: 'Despesa direta sem projeto.', blocking: true });
+    if (client && inferType(client) === 'Estrutura Interna') issues.push({ entryId: e.id, level: 'erro', code: 'ESTRUTURA_COMO_CLIENTE', message: 'Estrutura interna lançada como cliente.', blocking: true });
+    if (client && client.includes('MÚTUO')) issues.push({ entryId: e.id, level: 'erro', code: 'MUTUO_COMO_CLIENTE', message: 'Mútuo lançado como cliente.', blocking: true });
+    if (desc.includes('MÚTUO') && e.natureza !== 'Movimentação Financeira Não Operacional') issues.push({ entryId: e.id, level: 'erro', code: 'MUTUO_CLASSIFICACAO', message: 'Mútuo classificado incorretamente.', blocking: true });
+    if (!e.dataISO) issues.push({ entryId: e.id, level: 'erro', code: 'DATA_INVALIDA', message: 'Data inválida.', blocking: true });
+    if (!Number.isFinite(e.valor)) issues.push({ entryId: e.id, level: 'erro', code: 'VALOR_INVALIDO', message: 'Valor inválido.', blocking: true });
+
+    if (client && inferType(client) === 'Pendente de Classificação') issues.push({ entryId: e.id, level: 'alerta', code: 'NOME_FORA_PADRAO', message: 'Cliente/projeto fora do padrão conhecido.', blocking: false });
+    if (e.conta && normalizeName(e.conta).includes('CARTAO') && !e.detalhe) issues.push({ entryId: e.id, level: 'alerta', code: 'CARTAO_SEM_DETALHE', message: 'Cartão sem detalhamento completo.', blocking: false });
+
+    [client, project, normalizeName(e.parceiro)].forEach((name) => {
+      if (name && !knownNames.has(name)) newNames.add(name);
+    });
   }
+
+  for (const name of newNames) {
+    issues.push({ entryId: null, level: 'alerta', code: 'NOVO_CADASTRO', message: `Novo cadastro identificado: ${name}.`, blocking: false });
+  }
+
+  const aliasTargetMap = new Map();
+  for (const rule of db.savedRules || []) {
+    if (rule.type !== 'alias' || !rule.active) continue;
+    const source = normalizeName(rule.matchValue);
+    const target = normalizeName(rule.targetValue);
+    if (!aliasTargetMap.has(source)) aliasTargetMap.set(source, new Set());
+    aliasTargetMap.get(source).add(target);
+  }
+  aliasTargetMap.forEach((targets, source) => {
+    if (targets.size > 1) {
+      issues.push({ entryId: null, level: 'alerta', code: 'CONFLITO_ALIAS', message: `Conflito de alias para ${source}: ${[...targets].join(', ')}`, blocking: false });
+    }
+  });
+
   return issues;
 }
 
@@ -258,7 +322,7 @@ function serveStatic(req, res) {
 
 function page(title, body, user) {
   return `<!doctype html><html><head><meta charset='utf-8'><title>${title}</title><link rel='stylesheet' href='/public/style.css'></head><body>
-<header><h1>Painel Financeiro Gerencial CKM</h1>${user ? `<nav><a href='/'>Home</a><a href='/upload'>Upload</a><a href='/pendencias'>Pendências</a><a href='/cadastros'>Cadastro Revisável</a><a href='/dashboard'>Dashboard</a><a href='/logout'>Sair</a></nav>` : ''}</header>
+<header><h1>Painel Financeiro Gerencial CKM</h1>${user ? `<nav><a href='/'>Home</a><a href='/upload'>Upload</a><a href='/pendencias'>Pré-análise</a><a href='/cadastros'>Cadastro Revisável</a><a href='/dashboard'>Dashboard</a><a href='/logout'>Sair</a></nav>` : ''}</header>
 <main>${body}</main></body></html>`;
 }
 
@@ -268,7 +332,53 @@ function reviewTableRows(list) {
 <td><select onchange="alterarTipo('${r.id}', this.value)">${TYPE_OPTIONS.map((t) => `<option ${t === r.tipoFinal ? 'selected' : ''}>${t}</option>`).join('')}</select></td>
 <td><input value='${r.clienteVinculado || ''}' onchange="vincularCliente('${r.id}', this.value)"/></td>
 <td><input value='${r.projetoVinculado || ''}' onchange="vincularProjeto('${r.id}', this.value)"/></td>
-<td>${r.statusRevisao}</td></tr>`).join('');
+<td><select onchange="marcarRevisao('${r.id}', this.value)"><option ${r.statusRevisao === 'pendente' ? 'selected' : ''}>pendente</option><option ${r.statusRevisao === 'revisado' ? 'selected' : ''}>revisado</option></select></td></tr>`).join('');
+}
+
+function buildPreAnalysisSummary(db) {
+  const openIssues = db.issues.filter((i) => i.status !== 'resolvida');
+  const count = (code) => openIssues.filter((i) => i.code === code).length;
+  return {
+    semProjeto: count('DESPESA_SEM_PROJETO'),
+    estruturaComoCliente: count('ESTRUTURA_COMO_CLIENTE'),
+    mutuoIncorreto: count('MUTUO_COMO_CLIENTE') + count('MUTUO_CLASSIFICACAO'),
+    novosCadastros: count('NOVO_CADASTRO'),
+    conflitosAlias: count('CONFLITO_ALIAS'),
+    bloqueantes: openIssues.filter((i) => i.blocking || BLOCKING_ISSUES.includes(i.code)).length
+  };
+}
+
+function calculateDashboard(db) {
+  const today = new Date().toISOString().slice(0, 10);
+  const addDays = (date, n) => {
+    const d = new Date(`${date}T00:00:00Z`);
+    d.setUTCDate(d.getUTCDate() + n);
+    return d.toISOString().slice(0, 10);
+  };
+  const d7 = addDays(today, 7);
+  const d30 = addDays(today, 30);
+
+  const sortedEntries = [...db.entries].sort((a, b) => (a.dataISO || '').localeCompare(b.dataISO || ''));
+  let rolling = 0;
+  for (const e of sortedEntries) {
+    rolling += e.valor;
+  }
+  const saldoHoje = sortedEntries.filter((e) => e.dataISO <= today).reduce((acc, e) => acc + e.valor, 0);
+  const proj7 = sortedEntries.filter((e) => e.dataISO <= d7).reduce((acc, e) => acc + e.valor, 0);
+  const proj30 = sortedEntries.filter((e) => e.dataISO <= d30).reduce((acc, e) => acc + e.valor, 0);
+  const contasPagar = sortedEntries.filter((e) => e.dataISO > today && e.valor < 0).reduce((acc, e) => acc + Math.abs(e.valor), 0);
+  const contasReceber = sortedEntries.filter((e) => e.dataISO > today && e.valor > 0).reduce((acc, e) => acc + e.valor, 0);
+
+  const byClient = {};
+  const byProject = {};
+  db.entries.forEach((e) => {
+    const c = e.cliente || 'SEM CLIENTE';
+    const p = e.projeto || 'SEM PROJETO';
+    byClient[c] = (byClient[c] || 0) + e.valor;
+    byProject[p] = (byProject[p] || 0) + e.valor;
+  });
+
+  return { saldoHoje, proj7, proj30, contasPagar, contasReceber, byClient, byProject, rolling };
 }
 
 const server = http.createServer(async (req, res) => {
@@ -314,9 +424,17 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method === 'GET' && url.pathname === '/') {
-    const saldo = db.entries.reduce((acc, cur) => acc + cur.valor, 0);
-    const pendencias = db.issues.filter((i) => i.level === 'erro' && i.status === 'aberta').length;
-    const html = page('Home', `<section><h2>Resumo</h2><ul><li>Saldo atual: R$ ${saldo.toFixed(2)}</li><li>Pendências obrigatórias: ${pendencias}</li><li>Cadastros pendentes: ${db.reviewRegistry.filter((r) => r.statusRevisao !== 'revisado').length}</li></ul></section>`, user);
+    const summary = buildPreAnalysisSummary(db);
+    const metrics = calculateDashboard(db);
+    const html = page('Home', `<section><h2>Resumo diário</h2><ul>
+<li>Saldo de hoje: R$ ${metrics.saldoHoje.toFixed(2)}</li>
+<li>Projeção em 7 dias: R$ ${metrics.proj7.toFixed(2)}</li>
+<li>Projeção em 30 dias: R$ ${metrics.proj30.toFixed(2)}</li>
+<li>Contas a pagar: R$ ${metrics.contasPagar.toFixed(2)}</li>
+<li>Contas a receber: R$ ${metrics.contasReceber.toFixed(2)}</li>
+<li>Pendências bloqueantes: ${summary.bloqueantes}</li>
+<li>Cadastros pendentes: ${db.reviewRegistry.filter((r) => r.statusRevisao !== 'revisado').length}</li>
+</ul></section>`, user);
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
     res.end(html);
     return;
@@ -325,7 +443,7 @@ const server = http.createServer(async (req, res) => {
   if (req.method === 'GET' && url.pathname === '/upload') {
     const html = page('Upload', `<section>
 <h2>Upload de planilha (CSV, XLSX, XLSM)</h2>
-<p>Fluxo priorizado para compatibilização com planilha operacional real CKM.</p>
+<p>Compatível com planilha operacional CKM (primeira aba para XLSX/XLSM).</p>
 <input type='file' id='file' accept='.csv,.xlsx,.xlsm' />
 <button onclick='enviarArquivo()'>Importar</button>
 <pre id='out'></pre>
@@ -358,7 +476,7 @@ async function enviarArquivo(){
 
       const upload = { id: crypto.randomUUID(), fileName, uploadedAt: new Date().toISOString(), rowCount: rows.length };
       const entries = parseEntries(rows, upload.id, db);
-      const issues = buildIssues(entries).map((i) => ({ ...i, id: crypto.randomUUID(), uploadId: upload.id, status: 'aberta' }));
+      const issues = buildIssues(entries, db).map((i) => ({ ...i, id: crypto.randomUUID(), uploadId: upload.id, status: 'aberta' }));
       const registry = buildReviewRegistry(entries);
 
       db.uploads.push(upload);
@@ -367,13 +485,15 @@ async function enviarArquivo(){
       db.reviewRegistry = mergeRegistry(db.reviewRegistry, registry);
       saveDb(db);
 
+      const summary = buildPreAnalysisSummary(db);
       json(res, 200, {
         uploadId: upload.id,
         fileName,
         importedRows: entries.length,
         foundNames: registry.length,
         pendingErrors: issues.filter((i) => i.level === 'erro').length,
-        alerts: issues.filter((i) => i.level === 'alerta').length
+        alerts: issues.filter((i) => i.level === 'alerta').length,
+        blockingIssues: summary.bloqueantes
       });
     } catch (error) {
       json(res, 400, { error: error.message });
@@ -382,29 +502,58 @@ async function enviarArquivo(){
   }
 
   if (req.method === 'GET' && url.pathname === '/pendencias') {
-    const errItems = db.issues.filter((i) => i.level === 'erro');
-    const alertItems = db.issues.filter((i) => i.level === 'alerta');
-    const html = page('Pendências', `<section><h2>Pendências obrigatórias</h2><ul>${errItems.map((e) => `<li>${e.code}: ${e.message}</li>`).join('')}</ul><h2>Alertas</h2><ul>${alertItems.map((a) => `<li>${a.code}: ${a.message}</li>`).join('')}</ul></section>`, user);
+    const openIssues = db.issues.filter((i) => i.status !== 'resolvida');
+    const summary = buildPreAnalysisSummary(db);
+    const groups = [
+      { title: 'Despesas sem projeto', code: 'DESPESA_SEM_PROJETO' },
+      { title: 'Estrutura lançada como cliente', code: 'ESTRUTURA_COMO_CLIENTE' },
+      { title: 'Mútuos classificados incorretamente', code: 'MUTUO_CLASSIFICACAO' },
+      { title: 'Mútuos lançados como cliente', code: 'MUTUO_COMO_CLIENTE' },
+      { title: 'Novos cadastros', code: 'NOVO_CADASTRO' },
+      { title: 'Conflitos de alias', code: 'CONFLITO_ALIAS' }
+    ];
+
+    const html = page('Pré-análise', `<section><h2>Pré-análise operacional</h2>
+<div class='cards'>
+<div class='card'><strong>Bloqueantes</strong><span>${summary.bloqueantes}</span></div>
+<div class='card'><strong>Sem projeto</strong><span>${summary.semProjeto}</span></div>
+<div class='card'><strong>Estrutura como cliente</strong><span>${summary.estruturaComoCliente}</span></div>
+<div class='card'><strong>Mútuo incorreto</strong><span>${summary.mutuoIncorreto}</span></div>
+<div class='card'><strong>Novos cadastros</strong><span>${summary.novosCadastros}</span></div>
+<div class='card'><strong>Conflito de alias</strong><span>${summary.conflitosAlias}</span></div>
+</div>
+${groups.map((g) => `<h3>${g.title}</h3><ul>${openIssues.filter((i) => i.code === g.code).map((e) => `<li>${e.message}${e.blocking ? ' (bloqueante)' : ''}</li>`).join('') || '<li>Sem itens</li>'}</ul>`).join('')}
+<h3>Outras pendências</h3>
+<ul>${openIssues.filter((i) => !groups.some((g) => g.code === i.code)).map((e) => `<li>${e.code}: ${e.message}${e.blocking ? ' (bloqueante)' : ''}</li>`).join('') || '<li>Sem itens</li>'}</ul>
+</section>`, user);
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
     res.end(html);
     return;
   }
 
   if (req.method === 'GET' && url.pathname === '/cadastros') {
-    const html = page('Cadastro Revisável', `<section><h2>Cadastro Revisável (centro do fluxo)</h2>
-<p>Consolide alias, altere tipo, vincule projeto/cliente e salve regras futuras.</p>
+    const pending = db.reviewRegistry.filter((item) => item.statusRevisao !== 'revisado');
+    const reviewed = db.reviewRegistry.length - pending.length;
+    const html = page('Cadastro Revisável', `<section><h2>Cadastro Revisável (fluxo diário)</h2>
+<p>Pendentes: ${pending.length} | Revisados: ${reviewed}</p>
 <div class='grid2'>
-<div><h3>Consolidar alias</h3><input id='aliasFrom' placeholder='Nome origem'/><input id='aliasTo' placeholder='Nome oficial'/><label><input id='keepAlias' type='checkbox' checked/> manter alias</label><button onclick='consolidarAlias()'>Consolidar + regra</button></div>
+<div><h3>Consolidar aliases</h3><input id='aliasFrom' placeholder='Nome origem'/><input id='aliasTo' placeholder='Nome oficial'/><label><input id='keepAlias' type='checkbox' checked/> manter alias</label><button onclick='consolidarAlias()'>Consolidar + regra</button></div>
 <div><h3>Vincular projeto a cliente</h3><input id='projectName' placeholder='Projeto'/><input id='clientName' placeholder='Cliente'/><button onclick='vincularProjetoCliente()'>Vincular + regra</button></div>
 </div>
-<table><thead><tr><th>Original</th><th>Oficial</th><th>Sugerido</th><th>Tipo Final</th><th>Cliente</th><th>Projeto</th><th>Status</th></tr></thead><tbody>${reviewTableRows(db.reviewRegistry)}</tbody></table>
+<div class='grid2'>
+<div><h3>Reclassificar para Estrutura</h3><input id='toEstrutura' placeholder='Nome oficial'/><button onclick='reclassificar("Estrutura Interna")'>Aplicar</button></div>
+<div><h3>Reclassificar para Financeiro</h3><input id='toFinanceiro' placeholder='Nome oficial'/><button onclick='reclassificar("Financeiro / Não Operacional")'>Aplicar</button></div>
+</div>
+<table><thead><tr><th>Original</th><th>Oficial</th><th>Sugerido</th><th>Tipo Final</th><th>Cliente</th><th>Projeto</th><th>Status</th></tr></thead><tbody>${reviewTableRows(pending)}</tbody></table>
 </section>
 <script>
 async function alterarTipo(id,tipoFinal){await fetch('/api/review/'+id,{method:'PATCH',headers:{'content-type':'application/json'},body:JSON.stringify({tipoFinal,statusRevisao:'revisado'})});}
 async function vincularCliente(id,clienteVinculado){await fetch('/api/review/'+id,{method:'PATCH',headers:{'content-type':'application/json'},body:JSON.stringify({clienteVinculado,statusRevisao:'revisado'})});}
 async function vincularProjeto(id,projetoVinculado){await fetch('/api/review/'+id,{method:'PATCH',headers:{'content-type':'application/json'},body:JSON.stringify({projetoVinculado,statusRevisao:'revisado'})});}
+async function marcarRevisao(id,statusRevisao){await fetch('/api/review/'+id,{method:'PATCH',headers:{'content-type':'application/json'},body:JSON.stringify({statusRevisao})});}
 async function consolidarAlias(){const sourceName=document.getElementById('aliasFrom').value;const targetName=document.getElementById('aliasTo').value;const keepAlias=document.getElementById('keepAlias').checked;await fetch('/api/review/consolidate',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({sourceName,targetName,keepAlias,applyRule:true})});location.reload();}
 async function vincularProjetoCliente(){const projectName=document.getElementById('projectName').value;const clientName=document.getElementById('clientName').value;await fetch('/api/review/link-project',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({projectName,clientName,applyRule:true})});location.reload();}
+async function reclassificar(tipo){const idField=tipo.includes('Estrutura')?'toEstrutura':'toFinanceiro';const nome=document.getElementById(idField).value;await fetch('/api/review/reclassify',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({nome,tipoFinal:tipo,applyRule:true})});location.reload();}
 </script>`, user);
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
     res.end(html);
@@ -437,9 +586,7 @@ async function vincularProjetoCliente(){const projectName=document.getElementByI
       });
     });
     if (applyRule) {
-      db.savedRules.push({ id: crypto.randomUUID(), type: 'alias', field: 'cliente', matchValue: source, targetValue: target, active: true });
-      db.savedRules.push({ id: crypto.randomUUID(), type: 'alias', field: 'projeto', matchValue: source, targetValue: target, active: true });
-      db.savedRules.push({ id: crypto.randomUUID(), type: 'alias', field: 'parceiro', matchValue: source, targetValue: target, active: true });
+      db.savedRules.push({ id: crypto.randomUUID(), type: 'alias', matchValue: source, targetValue: target, active: true });
     }
     saveDb(db);
     return json(res, 200, { ok: true });
@@ -465,6 +612,29 @@ async function vincularProjetoCliente(){const projectName=document.getElementByI
     return json(res, 200, { ok: true });
   }
 
+  if (req.method === 'POST' && url.pathname === '/api/review/reclassify') {
+    const { nome, tipoFinal, applyRule } = JSON.parse(await readBody(req) || '{}');
+    const normalized = normalizeName(nome);
+    db.reviewRegistry.forEach((r) => {
+      if (normalizeName(r.nomeOficial) === normalized) {
+        r.tipoFinal = tipoFinal;
+        r.statusRevisao = 'revisado';
+      }
+    });
+    if (applyRule) {
+      db.savedRules.push({
+        id: crypto.randomUUID(),
+        type: 'entry_update',
+        field: 'cliente',
+        matchValue: normalized,
+        updates: { natureza: tipoFinal === 'Financeiro / Não Operacional' ? 'Movimentação Financeira Não Operacional' : 'Despesa Indireta' },
+        active: true
+      });
+    }
+    saveDb(db);
+    return json(res, 200, { ok: true });
+  }
+
   if (req.method === 'POST' && url.pathname === '/api/review/save-rule') {
     const body = JSON.parse(await readBody(req) || '{}');
     db.savedRules.push({ id: crypto.randomUUID(), type: 'entry_update', active: true, ...body });
@@ -484,16 +654,19 @@ async function vincularProjetoCliente(){const projectName=document.getElementByI
   }
 
   if (req.method === 'GET' && url.pathname === '/dashboard') {
-    const byClient = {};
-    const byProject = {};
-    db.entries.forEach((e) => {
-      const c = e.cliente || 'SEM CLIENTE';
-      const p = e.projeto || 'SEM PROJETO';
-      byClient[c] = (byClient[c] || 0) + e.valor;
-      byProject[p] = (byProject[p] || 0) + e.valor;
-    });
-
-    const html = page('Dashboard', `<section><h2>Resultado por cliente</h2><ul>${Object.entries(byClient).map(([k, v]) => `<li>${k}: R$ ${v.toFixed(2)}</li>`).join('')}</ul><h2>Resultado por projeto</h2><ul>${Object.entries(byProject).map(([k, v]) => `<li>${k}: R$ ${v.toFixed(2)}</li>`).join('')}</ul></section>`, user);
+    const metrics = calculateDashboard(db);
+    const topItems = (obj) => Object.entries(obj).sort((a, b) => Math.abs(b[1]) - Math.abs(a[1])).slice(0, 10);
+    const html = page('Dashboard', `<section><h2>Dashboard gerencial</h2>
+<div class='cards'>
+<div class='card'><strong>Saldo de hoje</strong><span>R$ ${metrics.saldoHoje.toFixed(2)}</span></div>
+<div class='card'><strong>Projeção 7 dias</strong><span>R$ ${metrics.proj7.toFixed(2)}</span></div>
+<div class='card'><strong>Projeção 30 dias</strong><span>R$ ${metrics.proj30.toFixed(2)}</span></div>
+<div class='card'><strong>Contas a pagar</strong><span>R$ ${metrics.contasPagar.toFixed(2)}</span></div>
+<div class='card'><strong>Contas a receber</strong><span>R$ ${metrics.contasReceber.toFixed(2)}</span></div>
+</div>
+<h3>Resultado por cliente</h3><ul>${topItems(metrics.byClient).map(([k, v]) => `<li>${k}: R$ ${v.toFixed(2)}</li>`).join('')}</ul>
+<h3>Resultado por projeto</h3><ul>${topItems(metrics.byProject).map(([k, v]) => `<li>${k}: R$ ${v.toFixed(2)}</li>`).join('')}</ul>
+</section>`, user);
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
     res.end(html);
     return;
