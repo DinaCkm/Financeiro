@@ -12,11 +12,21 @@ Usuário de teste:
 - email: `owner@ckm.local`
 - senha: `123456`
 
-## Sprint 2 (entrega atual)
-- Suporte de importação para **CSV, XLSX e XLSM**.
-- Parser flexível de cabeçalhos para aproximar o layout da planilha operacional real.
-- Fluxo centrado em **cadastro revisável** (consolidação de aliases, conversão de tipo, vínculo projeto->cliente e regras futuras).
-- Regras salvas aplicadas automaticamente em novas importações.
+## Sprint 3 (entrega atual)
+- Pré-análise refinada com destaque claro para:
+  - despesas sem projeto,
+  - estrutura lançada como cliente,
+  - mútuos incorretos,
+  - novos cadastros,
+  - conflitos de alias,
+  - pendências bloqueantes.
+- Cadastro revisável otimizado para operação diária (foco em pendentes, reclassificação rápida e ações diretas).
+- Dashboard gerencial reforçado com:
+  - saldo de hoje,
+  - projeção 7/30 dias,
+  - contas a pagar/receber,
+  - resultado por cliente/projeto.
+- Reaplicação consistente de regras salvas em novas importações (alias, vínculo projeto-cliente e regras de atualização).
 
 ## Colunas esperadas pela importação atual
 A importação faz mapeamento por sinônimos de cabeçalho.
@@ -42,11 +52,17 @@ Sinônimos aceitos (exemplos):
 - `valor` -> amount, vlr, valor total
 - `centroCusto` -> centro_custo, cc
 
+## Como testar com a planilha real da CKM
+1. Entre em `/login` e autentique.
+2. Acesse `/upload`.
+3. Selecione a planilha real (`.xlsx`/`.xlsm`/`.csv`).
+4. Faça a importação e valide o retorno JSON (`importedRows`, `alerts`, `blockingIssues`).
+5. Acesse `/pendencias` para revisar os blocos prioritários de pré-análise.
+6. Acesse `/cadastros` para consolidar aliases, vincular projeto->cliente e reclassificar rapidamente.
+7. Faça novo upload da mesma base (ou base incremental) e confirme se regras anteriores foram reaplicadas.
+
 ## Limitações conhecidas
 - Parser XLSX/XLSM lê a **primeira aba** apenas.
-- Fórmulas complexas e planilhas com layout altamente mesclado podem exigir ajuste adicional.
+- Fórmulas complexas, células muito mescladas e múltiplos layouts na mesma aba podem exigir ajustes.
 - Não há importação via `multipart/form-data` nesta fase (envio em base64 pelo frontend).
 - Persistência permanece em `data/db.json` (migração SQL já mapeada em `docs/modelo-dados-inicial.sql`).
-
-## Próxima prioridade
-Compatibilização incremental com a planilha operacional real da CKM (amostras reais, ajustes de mapeamento, validações de negócio e cobertura de casos específicos).
