@@ -1,28 +1,27 @@
 # Plano de Sprints
 
-## Sprint 1 (implementada neste commit)
+## Sprint 1 (base já entregue)
 - Projeto inicial.
 - Login básico.
-- Upload de planilha (CSV).
-- Armazenamento bruto.
-- Pré-análise.
-- Pendências.
-- Cadastro revisável.
-- Edição manual.
-- Dashboard inicial.
+- Upload inicial.
+- Pré-análise básica.
+- Cadastro revisável inicial.
 
-## Sprint 2
-- Migração para Next.js + PostgreSQL.
-- Parser XLSX robusto.
-- Regras futuras aplicadas automaticamente.
-- Edição em massa por linhas semelhantes.
+## Sprint 2 (foco atual)
+- Compatibilização com planilha operacional CKM.
+- Suporte a CSV/XLSX/XLSM.
+- Cadastro revisável como centro do fluxo.
+- Consolidação de aliases + regras futuras.
+- Vinculação projeto -> cliente + regras futuras.
+- Conversão de tipo de cadastro e reclassificação.
+- Documentação de colunas esperadas e limitações.
 
 ## Sprint 3
+- Migração para Next.js + PostgreSQL.
 - Processamento diário consolidado.
-- Painel financeiro completo (7/30 dias, risco caixa).
-- Resultado detalhado por cliente/projeto com rateio.
+- Dashboard com projeções 7/30 dias e risco de caixa.
 
 ## Sprint 4
-- Auditoria e trilha de alterações.
-- Perfis e permissões adicionais.
-- Hardening de segurança e observabilidade.
+- Auditoria completa de alterações.
+- Aprovação de regras e governança de classificação.
+- Hardening e observabilidade.

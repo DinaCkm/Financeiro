@@ -1,12 +1,12 @@
 {
   "name": "painel-financeiro-gerencial-ckm",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
-  "description": "MVP Sprint 1 - Painel Financeiro Gerencial CKM",
+  "description": "MVP Sprint 2 - Painel Financeiro Gerencial CKM",
   "scripts": {
     "start": "node server.js",
     "dev": "node server.js",
-    "check": "node --check server.js"
+    "check": "node --check server.js && python3 -m py_compile scripts/parse_spreadsheet.py"
   },
   "engines": {
     "node": ">=20"

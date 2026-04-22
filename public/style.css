@@ -6,5 +6,6 @@ section { background: white; border-radius: 10px; padding: 1rem; box-shadow: 0 2
 label { display: block; margin: .5rem 0; }
 input, textarea, select { width: 100%; padding: .5rem; margin-top: .3rem; }
 button { margin-top: .7rem; padding: .6rem 1rem; }
-table { width: 100%; border-collapse: collapse; }
-th, td { border: 1px solid #e2e8f0; padding: .5rem; text-align: left; }
+table { width: 100%; border-collapse: collapse; margin-top: 1rem; }
+th, td { border: 1px solid #e2e8f0; padding: .5rem; text-align: left; vertical-align: top; }
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
