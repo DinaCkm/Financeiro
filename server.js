@@ -545,37 +545,59 @@ function reviewCards(list, allEntries) {
     const tipoAtual = r.tipoFinal || 'Pendente de Classificação';
     const guiaTexto = TYPE_GUIDE[tipoAtual] || '';
 
-    const lancRows = linked.slice(0, 10).map((e) => {
+    const lancRows = linked.map((e) => {
       const valColor = e.valor >= 0 ? 'color:#065f46;font-weight:600' : 'color:#991b1b;font-weight:600';
+      const dcLabel = e.dc ? e.dc : (e.valor >= 0 ? 'C' : 'D');
+      const dcColor = dcLabel === 'C' ? 'color:#065f46' : 'color:#991b1b';
       return `<tr>
-        <td style='white-space:nowrap'>${e.dataISO || e.data || '-'}</td>
-        <td>${e.descricao || '-'}</td>
-        <td style='white-space:nowrap;${valColor}'>R$ ${Number(e.valor || 0).toFixed(2)}</td>
-        <td>${e.natureza || '-'}</td>
-        <td>${e.conta || e.centroCusto || '-'}</td>
-        <td>${e.status || '-'}</td>
+        <td style='white-space:nowrap;font-size:.8rem'>${e.dataISO || e.data || '-'}</td>
+        <td style='font-size:.8rem;max-width:280px'>${e.descricao || '-'}</td>
+        <td style='white-space:nowrap;${valColor};font-size:.8rem'>R$ ${Number(e.valor || 0).toFixed(2)}</td>
+        <td style='${dcColor};font-weight:700;font-size:.8rem;text-align:center'>${dcLabel}</td>
+        <td style='font-size:.8rem'>${e.natureza || '-'}</td>
+        <td style='font-size:.8rem'>${e.centroCusto || e.conta || '-'}</td>
+        <td style='font-size:.8rem'>${e.conta || '-'}</td>
+        <td style='font-size:.8rem'>${e.cliente || e.parceiro || '-'}</td>
+        <td style='font-size:.8rem'>${e.projeto || '-'}</td>
+        <td style='font-size:.8rem'>${e.status || '-'}</td>
       </tr>`;
     }).join('');
-    const maisLabel = linked.length > 10 ? `<p style='font-size:.78rem;color:var(--gray-400);margin:.5rem 0 0'>+ ${linked.length - 10} lançamentos não exibidos</p>` : '';
+    const maisLabel = '';
     const lancTable = linked.length > 0
-      ? `<div class='review-entries'><table><thead><tr><th>Data</th><th>Histórico</th><th>Valor</th><th>Natureza</th><th>Conta/CC</th><th>Status</th></tr></thead><tbody>${lancRows}</tbody></table>${maisLabel}</div>`
+      ? `<div class='review-entries' style='overflow-x:auto;margin-bottom:1rem'>
+          <table style='min-width:900px;font-size:.8rem'>
+            <thead><tr>
+              <th style='white-space:nowrap'>Data</th>
+              <th>Histórico</th>
+              <th style='white-space:nowrap'>Valor</th>
+              <th>D/C</th>
+              <th>Natureza</th>
+              <th>Centro Custo</th>
+              <th>Conta</th>
+              <th>Cliente/Parceiro</th>
+              <th>Projeto</th>
+              <th>Status</th>
+            </tr></thead>
+            <tbody>${lancRows}</tbody>
+          </table>
+        </div>`
       : `<p style='font-size:.82rem;color:var(--gray-400);margin:.5rem 0'>Nenhum lançamento vinculado encontrado.</p>`;
 
     const alertaBanner = isPendente ? `
-      <div style='background:#fffbeb;border:1px solid #fcd34d;border-radius:8px;padding:.85rem 1rem;margin-bottom:1rem;display:flex;gap:.75rem;align-items:flex-start'>
-        <span style='font-size:1.1rem'>&#9888;</span>
+      <div style='background:#fffbeb;border:1px solid #fcd34d;border-radius:8px;padding:.75rem 1rem;margin-bottom:.75rem;display:flex;gap:.75rem;align-items:flex-start'>
+        <span style='font-size:1rem'>&#9888;</span>
         <div>
-          <strong style='font-size:.85rem;color:#92400e'>O que precisa ser feito aqui?</strong>
-          <p style='font-size:.82rem;color:#78350f;margin:.2rem 0 0'>Este cadastro apareceu nos lançamentos mas ainda não foi classificado. Veja os lançamentos abaixo, identifique o que este nome representa para a CKM e selecione o <strong>Tipo</strong> correto no painel ao lado. Se for um prestador ou fornecedor vinculado a um cliente/projeto, preencha também esses campos.</p>
+          <strong style='font-size:.82rem;color:#92400e'>O que precisa ser feito aqui?</strong>
+          <p style='font-size:.79rem;color:#78350f;margin:.15rem 0 0'>Veja os lançamentos acima, identifique o que este nome representa para a CKM e selecione o <strong>Tipo</strong> correto abaixo. Se for prestador/fornecedor vinculado a um cliente ou projeto, preencha também esses campos.</p>
         </div>
       </div>` : '';
 
-    const sugestaoBox = `<div id='sug-${r.id}' style='background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;padding:.75rem 1rem;margin-bottom:1rem;display:flex;gap:.75rem;align-items:flex-start'>
-      <span style='font-size:1.1rem'>&#129302;</span>
+    const sugestaoBox = `<div id='sug-${r.id}' style='background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;padding:.65rem 1rem;margin-bottom:.75rem;display:flex;gap:.65rem;align-items:flex-start'>
+      <span style='font-size:1rem'>&#129302;</span>
       <div style='flex:1'>
-        <strong style='font-size:.82rem;color:#1e40af'>Sugestão da IA</strong>
-        <p id='sug-text-${r.id}' style='font-size:.82rem;color:#1e3a8a;margin:.2rem 0 .5rem'>Clique em “Analisar com IA” para receber uma sugestão de classificação baseada nos históricos dos lançamentos.</p>
-        <button onclick="analisarIA('${r.id}')" id='sug-btn-${r.id}' style='background:#1d4ed8;font-size:.78rem;padding:.35rem .8rem'>&#128269; Analisar com IA</button>
+        <strong style='font-size:.8rem;color:#1e40af'>Sugestão da IA</strong>
+        <p id='sug-text-${r.id}' style='font-size:.79rem;color:#1e3a8a;margin:.15rem 0 .4rem'>Clique em "Analisar com IA" para receber uma sugestão de classificação baseada nos históricos dos lançamentos e em cadastros similares já revisados.</p>
+        <button onclick="analisarIA('${r.id}')" id='sug-btn-${r.id}' style='background:#1d4ed8;font-size:.76rem;padding:.3rem .7rem'>&#128269; Analisar com IA</button>
       </div>
     </div>`;
 
@@ -599,18 +621,22 @@ function reviewCards(list, allEntries) {
     </div>
   </div>
   <div class='review-card-body' id='body-${r.id}' style='display:none'>
-    <div style='display:grid;grid-template-columns:1fr 1fr;gap:1rem;margin-bottom:1.25rem'>
+
+    <p style='font-size:.75rem;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--gray-400);margin-bottom:.5rem'>&#128196; Lançamentos vinculados (${linked.length})</p>
+    ${lancTable}
+
+    <div style='display:grid;grid-template-columns:1fr 1fr;gap:1rem;margin-top:.5rem'>
       <div>
         ${alertaBanner}
         ${sugestaoBox}
       </div>
       <div style='background:var(--white);border:1px solid var(--gray-200);border-radius:8px;padding:1rem'>
         <p style='font-size:.75rem;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--gray-400);margin-bottom:.75rem'>&#9998; Classificação deste cadastro</p>
-        <div style='display:flex;flex-direction:column;gap:.75rem'>
+        <div style='display:flex;flex-direction:column;gap:.65rem'>
           <div>
             <label style='font-size:.78rem;font-weight:700;color:var(--gray-600);text-transform:uppercase;letter-spacing:.04em'>Tipo <span style='color:#dc2626'>*</span></label>
             <select id='tipo-select-${r.id}' onchange="alterarTipo('${r.id}', this.value); atualizarGuia('${r.id}', this.value)">${typeOptions}</select>
-            <p id='guia-tipo-${r.id}' style='font-size:.76rem;color:var(--gray-400);margin:.3rem 0 0;font-style:italic'>${guiaTexto}</p>
+            <p id='guia-tipo-${r.id}' style='font-size:.76rem;color:var(--gray-400);margin:.25rem 0 0;font-style:italic'>${guiaTexto}</p>
           </div>
           <div>
             <label style='font-size:.78rem;font-weight:700;color:var(--gray-600);text-transform:uppercase;letter-spacing:.04em'>Cliente vinculado <span style='font-weight:400;color:var(--gray-400)'>(se for prestador/projeto)</span></label>
@@ -627,13 +653,10 @@ function reviewCards(list, allEntries) {
         </div>
       </div>
     </div>
-    <p style='font-size:.75rem;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--gray-400);margin-bottom:.5rem'>&#128196; Lançamentos vinculados a este cadastro</p>
-    ${lancTable}
   </div>
 </div>`;
   }).join('');
 }
-
 function buildPreAnalysisSummary(db) {
   const openIssues = db.issues.filter((i) => i.status !== 'resolvida');
   const count = (code) => openIssues.filter((i) => i.code === code).length;
