@@ -543,6 +543,91 @@ function mergeRegistry(existing, incoming) {
   return [...map.values()];
 }
 
+// ===== CONCILIAÇÃO: compara planilha enviada vs. banco de dados =====
+// Retorna: { saldoPlanilha, saldoBanco, divergencia, detalhes[] }
+// detalhes: lista de lançamentos que causam a diferença
+function conciliarPlanilha(allNewEntries, db) {
+  // Saldo da planilha = soma de todos os valores da planilha recebida
+  const saldoPlanilha = allNewEntries.reduce((acc, e) => acc + (Number(e.valor) || 0), 0);
+
+  // Saldo do banco = soma de todos os lançamentos já persistidos
+  const saldoBanco = db.entries.reduce((acc, e) => acc + (Number(e.valor) || 0), 0);
+
+  // Chave de identificação de cada lançamento (mesma usada na dedup)
+  const chave = (e) => `${e.dataISO}|${normalizeName(e.descricao)}|${normalizeName(e.conta)}`;
+
+  // Mapa do banco: chave -> valor
+  const bancoMap = new Map();
+  db.entries.forEach(e => {
+    const k = chave(e);
+    bancoMap.set(k, (bancoMap.get(k) || 0) + (Number(e.valor) || 0));
+  });
+
+  // Mapa da planilha: chave -> { valor, entry }
+  const planilhaMap = new Map();
+  allNewEntries.forEach(e => {
+    const k = chave(e);
+    if (!planilhaMap.has(k)) planilhaMap.set(k, { valor: 0, entry: e });
+    planilhaMap.get(k).valor += (Number(e.valor) || 0);
+  });
+
+  const detalhes = [];
+
+  // 1. Lançamentos na planilha com valor diferente do banco
+  planilhaMap.forEach(({ valor: vPlanilha, entry }, k) => {
+    const vBanco = bancoMap.get(k);
+    if (vBanco === undefined) {
+      // Presente na planilha, ausente no banco (novo)
+      detalhes.push({
+        tipo: 'novo',
+        descricao: entry.descricao || '-',
+        data: entry.dataISO || entry.data || '-',
+        conta: entry.conta || '-',
+        valorPlanilha: vPlanilha,
+        valorBanco: null,
+        diferenca: vPlanilha
+      });
+    } else if (Math.abs(vPlanilha - vBanco) > 0.005) {
+      // Valor divergente
+      detalhes.push({
+        tipo: 'divergente',
+        descricao: entry.descricao || '-',
+        data: entry.dataISO || entry.data || '-',
+        conta: entry.conta || '-',
+        valorPlanilha: vPlanilha,
+        valorBanco: vBanco,
+        diferenca: vPlanilha - vBanco
+      });
+    }
+  });
+
+  // 2. Lançamentos no banco que não aparecem na planilha (removidos ou não enviados)
+  bancoMap.forEach((vBanco, k) => {
+    if (!planilhaMap.has(k)) {
+      const entry = db.entries.find(e => chave(e) === k);
+      detalhes.push({
+        tipo: 'ausente_na_planilha',
+        descricao: entry ? (entry.descricao || '-') : k,
+        data: entry ? (entry.dataISO || entry.data || '-') : '-',
+        conta: entry ? (entry.conta || '-') : '-',
+        valorPlanilha: null,
+        valorBanco: vBanco,
+        diferenca: -vBanco
+      });
+    }
+  });
+
+  const divergencia = Math.abs(saldoPlanilha - saldoBanco) > 0.005;
+
+  return {
+    saldoPlanilha: Math.round(saldoPlanilha * 100) / 100,
+    saldoBanco: Math.round(saldoBanco * 100) / 100,
+    diferenca: Math.round((saldoPlanilha - saldoBanco) * 100) / 100,
+    divergencia,
+    detalhes: detalhes.slice(0, 50) // limitar a 50 itens para não sobrecarregar
+  };
+}
+
 function requireAuth(req, res, db) {
   const user = currentUser(req, db);
   if (!user) {
@@ -1035,6 +1120,7 @@ const server = http.createServer(async (req, res) => {
 <section id='result-section' style='display:none'>
   <h2 id='result-title'>Resultado da importação</h2>
   <div class='cards' id='result-cards'></div>
+  <div id='conciliacao-section'></div>
   <div style='margin-top:1rem;display:flex;gap:.75rem'>
     <a href='/pendencias'><button>&#9888;&#65039;&nbsp; Ver Pré-análise</button></a>
     <a href='/cadastros'><button style='background:var(--gray-600)'>&#128203;&nbsp; Ver Cadastros</button></a>
@@ -1068,13 +1154,48 @@ async function enviarArquivo(){
       msg.textContent = '';
       document.getElementById('result-section').style.display = '';
       document.getElementById('result-title').textContent = 'Importação concluída: ' + data.fileName;
+      const c = data.conciliacao || {};
+      const saldoOk = !c.divergencia;
+      const fmtVal = v => v == null ? '-' : 'R$ ' + Number(v).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2});
       document.getElementById('result-cards').innerHTML = [
         ['Linhas importadas', data.importedRows, ''],
+        ['Ignorados (já existiam)', data.duplicatesIgnored, 'color:var(--gray-500)'],
         ['Novos cadastros', data.foundNames, ''],
         ['Erros encontrados', data.pendingErrors, data.pendingErrors > 0 ? 'color:var(--red)' : 'color:var(--green)'],
-        ['Alertas', data.alerts, data.alerts > 0 ? 'color:var(--amber)' : ''],
         ['Bloqueantes', data.blockingIssues, data.blockingIssues > 0 ? 'color:var(--red)' : 'color:var(--green)']
       ].map(([k,v,s]) => '<div class="card"><strong>'+k+'</strong><span style="'+s+'">'+v+'</span></div>').join('');
+
+      // --- Painel de conciliação ---
+      const concDiv = document.getElementById('conciliacao-section');
+      if(concDiv){
+        if(saldoOk){
+          concDiv.innerHTML = '<div style="display:flex;align-items:center;gap:.6rem;padding:.85rem 1.1rem;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:10px;margin-top:1rem">'
+            +'<span style="font-size:1.3rem">&#9989;</span>'
+            +'<div><strong style="color:#166534">Saldo conciliado</strong><br><span style="font-size:.82rem;color:#166534">Planilha: '+fmtVal(c.saldoPlanilha)+' &nbsp;|&nbsp; Banco: '+fmtVal(c.saldoBanco)+'</span></div></div>';
+        } else {
+          const tipoLabel = { novo: '&#128195; Novo (não estava no banco)', divergente: '&#9888;&#65039; Valor divergente', ausente_na_planilha: '&#128683; Ausente na planilha' };
+          const tipoColor = { novo: '#1d4ed8', divergente: '#d97706', ausente_na_planilha: '#dc2626' };
+          const detRows = (c.detalhes || []).map(d =>
+            '<tr style="border-bottom:1px solid #fef3c7">'
+            +'<td style="padding:.3rem .5rem;font-size:.76rem;white-space:nowrap">'+d.data+'</td>'
+            +'<td style="padding:.3rem .5rem;font-size:.76rem;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="'+d.descricao+'">'+d.descricao+'</td>'
+            +'<td style="padding:.3rem .5rem;font-size:.76rem">'+d.conta+'</td>'
+            +'<td style="padding:.3rem .5rem;font-size:.76rem;color:'+tipoColor[d.tipo]+'">'+tipoLabel[d.tipo]+'</td>'
+            +'<td style="padding:.3rem .5rem;font-size:.76rem;text-align:right">'+fmtVal(d.valorPlanilha)+'</td>'
+            +'<td style="padding:.3rem .5rem;font-size:.76rem;text-align:right">'+fmtVal(d.valorBanco)+'</td>'
+            +'<td style="padding:.3rem .5rem;font-size:.76rem;text-align:right;font-weight:700;color:'+(d.diferenca>=0?'#059669':'#dc2626')+'">'+fmtVal(d.diferenca)+'</td>'
+            +'</tr>'
+          ).join('');
+          concDiv.innerHTML = '<div style="background:#fffbeb;border:2px solid #fbbf24;border-radius:10px;padding:1rem;margin-top:1rem">'
+            +'<div style="display:flex;align-items:center;gap:.6rem;margin-bottom:.75rem">'
+            +'<span style="font-size:1.3rem">&#9888;&#65039;</span>'
+            +'<div><strong style="color:#92400e">Divergência de saldo detectada</strong><br>'
+            +'<span style="font-size:.82rem;color:#78350f">Planilha: <strong>'+fmtVal(c.saldoPlanilha)+'</strong> &nbsp;|&nbsp; Banco: <strong>'+fmtVal(c.saldoBanco)+'</strong> &nbsp;|&nbsp; Diferença: <strong style="color:'+(c.diferenca>=0?'#059669':'#dc2626')+'">'+fmtVal(c.diferenca)+'</strong></span></div></div>'
+            +'<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse">'
+            +'<thead><tr style="background:#fef3c7"><th style="padding:.3rem .5rem;text-align:left;font-size:.72rem">Data</th><th style="padding:.3rem .5rem;text-align:left;font-size:.72rem">Descrição</th><th style="padding:.3rem .5rem;text-align:left;font-size:.72rem">Conta</th><th style="padding:.3rem .5rem;text-align:left;font-size:.72rem">Situação</th><th style="padding:.3rem .5rem;text-align:right;font-size:.72rem">Planilha</th><th style="padding:.3rem .5rem;text-align:right;font-size:.72rem">Banco</th><th style="padding:.3rem .5rem;text-align:right;font-size:.72rem">Diferença</th></tr></thead>'
+            +'<tbody>'+detRows+'</tbody></table></div>'+(c.detalhes&&c.detalhes.length>=50?'<p style="font-size:.75rem;color:#92400e;margin-top:.5rem">&#8505;&#65039; Exibindo os primeiros 50 itens divergentes.</p>':'')+'</div>';
+        }
+      }
     }
   } catch(e) { msg.textContent = 'Erro: ' + e.message; msg.style.color = 'var(--red)'; }
   btn.disabled = false; btn.textContent = '\u{1F680}\u00a0 Importar planilha';
@@ -1122,6 +1243,10 @@ async function enviarArquivo(){
         }
       });
 
+      // --- Conciliação: comparar planilha vs. banco ANTES de persistir os novos ---
+      // (o banco ainda não tem os novos entries, então comparamos planilha completa vs. banco atual)
+      const conciliacao = conciliarPlanilha(allNewEntries, db);
+
       const issues = buildIssues(entries, db).map((i) => ({ ...i, id: crypto.randomUUID(), uploadId: upload.id, status: 'aberta' }));
       const registry = buildReviewRegistry(entries);
       db.uploads.push(upload);
@@ -1140,7 +1265,8 @@ async function enviarArquivo(){
         foundNames: registry.length,
         pendingErrors: issues.filter((i) => i.level === 'erro').length,
         alerts: issues.filter((i) => i.level === 'alerta').length,
-        blockingIssues: summary.bloqueantes
+        blockingIssues: summary.bloqueantes,
+        conciliacao
       });
     } catch (error) {
       json(res, 400, { error: error.message });
