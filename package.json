@@ -1,14 +1,17 @@
 {
   "name": "painel-financeiro-gerencial-ckm",
-  "version": "0.2.0",
+  "version": "0.4.0",
   "private": true,
-  "description": "MVP Sprint 2 - Painel Financeiro Gerencial CKM",
+  "description": "MVP Sprint 4 - Painel Financeiro Gerencial CKM com suporte a PostgreSQL",
   "scripts": {
     "start": "node server.js",
     "dev": "node server.js",
-    "check": "node --check server.js && python3 -m py_compile scripts/parse_spreadsheet.py"
+    "check": "node --check server.js && node --check storage.js && python3 -m py_compile scripts/parse_spreadsheet.py"
   },
   "engines": {
     "node": ">=20"
+  },
+  "dependencies": {
+    "pg": "^8.16.3"
   }
 }

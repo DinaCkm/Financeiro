@@ -4,6 +4,8 @@ const path = require('path');
 const crypto = require('crypto');
 const os = require('os');
 const { spawnSync } = require('child_process');
+const { createStorage } = require('./storage');
+const storage = createStorage({ dbPath: path.join(__dirname, 'data', 'db.json'), databaseUrl: process.env.DATABASE_URL });
 
 const PORT = process.env.PORT || 3000;
 const DB_PATH = path.join(__dirname, 'data', 'db.json');
@@ -58,6 +60,10 @@ function loadDb() {
 
 function saveDb(db) {
   fs.writeFileSync(DB_PATH, JSON.stringify(db, null, 2));
+  // Async persist to PostgreSQL if DATABASE_URL is set (non-blocking)
+  if (process.env.DATABASE_URL) {
+    storage.saveDb(db).catch((e) => console.error('[storage] saveDb error:', e.message));
+  }
 }
 
 function parseCookies(req) {
