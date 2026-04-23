@@ -161,13 +161,6 @@ function buildSessionCookie(sid, req) {
   return `sid=${sid}; ${attrs.join('; ')}`;
 }
 
-function buildCsrfCookie(csrfToken, req) {
-  const attrs = ['Path=/', `Max-Age=${Math.floor(SESSION_TTL_MS / 1000)}`, 'SameSite=Lax'];
-  const forwardedProto = (req.headers['x-forwarded-proto'] || '').toString().toLowerCase();
-  if (process.env.NODE_ENV === 'production' || forwardedProto === 'https') attrs.push('Secure');
-  return `csrf=${csrfToken}; ${attrs.join('; ')}`;
-}
-
 function getSession(req) {
   const sid = parseCookies(req).sid;
   if (!sid) return null;
@@ -1226,7 +1219,7 @@ const server = http.createServer(async (req, res) => {
     const sid = crypto.randomUUID();
     const csrfToken = crypto.randomUUID();
     sessions.set(sid, { userId: user.id, expiresAt: Date.now() + SESSION_TTL_MS, csrfToken });
-    res.writeHead(302, { 'Set-Cookie': [buildSessionCookie(sid, req), buildCsrfCookie(csrfToken, req)], Location: '/' });
+    res.writeHead(302, { 'Set-Cookie': buildSessionCookie(sid, req), Location: '/' });
     res.end();
     return;
   }
@@ -1243,9 +1236,7 @@ const server = http.createServer(async (req, res) => {
     const forwardedProto = (req.headers['x-forwarded-proto'] || '').toString().toLowerCase();
     const clearAttrs = ['Path=/', 'HttpOnly', 'Max-Age=0', 'SameSite=Lax'];
     if (process.env.NODE_ENV === 'production' || forwardedProto === 'https') clearAttrs.push('Secure');
-    const clearCsrfAttrs = ['Path=/', 'Max-Age=0', 'SameSite=Lax'];
-    if (process.env.NODE_ENV === 'production' || forwardedProto === 'https') clearCsrfAttrs.push('Secure');
-    res.writeHead(302, { 'Set-Cookie': [`sid=; ${clearAttrs.join('; ')}`, `csrf=; ${clearCsrfAttrs.join('; ')}`], Location: '/login' });
+    res.writeHead(302, { 'Set-Cookie': `sid=; ${clearAttrs.join('; ')}`, Location: '/login' });
     res.end();
     return;
   }
