@@ -61,6 +61,11 @@ function createPostgresStorage(databaseUrl) {
         id TEXT PRIMARY KEY,
         data JSONB NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS manual_adjustments (
+        id TEXT PRIMARY KEY,
+        data JSONB NOT NULL,
+        created_at TIMESTAMPTZ DEFAULT now()
+      );
     `);
   }
 
@@ -71,6 +76,11 @@ function createPostgresStorage(databaseUrl) {
     }
   }
 
+  async function loadCollection(query) {
+    const result = await pool.query(query);
+    return result.rows.map((r) => r.data);
+  }
+
   return {
     async init() {
       await ensureSchema();
@@ -78,22 +88,24 @@ function createPostgresStorage(databaseUrl) {
     },
 
     async loadDb() {
-      const [users, uploads, entries, issues, reviewRegistry, savedRules] = await Promise.all([
+      const [users, uploads, entries, issues, reviewRegistry, savedRules, manualAdjustments] = await Promise.all([
         pool.query('SELECT id, email, password, role FROM users ORDER BY created_at'),
         pool.query('SELECT id, file_name, uploaded_at, row_count FROM uploads ORDER BY uploaded_at'),
-        pool.query('SELECT data FROM entries'),
-        pool.query('SELECT data FROM issues'),
-        pool.query('SELECT data FROM review_registry'),
-        pool.query('SELECT data FROM saved_rules')
+        loadCollection('SELECT data FROM entries'),
+        loadCollection('SELECT data FROM issues'),
+        loadCollection('SELECT data FROM review_registry'),
+        loadCollection('SELECT data FROM saved_rules'),
+        loadCollection('SELECT data FROM manual_adjustments')
       ]);
 
       return {
         users: users.rows.map((r) => ({ id: r.id, email: r.email, password: r.password, role: r.role })),
         uploads: uploads.rows.map((r) => ({ id: r.id, fileName: r.file_name, uploadedAt: r.uploaded_at, rowCount: r.row_count })),
-        entries: entries.rows.map((r) => r.data),
-        issues: issues.rows.map((r) => r.data),
-        reviewRegistry: reviewRegistry.rows.map((r) => r.data),
-        savedRules: savedRules.rows.map((r) => r.data)
+        entries,
+        issues,
+        reviewRegistry,
+        savedRules,
+        manualAdjustments
       };
     },
 
@@ -101,7 +113,7 @@ function createPostgresStorage(databaseUrl) {
       const client = await pool.connect();
       try {
         await client.query('BEGIN');
-        await client.query('TRUNCATE uploads, entries, issues, review_registry, saved_rules');
+        await client.query('TRUNCATE uploads, entries, issues, review_registry, saved_rules, manual_adjustments');
 
         for (const upload of db.uploads || []) {
           await client.query(
@@ -124,6 +136,10 @@ function createPostgresStorage(databaseUrl) {
 
         for (const rule of db.savedRules || []) {
           await client.query('INSERT INTO saved_rules (id, data) VALUES ($1, $2)', [rule.id, rule]);
+        }
+
+        for (const adjustment of db.manualAdjustments || []) {
+          await client.query('INSERT INTO manual_adjustments (id, data) VALUES ($1, $2)', [adjustment.id, adjustment]);
         }
 
         await client.query('COMMIT');
