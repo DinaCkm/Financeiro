@@ -451,7 +451,7 @@ function parseRowsWithPython(fileName, buffer) {
 
   const payload = JSON.parse(rawOutput);
   if (payload.error) throw new Error(payload.error);
-  return payload.rows || [];
+  return { rows: payload.rows || [], meta: payload.meta || {} };
 }
 
 function parseEntries(rows, uploadId, db) {
@@ -1371,7 +1371,8 @@ async function enviarArquivo(){
       const body = JSON.parse(await readBody(req) || '{}');
       const fileName = body.fileName || 'upload.csv';
       const buffer = Buffer.from(body.fileBase64 || '', 'base64');
-      const rows = parseRowsWithPython(fileName, buffer);
+      const parsed = parseRowsWithPython(fileName, buffer);
+      const rows = parsed.rows;
       const upload = { id: crypto.randomUUID(), fileName, uploadedAt: new Date().toISOString(), rowCount: rows.length };
       const allNewEntries = parseEntries(rows, upload.id, db);
 
@@ -1420,6 +1421,7 @@ async function enviarArquivo(){
         uploadId: upload.id,
         fileName,
         importedRows: entries.length,
+        invalidValueRows: Number(parsed.meta?.skippedInvalidValue || 0),
         duplicatesIgnored,
         foundNames: registry.length,
         pendingErrors: issues.filter((i) => i.level === 'erro').length,
