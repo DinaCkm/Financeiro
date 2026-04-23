@@ -80,9 +80,24 @@ header nav a {
   white-space: nowrap;
 }
 
+header nav form { margin: 0; }
+
+header nav .link-sair {
+  color: #fca5a5;
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  font-size: .82rem;
+  font-weight: 500;
+  padding: .45rem .9rem;
+  border-radius: 6px;
+  transition: background .15s, color .15s;
+}
+
 header nav a:hover { background: rgba(255,255,255,.1); color: var(--white); }
 header nav a.sair  { color: #fca5a5; }
 header nav a.sair:hover { background: rgba(220,38,38,.15); }
+header nav .link-sair:hover { background: rgba(220,38,38,.15); color: #fecaca; }
 
 /* ── Layout ── */
 main {

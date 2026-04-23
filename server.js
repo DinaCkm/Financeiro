@@ -11,6 +11,7 @@ const PORT = process.env.PORT || 3000;
 const DB_PATH = path.join(__dirname, 'data', 'db.json');
 const PARSER_PATH = path.join(__dirname, 'scripts', 'parse_spreadsheet.py');
 const sessions = new Map();
+const SESSION_TTL_MS = 12 * 60 * 60 * 1000; // 12h
 
 const TYPE_OPTIONS = ['Cliente', 'Projeto', 'Prestador de Serviço', 'Fornecedor', 'Estrutura Interna', 'Financeiro / Não Operacional', 'Conta / Cartão', 'Pendente de Classificação'];
 const BLOCKING_ISSUES = ['DESPESA_SEM_PROJETO', 'ESTRUTURA_COMO_CLIENTE', 'MUTUO_COMO_CLIENTE', 'MUTUO_CLASSIFICACAO', 'VALOR_INVALIDO', 'DATA_INVALIDA'];
@@ -41,6 +42,31 @@ const CC_PADRAO = [
   'ADMINISTRATIVO', 'COMERCIAL', 'ESCRITÓRIO', 'FINANCEIRO', 'FISCAL',
   'JURÍDICO', 'MÚTUO', 'OPERACIONAL', 'PRÓ-LABORE', 'RH', 'TEF', 'TI'
 ];
+
+const PASSWORD_PREFIX = 'scrypt$';
+
+function isHashedPassword(stored) {
+  return typeof stored === 'string' && stored.startsWith(PASSWORD_PREFIX);
+}
+
+function hashPassword(password) {
+  const salt = crypto.randomBytes(16).toString('hex');
+  const key = crypto.scryptSync(String(password), salt, 64).toString('hex');
+  return `${PASSWORD_PREFIX}${salt}$${key}`;
+}
+
+function verifyPassword(inputPassword, storedPassword) {
+  if (!storedPassword) return false;
+  if (!isHashedPassword(storedPassword)) return String(storedPassword) === String(inputPassword);
+  const parts = String(storedPassword).split('$');
+  if (parts.length !== 3) return false;
+  const [, salt, expectedHex] = parts;
+  const actualHex = crypto.scryptSync(String(inputPassword), salt, 64).toString('hex');
+  const expected = Buffer.from(expectedHex, 'hex');
+  const actual = Buffer.from(actualHex, 'hex');
+  if (expected.length !== actual.length) return false;
+  return crypto.timingSafeEqual(expected, actual);
+}
 
 const COLUMN_ALIASES = {
   data: ['data', 'dt', 'date', 'data_movimento', 'data movimento', 'vencimento',
@@ -128,11 +154,47 @@ function parseCookies(req) {
   }));
 }
 
-function currentUser(req, db) {
+function buildSessionCookie(sid, req) {
+  const attrs = ['Path=/', 'HttpOnly', `Max-Age=${Math.floor(SESSION_TTL_MS / 1000)}`, 'SameSite=Lax'];
+  const forwardedProto = (req.headers['x-forwarded-proto'] || '').toString().toLowerCase();
+  if (process.env.NODE_ENV === 'production' || forwardedProto === 'https') attrs.push('Secure');
+  return `sid=${sid}; ${attrs.join('; ')}`;
+}
+
+function buildCsrfCookie(csrfToken, req) {
+  const attrs = ['Path=/', `Max-Age=${Math.floor(SESSION_TTL_MS / 1000)}`, 'SameSite=Lax'];
+  const forwardedProto = (req.headers['x-forwarded-proto'] || '').toString().toLowerCase();
+  if (process.env.NODE_ENV === 'production' || forwardedProto === 'https') attrs.push('Secure');
+  return `csrf=${csrfToken}; ${attrs.join('; ')}`;
+}
+
+function getSession(req) {
   const sid = parseCookies(req).sid;
   if (!sid) return null;
-  const userId = sessions.get(sid);
-  return db.users.find((u) => u.id === userId) || null;
+  const session = sessions.get(sid);
+  if (!session) return null;
+  if (typeof session === 'string') {
+    const upgraded = { userId: session, expiresAt: Date.now() + SESSION_TTL_MS, csrfToken: crypto.randomUUID() };
+    sessions.set(sid, upgraded);
+    return { sid, session: upgraded };
+  }
+  if (Date.now() > session.expiresAt) {
+    sessions.delete(sid);
+    return null;
+  }
+  if (!session.csrfToken) session.csrfToken = crypto.randomUUID();
+  return { sid, session };
+}
+
+function currentUser(req, db) {
+  const current = getSession(req);
+  if (!current) return null;
+  const { session } = current;
+  session.expiresAt = Date.now() + SESSION_TTL_MS; // sliding session
+  const userId = session.userId;
+  const user = db.users.find((u) => u.id === userId) || null;
+  if (!user) return null;
+  return { ...user, csrfToken: session.csrfToken };
 }
 
 function readBody(req) {
@@ -724,7 +786,7 @@ function serveStatic(req, res) {
 
 function page(title, body, user) {
   return `<!doctype html><html lang='pt-BR'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>${title} — CKM Financeiro</title><link rel='preconnect' href='https://fonts.googleapis.com'><link rel='stylesheet' href='https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap'><link rel='stylesheet' href='/public/style.css'></head><body>
-<header><h1>Painel <em>CKM</em> Financeiro</h1>${user ? `<nav><a href='/'>Home</a><a href='/upload'>Upload</a><a href='/pendencias'>Pré-análise</a><a href='/cadastros'>Cadastro Revisável</a><a href='/fatura'>Fatura Cartão</a><a href='/referencias'>Referências</a><a href='/historico'>Histórico</a><a href='/dashboard'>Dashboard</a><a href='/logout' class='sair'>Sair</a></nav>` : ''}</header>
+<header><h1>Painel <em>CKM</em> Financeiro</h1>${user ? `<nav><a href='/'>Home</a><a href='/upload'>Upload</a><a href='/pendencias'>Pré-análise</a><a href='/cadastros'>Cadastro Revisável</a><a href='/fatura'>Fatura Cartão</a><a href='/referencias'>Referências</a><a href='/historico'>Histórico</a><a href='/dashboard'>Dashboard</a><form method='post' action='/logout' style='display:inline'><input type='hidden' name='_csrf' value='${user.csrfToken || ''}'><button class='link-sair' type='submit'>Sair</button></form></nav>` : ''}</header>
 <main>${body}</main></body></html>`;
 }
 
@@ -1149,22 +1211,41 @@ const server = http.createServer(async (req, res) => {
 
   if (req.method === 'POST' && url.pathname === '/login') {
     const form = new URLSearchParams(await readBody(req));
-    const user = db.users.find((u) => u.email === form.get('email') && u.password === form.get('password'));
-    if (!user) {
+    const user = db.users.find((u) => u.email === form.get('email'));
+    const rawPassword = form.get('password') || '';
+    if (!user || !verifyPassword(rawPassword, user.password)) {
       res.writeHead(302, { Location: '/login' });
       res.end();
       return;
     }
+    // Migração transparente: usuário legado com senha em texto puro é convertido para hash no login bem-sucedido
+    if (!isHashedPassword(user.password)) {
+      user.password = hashPassword(rawPassword);
+      saveDb(db);
+    }
     const sid = crypto.randomUUID();
-    sessions.set(sid, user.id);
-    res.writeHead(302, { 'Set-Cookie': `sid=${sid}; Path=/; HttpOnly`, Location: '/' });
+    const csrfToken = crypto.randomUUID();
+    sessions.set(sid, { userId: user.id, expiresAt: Date.now() + SESSION_TTL_MS, csrfToken });
+    res.writeHead(302, { 'Set-Cookie': [buildSessionCookie(sid, req), buildCsrfCookie(csrfToken, req)], Location: '/' });
     res.end();
     return;
   }
 
-  if (req.method === 'GET' && url.pathname === '/logout') {
-    sessions.delete(parseCookies(req).sid);
-    res.writeHead(302, { 'Set-Cookie': 'sid=; Path=/; Max-Age=0', Location: '/login' });
+  if (req.method === 'POST' && url.pathname === '/logout') {
+    const current = getSession(req);
+    const form = new URLSearchParams(await readBody(req));
+    if (!current || !current.session.csrfToken || form.get('_csrf') !== current.session.csrfToken) {
+      res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8' });
+      res.end('CSRF inválido');
+      return;
+    }
+    sessions.delete(current.sid);
+    const forwardedProto = (req.headers['x-forwarded-proto'] || '').toString().toLowerCase();
+    const clearAttrs = ['Path=/', 'HttpOnly', 'Max-Age=0', 'SameSite=Lax'];
+    if (process.env.NODE_ENV === 'production' || forwardedProto === 'https') clearAttrs.push('Secure');
+    const clearCsrfAttrs = ['Path=/', 'Max-Age=0', 'SameSite=Lax'];
+    if (process.env.NODE_ENV === 'production' || forwardedProto === 'https') clearCsrfAttrs.push('Secure');
+    res.writeHead(302, { 'Set-Cookie': [`sid=; ${clearAttrs.join('; ')}`, `csrf=; ${clearCsrfAttrs.join('; ')}`], Location: '/login' });
     res.end();
     return;
   }
@@ -2729,7 +2810,7 @@ async function boot() {
     // Modo local: garantir que o db.json existe
     if (!fs.existsSync(DB_PATH)) {
       fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
-      const emptyDb = { users: [{ id: 'owner-ckm', email: 'owner@ckm.local', password: '123456', role: 'owner' }], uploads: [], entries: [], issues: [], reviewRegistry: [], savedRules: [], manualAdjustments: [] };
+      const emptyDb = { users: [{ id: 'owner-ckm', email: 'owner@ckm.local', password: hashPassword('123456'), role: 'owner' }], uploads: [], entries: [], issues: [], reviewRegistry: [], savedRules: [], manualAdjustments: [] };
       fs.writeFileSync(DB_PATH, JSON.stringify(emptyDb, null, 2));
       console.log('[boot] db.json criado com usuário padrão.');
     }
