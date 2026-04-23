@@ -518,13 +518,73 @@ function page(title, body, user) {
 <main>${body}</main></body></html>`;
 }
 
-function reviewTableRows(list) {
-  return list.map((r) => `<tr data-id='${r.id}'>
-<td>${r.nomeOriginal}</td><td>${r.nomeOficial}</td><td>${r.tipoSugerido}</td>
-<td><select onchange="alterarTipo('${r.id}', this.value)">${TYPE_OPTIONS.map((t) => `<option ${t === r.tipoFinal ? 'selected' : ''}>${t}</option>`).join('')}</select></td>
-<td><input value='${r.clienteVinculado || ''}' onchange="vincularCliente('${r.id}', this.value)"/></td>
-<td><input value='${r.projetoVinculado || ''}' onchange="vincularProjeto('${r.id}', this.value)"/></td>
-<td><select onchange="marcarRevisao('${r.id}', this.value)"><option ${r.statusRevisao === 'pendente' ? 'selected' : ''}>pendente</option><option ${r.statusRevisao === 'revisado' ? 'selected' : ''}>revisado</option></select></td></tr>`).join('');
+function reviewCards(list, allEntries) {
+  return list.map((r) => {
+    const nome = normalizeName(r.nomeOficial);
+    const linked = allEntries.filter((e) =>
+      normalizeName(e.cliente) === nome ||
+      normalizeName(e.projeto) === nome ||
+      normalizeName(e.parceiro) === nome
+    ).sort((a, b) => (b.dataISO || '').localeCompare(a.dataISO || ''));
+    const total = linked.reduce((s, e) => s + (e.valor || 0), 0);
+    const totalColor = total >= 0 ? 'color:#065f46' : 'color:#991b1b';
+    const badgeClass = r.statusRevisao === 'revisado' ? 'badge-green' : 'badge-amber';
+    const badgeLabel = r.statusRevisao === 'revisado' ? 'Revisado' : 'Pendente';
+    const lancRows = linked.slice(0, 8).map((e) => {
+      const valColor = e.valor >= 0 ? 'color:#065f46;font-weight:600' : 'color:#991b1b;font-weight:600';
+      return `<tr>
+        <td style='white-space:nowrap'>${e.dataISO || e.data || '-'}</td>
+        <td>${e.descricao || '-'}</td>
+        <td style='white-space:nowrap;${valColor}'>R$ ${Number(e.valor || 0).toFixed(2)}</td>
+        <td>${e.natureza || '-'}</td>
+        <td>${e.conta || e.centroCusto || '-'}</td>
+        <td>${e.status || '-'}</td>
+      </tr>`;
+    }).join('');
+    const maisLabel = linked.length > 8 ? `<p style='font-size:.78rem;color:var(--gray-400);margin:.4rem 0 0'>+ ${linked.length - 8} lançamentos não exibidos</p>` : '';
+    const lancTable = linked.length > 0
+      ? `<div class='review-entries'><table><thead><tr><th>Data</th><th>Histórico</th><th>Valor</th><th>Natureza</th><th>Conta/CC</th><th>Status</th></tr></thead><tbody>${lancRows}</tbody></table>${maisLabel}</div>`
+      : `<p style='font-size:.82rem;color:var(--gray-400);margin:.5rem 0'>Nenhum lançamento vinculado.</p>`;
+    return `<div class='review-card' data-id='${r.id}' data-status='${r.statusRevisao}'>
+  <div class='review-card-header' onclick="toggleCard('${r.id}')">
+    <div class='review-card-title'>
+      <span class='badge ${badgeClass}'>${badgeLabel}</span>
+      <strong>${r.nomeOficial}</strong>
+      ${r.nomeOriginal !== r.nomeOficial ? `<span style='font-size:.78rem;color:var(--gray-400)'>(orig: ${r.nomeOriginal})</span>` : ''}
+    </div>
+    <div class='review-card-meta'>
+      <span class='badge badge-blue'>${r.tipoFinal || r.tipoSugerido}</span>
+      <span style='font-size:.82rem;color:var(--gray-600)'>${linked.length} lançamento${linked.length !== 1 ? 's' : ''}</span>
+      <span style='font-size:.82rem;font-weight:700;${totalColor}'>Total: R$ ${total.toFixed(2)}</span>
+      <span class='review-toggle-icon' id='icon-${r.id}'>▼</span>
+    </div>
+  </div>
+  <div class='review-card-body' id='body-${r.id}' style='display:none'>
+    ${lancTable}
+    <div class='review-actions'>
+      <div class='review-action-group'>
+        <label>Tipo final</label>
+        <select onchange="alterarTipo('${r.id}', this.value)">${TYPE_OPTIONS.map((t) => `<option ${t === r.tipoFinal ? 'selected' : ''}>${t}</option>`).join('')}</select>
+      </div>
+      <div class='review-action-group'>
+        <label>Cliente vinculado</label>
+        <input value='${r.clienteVinculado || ''}' placeholder='Nome do cliente' onchange="vincularCliente('${r.id}', this.value)"/>
+      </div>
+      <div class='review-action-group'>
+        <label>Projeto vinculado</label>
+        <input value='${r.projetoVinculado || ''}' placeholder='Nome do projeto' onchange="vincularProjeto('${r.id}', this.value)"/>
+      </div>
+      <div class='review-action-group'>
+        <label>Status de revisão</label>
+        <select onchange="marcarRevisao('${r.id}', this.value)">
+          <option ${r.statusRevisao === 'pendente' ? 'selected' : ''} value='pendente'>Pendente</option>
+          <option ${r.statusRevisao === 'revisado' ? 'selected' : ''} value='revisado'>Revisado ✓</option>
+        </select>
+      </div>
+    </div>
+  </div>
+</div>`;
+  }).join('');
 }
 
 function buildPreAnalysisSummary(db) {
@@ -749,12 +809,38 @@ async function enviarArquivo(){
       const fileName = body.fileName || 'upload.csv';
       const buffer = Buffer.from(body.fileBase64 || '', 'base64');
       const rows = parseRowsWithPython(fileName, buffer);
-
       const upload = { id: crypto.randomUUID(), fileName, uploadedAt: new Date().toISOString(), rowCount: rows.length };
-      const entries = parseEntries(rows, upload.id, db);
+      const allNewEntries = parseEntries(rows, upload.id, db);
+
+      // --- Deduplicação: ignorar lançamentos já existentes (mesma data+descrição+valor+conta) ---
+      const existingKeys = new Set(
+        db.entries.map((e) => `${e.dataISO}|${normalizeName(e.descricao)}|${e.valor}|${normalizeName(e.conta)}`)
+      );
+      const entries = allNewEntries.filter((e) => {
+        const key = `${e.dataISO}|${normalizeName(e.descricao)}|${e.valor}|${normalizeName(e.conta)}`;
+        return !existingKeys.has(key);
+      });
+
+      // --- Reaplicar revisões existentes nos novos entries ---
+      const reviewedMap = new Map(
+        (db.reviewRegistry || []).filter((r) => r.statusRevisao === 'revisado').map((r) => [normalizeName(r.nomeOficial), r])
+      );
+      entries.forEach((e) => {
+        for (const field of ['cliente', 'projeto', 'parceiro']) {
+          const rev = reviewedMap.get(normalizeName(e[field] || ''));
+          if (rev && rev.tipoFinal && rev.tipoFinal !== 'Pendente de Classificação') {
+            // Herdar natureza da revisão já feita
+            if (rev.tipoFinal === 'Estrutura Interna' || rev.tipoFinal === 'Financeiro / Não Operacional') {
+              e.natureza = rev.tipoFinal === 'Financeiro / Não Operacional' ? 'Movimentação Financeira Não Operacional' : 'Despesa Indireta';
+            }
+            if (rev.clienteVinculado && !e.cliente) e.cliente = rev.clienteVinculado;
+            if (rev.projetoVinculado && !e.projeto) e.projeto = rev.projetoVinculado;
+          }
+        }
+      });
+
       const issues = buildIssues(entries, db).map((i) => ({ ...i, id: crypto.randomUUID(), uploadId: upload.id, status: 'aberta' }));
       const registry = buildReviewRegistry(entries);
-
       db.uploads.push(upload);
       db.entries.push(...entries);
       db.issues.push(...issues);
@@ -762,10 +848,12 @@ async function enviarArquivo(){
       saveDb(db);
 
       const summary = buildPreAnalysisSummary(db);
+      const duplicatesIgnored = allNewEntries.length - entries.length;
       json(res, 200, {
         uploadId: upload.id,
         fileName,
         importedRows: entries.length,
+        duplicatesIgnored,
         foundNames: registry.length,
         pendingErrors: issues.filter((i) => i.level === 'erro').length,
         alerts: issues.filter((i) => i.level === 'alerta').length,
@@ -823,34 +911,101 @@ ${groups.map((g) => `<h3>${g.title}</h3><ul>${openIssues.filter((i) => i.code ==
       return true;
     });
     const reviewed = db.reviewRegistry.filter((item) => item.statusRevisao === 'revisado').length;
-    const html = page('Cadastro Revisável', `<section><h2>Cadastro Revisável (fluxo diário)</h2>
-<p>Total filtrado: ${filtered.length} | Revisados: ${reviewed}</p>
-<form method='get' action='/cadastros' class='grid2'>
-  <label>Status<select name='status'><option value='pendente' ${statusFilter === 'pendente' ? 'selected' : ''}>pendente</option><option value='revisado' ${statusFilter === 'revisado' ? 'selected' : ''}>revisado</option><option value='todos' ${statusFilter === 'todos' ? 'selected' : ''}>todos</option></select></label>
-  <label>Tipo<select name='tipo'><option value=''>todos</option>${TYPE_OPTIONS.map((t) => `<option ${typeFilter === t ? 'selected' : ''}>${t}</option>`).join('')}</select></label>
-  <label>Busca <input name='q' value='${url.searchParams.get('q') || ''}' placeholder='nome original/oficial'/></label>
-  <button type='submit'>Filtrar</button>
-</form>
-<button onclick='revisarEmLote()'>Marcar filtrados como revisado</button>
-<div class='grid2'>
-<div><h3>Consolidar aliases</h3><input id='aliasFrom' placeholder='Nome origem'/><input id='aliasTo' placeholder='Nome oficial'/><label><input id='keepAlias' type='checkbox' checked/> manter alias</label><button onclick='consolidarAlias()'>Consolidar + regra</button></div>
-<div><h3>Vincular projeto a cliente</h3><input id='projectName' placeholder='Projeto'/><input id='clientName' placeholder='Cliente'/><button onclick='vincularProjetoCliente()'>Vincular + regra</button></div>
-</div>
-<div class='grid2'>
-<div><h3>Reclassificar para Estrutura</h3><input id='toEstrutura' placeholder='Nome oficial'/><button onclick='reclassificar("Estrutura Interna")'>Aplicar</button></div>
-<div><h3>Reclassificar para Financeiro</h3><input id='toFinanceiro' placeholder='Nome oficial'/><button onclick='reclassificar("Financeiro / Não Operacional")'>Aplicar</button></div>
-</div>
-<table><thead><tr><th>Original</th><th>Oficial</th><th>Sugerido</th><th>Tipo Final</th><th>Cliente</th><th>Projeto</th><th>Status</th></tr></thead><tbody>${reviewTableRows(filtered)}</tbody></table>
+    const total = db.reviewRegistry.length;
+    const html = page('Cadastro Revisável', `
+<section>
+  <div style='display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:1rem;margin-bottom:1.25rem'>
+    <div>
+      <h2 style='margin:0'>Cadastro Revisável</h2>
+      <p style='margin:.25rem 0 0;font-size:.85rem;color:var(--gray-400)'>
+        <span class='badge badge-amber'>${total - reviewed} pendentes</span>
+        &nbsp;<span class='badge badge-green'>${reviewed} revisados</span>
+        &nbsp;<span style='color:var(--gray-400)'>de ${total} cadastros</span>
+      </p>
+    </div>
+    <button onclick='revisarEmLote()' style='background:var(--gray-600)'>&#10003;&nbsp; Marcar visíveis como revisado</button>
+  </div>
+
+  <form method='get' action='/cadastros' style='display:flex;flex-wrap:wrap;gap:.75rem;align-items:flex-end;background:var(--gray-50);border:1px solid var(--gray-200);border-radius:10px;padding:1rem;margin-bottom:1.25rem'>
+    <label style='flex:1;min-width:130px'>Status
+      <select name='status'>
+        <option value='pendente' ${statusFilter === 'pendente' ? 'selected' : ''}>Pendente</option>
+        <option value='revisado' ${statusFilter === 'revisado' ? 'selected' : ''}>Revisado</option>
+        <option value='todos' ${statusFilter === 'todos' ? 'selected' : ''}>Todos</option>
+      </select>
+    </label>
+    <label style='flex:2;min-width:160px'>Tipo
+      <select name='tipo'>
+        <option value=''>Todos os tipos</option>
+        ${TYPE_OPTIONS.map((t) => `<option ${typeFilter === t ? 'selected' : ''}>${t}</option>`).join('')}
+      </select>
+    </label>
+    <label style='flex:3;min-width:200px'>Busca por nome
+      <input name='q' value='${url.searchParams.get('q') || ''}' placeholder='Digite parte do nome...'/>
+    </label>
+    <button type='submit'>&#128269;&nbsp; Filtrar</button>
+  </form>
+
+  <p style='font-size:.83rem;color:var(--gray-400);margin-bottom:.75rem'>Exibindo <strong>${filtered.length}</strong> cadastros. Clique em um item para ver os lançamentos vinculados e fazer ajustes.</p>
+
+  <div id='review-list'>
+    ${reviewCards(filtered, db.entries)}
+  </div>
+
+  <details style='margin-top:2rem;border:1px solid var(--gray-200);border-radius:10px;padding:1rem'>
+    <summary style='cursor:pointer;font-weight:600;color:var(--gray-600);font-size:.88rem'>&#9881;&nbsp; Ações avançadas (consolidar alias, vincular projeto, reclassificar)</summary>
+    <div style='margin-top:1rem;display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:1rem'>
+      <div style='background:var(--gray-50);border:1px solid var(--gray-200);border-radius:8px;padding:1rem'>
+        <h4 style='margin:0 0 .75rem;font-size:.85rem'>Consolidar aliases</h4>
+        <label>Nome origem<input id='aliasFrom' placeholder='Ex: SEBRAE AC'/></label>
+        <label style='margin-top:.5rem'>Nome oficial<input id='aliasTo' placeholder='Ex: SEBRAE-AC'/></label>
+        <label style='margin-top:.5rem;flex-direction:row;align-items:center;gap:.5rem'><input id='keepAlias' type='checkbox' checked style='width:auto'/> Manter alias</label>
+        <button onclick='consolidarAlias()' style='margin-top:.75rem;width:100%'>Consolidar + regra</button>
+      </div>
+      <div style='background:var(--gray-50);border:1px solid var(--gray-200);border-radius:8px;padding:1rem'>
+        <h4 style='margin:0 0 .75rem;font-size:.85rem'>Vincular projeto a cliente</h4>
+        <label>Projeto<input id='projectName' placeholder='Ex: BRB-PDL'/></label>
+        <label style='margin-top:.5rem'>Cliente<input id='clientName' placeholder='Ex: BRB'/></label>
+        <button onclick='vincularProjetoCliente()' style='margin-top:.75rem;width:100%'>Vincular + regra</button>
+      </div>
+      <div style='background:var(--gray-50);border:1px solid var(--gray-200);border-radius:8px;padding:1rem'>
+        <h4 style='margin:0 0 .75rem;font-size:.85rem'>Reclassificar em lote</h4>
+        <label>Nome oficial<input id='toEstrutura' placeholder='Ex: ESCRITÓRIO'/></label>
+        <button onclick='reclassificar("Estrutura Interna")' style='margin-top:.75rem;width:100%;background:#6b7280'>&#8594; Estrutura Interna</button>
+        <label style='margin-top:.5rem'>Nome oficial<input id='toFinanceiro' placeholder='Ex: PRONAMPE'/></label>
+        <button onclick='reclassificar("Financeiro / Não Operacional")' style='margin-top:.5rem;width:100%;background:#6b7280'>&#8594; Financeiro / Não Operacional</button>
+      </div>
+    </div>
+  </details>
 </section>
 <script>
-async function alterarTipo(id,tipoFinal){await fetch('/api/review/'+id,{method:'PATCH',headers:{'content-type':'application/json'},body:JSON.stringify({tipoFinal,statusRevisao:'revisado'})});}
+function toggleCard(id){
+  const body=document.getElementById('body-'+id);
+  const icon=document.getElementById('icon-'+id);
+  const open=body.style.display==='none';
+  body.style.display=open?'block':'none';
+  icon.textContent=open?'\u25b2':'\u25bc';
+}
+async function alterarTipo(id,tipoFinal){
+  await fetch('/api/review/'+id,{method:'PATCH',headers:{'content-type':'application/json'},body:JSON.stringify({tipoFinal,statusRevisao:'revisado'})});
+  const card=document.querySelector('[data-id="'+id+'"]');
+  if(card){card.querySelector('.badge-amber,.badge-green').className='badge badge-green';card.querySelector('.badge-amber,.badge-green').textContent='Revisado';}
+}
 async function vincularCliente(id,clienteVinculado){await fetch('/api/review/'+id,{method:'PATCH',headers:{'content-type':'application/json'},body:JSON.stringify({clienteVinculado,statusRevisao:'revisado'})});}
 async function vincularProjeto(id,projetoVinculado){await fetch('/api/review/'+id,{method:'PATCH',headers:{'content-type':'application/json'},body:JSON.stringify({projetoVinculado,statusRevisao:'revisado'})});}
-async function marcarRevisao(id,statusRevisao){await fetch('/api/review/'+id,{method:'PATCH',headers:{'content-type':'application/json'},body:JSON.stringify({statusRevisao})});}
+async function marcarRevisao(id,statusRevisao){
+  await fetch('/api/review/'+id,{method:'PATCH',headers:{'content-type':'application/json'},body:JSON.stringify({statusRevisao})});
+  const card=document.querySelector('[data-id="'+id+'"]');
+  if(card){
+    const badge=card.querySelector('.review-card-header .badge');
+    if(statusRevisao==='revisado'){badge.className='badge badge-green';badge.textContent='Revisado';}
+    else{badge.className='badge badge-amber';badge.textContent='Pendente';}
+  }
+}
 async function consolidarAlias(){const sourceName=document.getElementById('aliasFrom').value;const targetName=document.getElementById('aliasTo').value;const keepAlias=document.getElementById('keepAlias').checked;await fetch('/api/review/consolidate',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({sourceName,targetName,keepAlias,applyRule:true})});location.reload();}
 async function vincularProjetoCliente(){const projectName=document.getElementById('projectName').value;const clientName=document.getElementById('clientName').value;await fetch('/api/review/link-project',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({projectName,clientName,applyRule:true})});location.reload();}
 async function reclassificar(tipo){const idField=tipo.includes('Estrutura')?'toEstrutura':'toFinanceiro';const nome=document.getElementById(idField).value;await fetch('/api/review/reclassify',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({nome,tipoFinal:tipo,applyRule:true})});location.reload();}
-async function revisarEmLote(){const ids=[...document.querySelectorAll('tr[data-id]')].map(r=>r.getAttribute('data-id'));await fetch('/api/review/bulk-review',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({ids,statusRevisao:'revisado'})});location.reload();}
+async function revisarEmLote(){const ids=[...document.querySelectorAll('#review-list [data-id]')].map(r=>r.getAttribute('data-id'));await fetch('/api/review/bulk-review',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({ids,statusRevisao:'revisado'})});location.reload();}
 </script>`, user);
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
     res.end(html);
