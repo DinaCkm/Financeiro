@@ -1143,14 +1143,26 @@ ${groups.map((g) => `<h3>${g.title}</h3><ul>${openIssues.filter((i) => i.code ==
     const statusFilter = (url.searchParams.get('status') || 'pendente').trim();
     const typeFilter = (url.searchParams.get('tipo') || '').trim();
     const textFilter = normalizeName(url.searchParams.get('q') || '');
-    const filtered = db.reviewRegistry.filter((item) => {
+    // Cadastros que só têm lançamentos históricos não aparecem para revisão
+    const registryAtivo = db.reviewRegistry.filter((item) => {
+      const nome = normalizeName(item.nomeOficial);
+      const linked = (db.entries || []).filter((e) => {
+        return normalizeName(e.cliente) === nome ||
+               normalizeName(e.projeto) === nome ||
+               normalizeName(e.parceiro) === nome;
+      });
+      // Se não tem lançamentos ou todos são históricos, oculta
+      if (linked.length === 0) return false;
+      return linked.some(isAtivo);
+    });
+    const filtered = registryAtivo.filter((item) => {
       if (statusFilter && statusFilter !== 'todos' && item.statusRevisao !== statusFilter) return false;
       if (typeFilter && item.tipoFinal !== typeFilter) return false;
       if (textFilter && !normalizeName(`${item.nomeOriginal} ${item.nomeOficial}`).includes(textFilter)) return false;
       return true;
     });
-    const reviewed = db.reviewRegistry.filter((item) => item.statusRevisao === 'revisado').length;
-    const total = db.reviewRegistry.length;
+    const reviewed = registryAtivo.filter((item) => item.statusRevisao === 'revisado').length;
+    const total = registryAtivo.length;
     const html = page('Cadastro Revisável', `
 <section>
   <div style='display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:1rem;margin-bottom:1.25rem'>
