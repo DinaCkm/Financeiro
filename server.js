@@ -544,6 +544,53 @@ function reviewCards(list, allEntries) {
     const isPendente = r.tipoFinal === 'Pendente de Classificação' || !r.tipoFinal;
     const tipoAtual = r.tipoFinal || 'Pendente de Classificação';
 
+    // Sugestão automática de Tipo por regras baseadas nos dados dos lançamentos
+    let tipoSugerido = null;
+    if (isPendente && linked.length > 0) {
+      const descs = linked.map((e) => (e.descricao || '').toUpperCase()).join(' ');
+      const nats = linked.map((e) => (e.natureza || '').toUpperCase()).join(' ');
+      const ccs = linked.map((e) => (e.centroCusto || '').toUpperCase()).join(' ');
+      const allText = descs + ' ' + nats + ' ' + ccs;
+      if (/MÚTUO|MUTUO|EMPRÉSTIMO|EMPRESTIMO|FINANCIAMENTO|TRANSFERÊNCIA ENTRE CONTAS/.test(allText)) {
+        tipoSugerido = 'Financeiro / Não Operacional';
+      } else if (/ALUGUEL|LOCAÇÃO|LOCACAO|CONDOMÍNIO|CONDOMINIO|IPTU/.test(allText) && /FORNEC|INDIRETA|ESCRITÓRIO/.test(allText)) {
+        tipoSugerido = 'Fornecedor';
+      } else if (/SALÁRIO|SALARIO|FOLHA|FÉRIAS|FERIAS|13º|RESCISÃO|RESCISAO|CLT/.test(allText)) {
+        tipoSugerido = 'Estrutura Interna';
+      } else if (/RECEITA|HONORÁRIO|HONORARIO|CONTRATO DE SERVIÇO|SERVIÇOS PRESTADOS/.test(allText)) {
+        tipoSugerido = 'Cliente';
+      } else if (/PEDÁGIO|PEDAGIO|TAG|COMBUSTÍVEL|COMBUSTIVEL|SEMPARAR|VELOE|CONECTCAR/.test(allText)) {
+        tipoSugerido = 'Fornecedor';
+      } else if (/CONTA CORRENTE|CARTÃO|CARTAO|NUBANK|ITAÚ|ITAU|BRADESCO|CAIXA|SICOOB|SANTANDER/.test(allText)) {
+        tipoSugerido = 'Conta / Cartão';
+      } else if (/CONSULTORIA|CONSULTOR|PRESTAÇÃO DE SERVIÇO|RPA|MEI|CNPJ/.test(allText)) {
+        tipoSugerido = 'Prestador de Serviço';
+      }
+    }
+
+    // Badge descritivo: explica exatamente o que falta
+    let statusBadgeLabel = tipoAtual;
+    let statusBadgeStyle = 'background:#dbeafe;color:#1e40af;border:1px solid #bfdbfe';
+    if (isPendente) {
+      if (tipoSugerido) {
+        statusBadgeLabel = `Sugestão: ${tipoSugerido}`;
+        statusBadgeStyle = 'background:#fef9c3;color:#854d0e;border:1px solid #fde047';
+      } else {
+        statusBadgeLabel = 'Tipo não definido';
+        statusBadgeStyle = 'background:#fee2e2;color:#991b1b;border:1px solid #fca5a5';
+      }
+    } else if (r.statusRevisao !== 'revisado') {
+      // Tipo definido mas não confirmado
+      const faltaCliente = ['Prestador de Serviço', 'Projeto'].includes(tipoAtual) && !r.clienteVinculado;
+      if (faltaCliente) {
+        statusBadgeLabel = 'Cliente não vinculado';
+        statusBadgeStyle = 'background:#fff7ed;color:#c2410c;border:1px solid #fdba74';
+      } else {
+        statusBadgeLabel = `${tipoAtual} — confirmar`;
+        statusBadgeStyle = 'background:#f0fdf4;color:#166534;border:1px solid #86efac';
+      }
+    }
+
     // Natureza options para cada linha
     const naturezaOpts = ['Receita Operacional','Despesa Direta','Despesa Indireta','Despesa Administrativa',
       'Despesa Financeira','Movimentação Financeira Não Operacional','Transferência','Pendente']
@@ -656,17 +703,26 @@ function reviewCards(list, allEntries) {
       : `<p style='font-size:.82rem;color:var(--gray-400);margin:.5rem 0'>Nenhum lançamento vinculado encontrado.</p>`;
 
     // Painel de classificação do cadastro (tipo, cliente vinculado, projeto vinculado)
+    // Se pendente e tem sugestão, pré-selecionar o tipo sugerido no dropdown
+    const tipoParaSelect = (isPendente && tipoSugerido) ? tipoSugerido : tipoAtual;
     const typeOptions = TYPE_OPTIONS.map((t) => {
       const guide = TYPE_GUIDE[t] || '';
-      return `<option value='${t}' title='${guide}' ${t === tipoAtual ? 'selected' : ''}>${t}</option>`;
+      return `<option value='${t}' title='${guide}' ${t === tipoParaSelect ? 'selected' : ''}>${t}</option>`;
     }).join('');
-    const guiaTexto = TYPE_GUIDE[tipoAtual] || '';
-
+    const guiaTexto = TYPE_GUIDE[tipoParaSelect] || '';
+    const sugestaoAviso = (isPendente && tipoSugerido)
+      ? `<div style='background:#fef9c3;border:1px solid #fde047;border-radius:6px;padding:.4rem .7rem;margin-bottom:.5rem;font-size:.76rem;color:#854d0e'>
+          &#128161; <strong>Sugestão automática:</strong> com base nos históricos dos lançamentos, o tipo mais provável é <strong>${tipoSugerido}</strong>. Confirme se estiver correto ou altere abaixo.
+        </div>`
+      : (isPendente ? `<div style='background:#fee2e2;border:1px solid #fca5a5;border-radius:6px;padding:.4rem .7rem;margin-bottom:.5rem;font-size:.76rem;color:#991b1b'>
+          &#9888; Não foi possível sugerir automaticamente. Analise os lançamentos acima e selecione o Tipo correto.
+        </div>` : '');
     const classifPanel = `
       <div style='display:grid;grid-template-columns:1fr 1fr;gap:1rem;margin-top:.75rem'>
         <div style='background:#fffbeb;border:1px solid #fcd34d;border-radius:8px;padding:.75rem 1rem'>
-          <strong style='font-size:.8rem;color:#92400e'>&#9888; Classificação do cadastro</strong>
-          <p style='font-size:.78rem;color:#78350f;margin:.25rem 0 .6rem'>Defina o <strong>Tipo</strong> deste nome para a CKM. Isso se aplica a todos os lançamentos vinculados.</p>
+          <strong style='font-size:.8rem;color:#92400e'>&#9998; Classificação do cadastro</strong>
+          <p style='font-size:.78rem;color:#78350f;margin:.25rem 0 .5rem'>Defina o <strong>Tipo</strong> deste nome para a CKM. Isso se aplica a todos os lançamentos vinculados.</p>
+          ${sugestaoAviso}
           <div style='display:flex;flex-direction:column;gap:.5rem'>
             <div>
               <label style='font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase'>Tipo *</label>
@@ -711,7 +767,7 @@ function reviewCards(list, allEntries) {
       ${r.nomeOriginal !== r.nomeOficial ? `<span style='font-size:.78rem;color:var(--gray-400)'>(orig: ${r.nomeOriginal})</span>` : ''}
     </div>
     <div class='review-card-meta'>
-      <span class='badge badge-blue' id='badge-tipo-${r.id}'>${tipoAtual}</span>
+      <span id='badge-tipo-${r.id}' style='font-size:.75rem;font-weight:700;padding:.2rem .6rem;border-radius:20px;white-space:nowrap;${statusBadgeStyle}'>${statusBadgeLabel}</span>
       <span style='font-size:.82rem;color:var(--gray-600)'>${linked.length} lançamento${linked.length !== 1 ? 's' : ''}</span>
       <span style='font-size:.82rem;font-weight:700;${totalColor}'>Total: R$ ${total.toFixed(2)}</span>
       <span class='review-toggle-icon' id='icon-${r.id}'>▼</span>
