@@ -427,6 +427,9 @@ function parseEntries(rows, uploadId, db) {
       if (dc === 'D' && valor > 0) valor = -valor;
       if (dc === 'C' && valor < 0) valor = -valor;
 
+      // dc=T: Transferência Interna entre contas próprias — tratar antes de qualquer cálculo
+      const isTransferenciaInterna = dc === 'T';
+
       // Status da planilha: PG=pago, RE=realizado, ZZ=zerado/cancelado, TF=transferência
       const statusPlanilha = String(r.status || '').toUpperCase().trim();
       const statusImport = statusPlanilha || 'importado';
@@ -451,15 +454,18 @@ function parseEntries(rows, uploadId, db) {
         tipoOriginal,
         statusPlanilha,
         notaFiscal: r.notafiscal || '',
-        tipo: valor >= 0 ? 'entrada' : 'saida',
+        tipo: isTransferenciaInterna ? 'transferencia_interna' : (valor >= 0 ? 'entrada' : 'saida'),
         valor,
-        natureza: 'Pendente de Classificação',
+        natureza: isTransferenciaInterna ? 'Transferência Interna' : 'Pendente de Classificação',
+        isTransferenciaInterna,
         categoria: '',
         status: statusImport
       };
 
-      applySavedRulesToEntry(entry, db);
-      entry.natureza = inferNature(entry);
+      if (!isTransferenciaInterna) {
+        applySavedRulesToEntry(entry, db);
+        entry.natureza = inferNature(entry);
+      }
       return entry;
     });
 }
@@ -468,8 +474,8 @@ function buildIssues(entries, db) {
   const issues = [];
   const newNames = new Set();
   const knownNames = new Set((db.reviewRegistry || []).map((item) => normalizeName(item.nomeOficial)));
-  // Apenas lançamentos ativos (a partir do corte) geram issues
-  const activeEntries = entries.filter(isAtivo);
+  // Apenas lançamentos ativos (a partir do corte) e que NÃO são transferências internas geram issues
+  const activeEntries = entries.filter((e) => isAtivo(e) && !e.isTransferenciaInterna);
   for (const e of activeEntries) {
     const desc = normalizeName(e.descricao);
     const client = normalizeName(e.cliente);
@@ -571,8 +577,8 @@ function buildIssues(entries, db) {
 
 function buildReviewRegistry(entries) {
   const map = new Map();
-  // Apenas lançamentos ativos (a partir do corte) geram cadastros para revisão
-  const activeEntries = entries.filter(isAtivo);
+  // Apenas lançamentos ativos (a partir do corte) e que NÃO são transferências internas geram cadastros para revisão
+  const activeEntries = entries.filter((e) => isAtivo(e) && !e.isTransferenciaInterna);
   for (const e of activeEntries) {
     [e.cliente, e.projeto, e.parceiro].forEach((name) => {
       if (!name) return;
@@ -1034,15 +1040,16 @@ function calculateDashboard(db) {
   // Lançamentos ativos (a partir do corte) — usados em todos os cálculos operacionais
   const sortedEntries = allSorted.filter(isAtivo);
 
-  // Saldo acumulado histórico (todos os lançamentos, inclusive anteriores ao corte)
-  const saldoHoje = allSorted.filter((e) => (e.dataISO || '') <= today).reduce((acc, e) => acc + (e.valor || 0), 0);
+  // Saldo acumulado histórico (todos os lançamentos, exceto transferências internas dc=T)
+  const saldoHoje = allSorted.filter((e) => (e.dataISO || '') <= today && !e.isTransferenciaInterna).reduce((acc, e) => acc + (e.valor || 0), 0);
 
-  // Projeções e cálculos operacionais: apenas lançamentos ativos
-  const proj7 = sortedEntries.filter((e) => (e.dataISO || '') <= d7).reduce((acc, e) => acc + (e.valor || 0), 0);
-  const proj30 = sortedEntries.filter((e) => (e.dataISO || '') <= d30).reduce((acc, e) => acc + (e.valor || 0), 0);
-  const contasPagar = sortedEntries.filter((e) => (e.dataISO || '') > today && (e.valor || 0) < 0).reduce((acc, e) => acc + Math.abs(e.valor), 0);
-  const contasReceber = sortedEntries.filter((e) => (e.dataISO || '') > today && (e.valor || 0) > 0).reduce((acc, e) => acc + (e.valor || 0), 0);
-  const upcoming7 = sortedEntries.filter((e) => (e.dataISO || '') > today && (e.dataISO || '') <= d7);
+  // Projeções e cálculos operacionais: apenas lançamentos ativos, excluindo transferências internas
+  const opEntries = sortedEntries.filter((e) => !e.isTransferenciaInterna);
+  const proj7 = opEntries.filter((e) => (e.dataISO || '') <= d7).reduce((acc, e) => acc + (e.valor || 0), 0);
+  const proj30 = opEntries.filter((e) => (e.dataISO || '') <= d30).reduce((acc, e) => acc + (e.valor || 0), 0);
+  const contasPagar = opEntries.filter((e) => (e.dataISO || '') > today && (e.valor || 0) < 0).reduce((acc, e) => acc + Math.abs(e.valor), 0);
+  const contasReceber = opEntries.filter((e) => (e.dataISO || '') > today && (e.valor || 0) > 0).reduce((acc, e) => acc + (e.valor || 0), 0);
+  const upcoming7 = opEntries.filter((e) => (e.dataISO || '') > today && (e.dataISO || '') <= d7);
   const riscoCaixa = proj7 < 0 ? 'alto' : proj30 < 0 ? 'moderado' : 'controlado';
 
   // Saldo de mútuo: calculado sobre TODOS os lançamentos (históricos + ativos)
@@ -1065,7 +1072,7 @@ function calculateDashboard(db) {
     byProject[p] = (byProject[p] || 0) + (e.valor || 0);
   });
 
-  const rolling = allSorted.reduce((acc, e) => acc + (e.valor || 0), 0);
+  const rolling = allSorted.filter((e) => !e.isTransferenciaInterna).reduce((acc, e) => acc + (e.valor || 0), 0);
   return { saldoHoje, proj7, proj30, contasPagar, contasReceber, byClient, byProject, rolling, upcoming7, riscoCaixa, saldoMutuo, mutuoCount, corteData: CORTE_DATA };
 }
 
@@ -2456,13 +2463,22 @@ document.addEventListener('DOMContentLoaded', () => {
       return false;
     };
 
-    // 1. Corrigir entries: aplicar normalizeParceiro e limpar cliente lixo
+    // 1. Corrigir entries: aplicar normalizeParceiro, limpar cliente lixo e marcar dc=T
     let entriesCorrigidos = 0;
+    let transferenciasInternas = 0;
     for (const e of db.entries) {
       let changed = false;
       const novoParceiro = normalizeParceiro(e.parceiro || '');
       if (novoParceiro !== (e.parceiro || '')) { e.parceiro = novoParceiro; changed = true; }
       if (isLixo(e.cliente)) { if (e.cliente) { e.cliente = ''; changed = true; } }
+      // Marcar transferências internas (dc=T) que ainda não foram marcadas
+      if (String(e.dc || '').toUpperCase().trim() === 'T' && !e.isTransferenciaInterna) {
+        e.isTransferenciaInterna = true;
+        e.natureza = 'Transferência Interna';
+        e.tipo = 'transferencia_interna';
+        changed = true;
+        transferenciasInternas++;
+      }
       if (changed) entriesCorrigidos++;
     }
 
@@ -2475,6 +2491,8 @@ document.addEventListener('DOMContentLoaded', () => {
     for (const e of db.entries) {
       const dataISO = e.dataISO || e.data || '';
       if (dataISO < CORTE) continue;
+      // Pular lançamentos de transferência interna (dc=T) — não geram cadastros
+      if (e.isTransferenciaInterna || String(e.dc || '').toUpperCase().trim() === 'T') continue;
       for (const campo of ['cliente', 'projeto', 'parceiro']) {
         const val = (e[campo] || '').trim();
         if (!val || val === '-' || isLixo(val)) continue;
@@ -2521,6 +2539,7 @@ document.addEventListener('DOMContentLoaded', () => {
     json(res, 200, {
       ok: true,
       entriesCorrigidos,
+      transferenciasInternasCorrigidas: transferenciasInternas,
       revisadosPreservados: revisados.length,
       novosPendentes: novosPendentes.length,
       totalRegistry: db.reviewRegistry.length,
