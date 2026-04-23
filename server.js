@@ -490,8 +490,8 @@ function serveStatic(req, res) {
 }
 
 function page(title, body, user) {
-  return `<!doctype html><html><head><meta charset='utf-8'><title>${title}</title><link rel='stylesheet' href='/public/style.css'></head><body>
-<header><h1>Painel Financeiro Gerencial CKM</h1>${user ? `<nav><a href='/'>Home</a><a href='/upload'>Upload</a><a href='/pendencias'>Pré-análise</a><a href='/cadastros'>Cadastro Revisável</a><a href='/dashboard'>Dashboard</a><a href='/logout'>Sair</a></nav>` : ''}</header>
+  return `<!doctype html><html lang='pt-BR'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>${title} — CKM Financeiro</title><link rel='preconnect' href='https://fonts.googleapis.com'><link rel='stylesheet' href='https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap'><link rel='stylesheet' href='/public/style.css'></head><body>
+<header><h1>Painel <em>CKM</em> Financeiro</h1>${user ? `<nav><a href='/'>Home</a><a href='/upload'>Upload</a><a href='/pendencias'>Pré-análise</a><a href='/cadastros'>Cadastro Revisável</a><a href='/dashboard'>Dashboard</a><a href='/logout' class='sair'>Sair</a></nav>` : ''}</header>
 <main>${body}</main></body></html>`;
 }
 
@@ -559,7 +559,7 @@ const server = http.createServer(async (req, res) => {
   if (req.url.startsWith('/public/') && serveStatic(req, res)) return;
 
   if (req.method === 'GET' && url.pathname === '/login') {
-    const html = page('Login', `<section><h2>Login</h2><form method='post' action='/login'><label>E-mail <input name='email'></label><label>Senha <input type='password' name='password'></label><button>Entrar</button></form><p>Usuário: owner@ckm.local / 123456</p></section>`);
+    const html = `<!doctype html><html lang='pt-BR'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>Login — CKM Financeiro</title><link rel='preconnect' href='https://fonts.googleapis.com'><link rel='stylesheet' href='https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap'><link rel='stylesheet' href='/public/style.css'></head><body class='login-page'><div class='login-card'><div class='brand'><h2>Painel CKM Financeiro</h2><p>Gestão Financeira Gerencial</p></div><form method='post' action='/login'><label>E-mail<input name='email' type='email' placeholder='seu@email.com' autocomplete='username'></label><label>Senha<input type='password' name='password' placeholder='••••••' autocomplete='current-password'></label><button type='submit' style='width:100%;justify-content:center;padding:.75rem'>Entrar</button></form><p class='login-hint'>owner@ckm.local &nbsp;&bull;&nbsp; 123456</p></div></body></html>`;
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
     res.end(html);
     return;
@@ -597,39 +597,95 @@ const server = http.createServer(async (req, res) => {
   if (req.method === 'GET' && url.pathname === '/') {
     const summary = buildPreAnalysisSummary(db);
     const metrics = calculateDashboard(db);
-    const html = page('Home', `<section><h2>Resumo diário</h2><ul>
-<li>Saldo de hoje: R$ ${metrics.saldoHoje.toFixed(2)}</li>
-<li>Projeção em 7 dias: R$ ${metrics.proj7.toFixed(2)}</li>
-<li>Projeção em 30 dias: R$ ${metrics.proj30.toFixed(2)}</li>
-<li>Contas a pagar: R$ ${metrics.contasPagar.toFixed(2)}</li>
-<li>Contas a receber: R$ ${metrics.contasReceber.toFixed(2)}</li>
-<li>Pendências bloqueantes: ${summary.bloqueantes}</li>
-<li>Cadastros pendentes: ${db.reviewRegistry.filter((r) => r.statusRevisao !== 'revisado').length}</li>
-</ul></section>`, user);
+    const cadastrosPendentes = db.reviewRegistry.filter((r) => r.statusRevisao !== 'revisado').length;
+    const fmtBRL = (v) => v.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+    const html = page('Home', `
+<h2 class='page-title'>Resumo do dia</h2>
+<div class='cards'>
+  <div class='card'><strong>Saldo hoje</strong><span>${fmtBRL(metrics.saldoHoje)}</span></div>
+  <div class='card'><strong>Projeção 7 dias</strong><span>${fmtBRL(metrics.proj7)}</span></div>
+  <div class='card'><strong>Projeção 30 dias</strong><span>${fmtBRL(metrics.proj30)}</span></div>
+  <div class='card'><strong>A pagar</strong><span style='color:var(--red)'>${fmtBRL(metrics.contasPagar)}</span></div>
+  <div class='card'><strong>A receber</strong><span style='color:var(--green)'>${fmtBRL(metrics.contasReceber)}</span></div>
+  <div class='card'><strong>Bloqueantes</strong><span style='color:${summary.bloqueantes > 0 ? 'var(--red)' : 'var(--green)'}'>${summary.bloqueantes}</span></div>
+  <div class='card'><strong>Cadastros pendentes</strong><span style='color:${cadastrosPendentes > 0 ? 'var(--amber)' : 'var(--green)'}'>${cadastrosPendentes}</span></div>
+</div>
+<section>
+  <h2>Acesso rápido</h2>
+  <div class='grid3'>
+    <a href='/upload' style='display:flex;flex-direction:column;gap:.5rem;padding:1.25rem;background:var(--gray-50);border:1px solid var(--gray-200);border-radius:10px;text-decoration:none;color:var(--gray-800);transition:box-shadow .15s' onmouseover="this.style.boxShadow='0 4px 12px rgba(0,0,0,.1)'" onmouseout="this.style.boxShadow=''"><strong style='font-size:1rem'>&#128196; Upload</strong><span style='font-size:.85rem;color:var(--gray-600)'>Importar planilha CSV / XLSX / XLSM</span></a>
+    <a href='/pendencias' style='display:flex;flex-direction:column;gap:.5rem;padding:1.25rem;background:var(--gray-50);border:1px solid var(--gray-200);border-radius:10px;text-decoration:none;color:var(--gray-800);transition:box-shadow .15s' onmouseover="this.style.boxShadow='0 4px 12px rgba(0,0,0,.1)'" onmouseout="this.style.boxShadow=''"><strong style='font-size:1rem'>&#9888;&#65039; Pré-análise</strong><span style='font-size:.85rem;color:var(--gray-600)'>Verificar pendências e bloqueantes</span></a>
+    <a href='/cadastros' style='display:flex;flex-direction:column;gap:.5rem;padding:1.25rem;background:var(--gray-50);border:1px solid var(--gray-200);border-radius:10px;text-decoration:none;color:var(--gray-800);transition:box-shadow .15s' onmouseover="this.style.boxShadow='0 4px 12px rgba(0,0,0,.1)'" onmouseout="this.style.boxShadow=''"><strong style='font-size:1rem'>&#128203; Cadastro Revisável</strong><span style='font-size:.85rem;color:var(--gray-600)'>Revisar e classificar nomes importados</span></a>
+  </div>
+</section>`, user);
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
     res.end(html);
     return;
   }
 
   if (req.method === 'GET' && url.pathname === '/upload') {
-    const html = page('Upload', `<section>
-<h2>Upload de planilha (CSV, XLSX, XLSM)</h2>
-<p>Compatível com planilha operacional CKM (primeira aba para XLSX/XLSM).</p>
-<input type='file' id='file' accept='.csv,.xlsx,.xlsm' />
-<button onclick='enviarArquivo()'>Importar</button>
-<pre id='out'></pre>
+    const html = page('Upload', `
+<h2 class='page-title'>Importar Planilha</h2>
+<section>
+  <h2>Selecionar arquivo</h2>
+  <p style='color:var(--gray-600);font-size:.9rem;margin-bottom:1rem'>Formatos aceitos: <strong>CSV</strong>, <strong>XLSX</strong> e <strong>XLSM</strong>. A primeira aba da planilha será usada para XLSX/XLSM.</p>
+  <div class='upload-area' id='dropzone' onclick="document.getElementById('file').click()">
+    <div class='upload-icon'>&#128196;</div>
+    <p><strong>Clique para selecionar</strong> ou arraste o arquivo aqui</p>
+    <p id='file-name' style='margin-top:.5rem;font-size:.82rem;color:var(--blue-lt)'></p>
+  </div>
+  <input type='file' id='file' accept='.csv,.xlsx,.xlsm' style='display:none' onchange="document.getElementById('file-name').textContent = this.files[0]?.name || ''" />
+  <div style='margin-top:1rem;display:flex;gap:.75rem;align-items:center'>
+    <button onclick='enviarArquivo()' id='btn-import'>&#128640;&nbsp; Importar planilha</button>
+    <span id='status-msg' style='font-size:.85rem;color:var(--gray-600)'></span>
+  </div>
+</section>
+<section id='result-section' style='display:none'>
+  <h2 id='result-title'>Resultado da importação</h2>
+  <div class='cards' id='result-cards'></div>
+  <div style='margin-top:1rem;display:flex;gap:.75rem'>
+    <a href='/pendencias'><button>&#9888;&#65039;&nbsp; Ver Pré-análise</button></a>
+    <a href='/cadastros'><button style='background:var(--gray-600)'>&#128203;&nbsp; Ver Cadastros</button></a>
+  </div>
 </section>
 <script>
+const dropzone = document.getElementById('dropzone');
+dropzone.addEventListener('dragover', e => { e.preventDefault(); dropzone.classList.add('drag-over'); });
+dropzone.addEventListener('dragleave', () => dropzone.classList.remove('drag-over'));
+dropzone.addEventListener('drop', e => {
+  e.preventDefault(); dropzone.classList.remove('drag-over');
+  const f = e.dataTransfer.files[0];
+  if (f) { document.getElementById('file').files; document.getElementById('file-name').textContent = f.name; window._dropFile = f; }
+});
 async function enviarArquivo(){
-  const f = document.getElementById('file').files[0];
-  if(!f){ alert('Selecione um arquivo.'); return; }
-  const buf = await f.arrayBuffer();
-  const bytes = new Uint8Array(buf);
-  let binary = '';
-  bytes.forEach(b => binary += String.fromCharCode(b));
-  const base64 = btoa(binary);
-  const r = await fetch('/api/upload',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({fileName:f.name,fileBase64:base64})});
-  document.getElementById('out').textContent = JSON.stringify(await r.json(), null, 2);
+  const f = window._dropFile || document.getElementById('file').files[0];
+  if(!f){ alert('Selecione um arquivo primeiro.'); return; }
+  const btn = document.getElementById('btn-import');
+  const msg = document.getElementById('status-msg');
+  btn.disabled = true; btn.textContent = 'Processando...';
+  msg.textContent = 'Aguarde, importando ' + f.name + '...';
+  try {
+    const buf = await f.arrayBuffer();
+    const bytes = new Uint8Array(buf);
+    let binary = ''; bytes.forEach(b => binary += String.fromCharCode(b));
+    const base64 = btoa(binary);
+    const r = await fetch('/api/upload',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({fileName:f.name,fileBase64:base64})});
+    const data = await r.json();
+    if (data.error) { msg.textContent = 'Erro: ' + data.error; msg.style.color = 'var(--red)'; }
+    else {
+      msg.textContent = '';
+      document.getElementById('result-section').style.display = '';
+      document.getElementById('result-title').textContent = 'Importação concluída: ' + data.fileName;
+      document.getElementById('result-cards').innerHTML = [
+        ['Linhas importadas', data.importedRows, ''],
+        ['Novos cadastros', data.foundNames, ''],
+        ['Erros encontrados', data.pendingErrors, data.pendingErrors > 0 ? 'color:var(--red)' : 'color:var(--green)'],
+        ['Alertas', data.alerts, data.alerts > 0 ? 'color:var(--amber)' : ''],
+        ['Bloqueantes', data.blockingIssues, data.blockingIssues > 0 ? 'color:var(--red)' : 'color:var(--green)']
+      ].map(([k,v,s]) => '<div class="card"><strong>'+k+'</strong><span style="'+s+'">'+v+'</span></div>').join('');
+    }
+  } catch(e) { msg.textContent = 'Erro: ' + e.message; msg.style.color = 'var(--red)'; }
+  btn.disabled = false; btn.textContent = '\u{1F680}\u00a0 Importar planilha';
 }
 </script>`, user);
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
