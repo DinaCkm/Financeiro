@@ -42,6 +42,31 @@ const CC_PADRAO = [
   'JURÍDICO', 'MÚTUO', 'OPERACIONAL', 'PRÓ-LABORE', 'RH', 'TEF', 'TI'
 ];
 
+const PASSWORD_PREFIX = 'scrypt$';
+
+function isHashedPassword(stored) {
+  return typeof stored === 'string' && stored.startsWith(PASSWORD_PREFIX);
+}
+
+function hashPassword(password) {
+  const salt = crypto.randomBytes(16).toString('hex');
+  const key = crypto.scryptSync(String(password), salt, 64).toString('hex');
+  return `${PASSWORD_PREFIX}${salt}$${key}`;
+}
+
+function verifyPassword(inputPassword, storedPassword) {
+  if (!storedPassword) return false;
+  if (!isHashedPassword(storedPassword)) return String(storedPassword) === String(inputPassword);
+  const parts = String(storedPassword).split('$');
+  if (parts.length !== 3) return false;
+  const [, salt, expectedHex] = parts;
+  const actualHex = crypto.scryptSync(String(inputPassword), salt, 64).toString('hex');
+  const expected = Buffer.from(expectedHex, 'hex');
+  const actual = Buffer.from(actualHex, 'hex');
+  if (expected.length !== actual.length) return false;
+  return crypto.timingSafeEqual(expected, actual);
+}
+
 const COLUMN_ALIASES = {
   data: ['data', 'dt', 'date', 'data_movimento', 'data movimento', 'vencimento',
          'data pagamento', 'data_recebimento', 'data recebimento', 'data_emissão', 'data emissão'],
@@ -406,7 +431,7 @@ function parseRowsWithPython(fileName, buffer) {
 
   const payload = JSON.parse(rawOutput);
   if (payload.error) throw new Error(payload.error);
-  return payload.rows || [];
+  return { rows: payload.rows || [], meta: payload.meta || {} };
 }
 
 function parseEntries(rows, uploadId, db) {
@@ -1149,11 +1174,17 @@ const server = http.createServer(async (req, res) => {
 
   if (req.method === 'POST' && url.pathname === '/login') {
     const form = new URLSearchParams(await readBody(req));
-    const user = db.users.find((u) => u.email === form.get('email') && u.password === form.get('password'));
-    if (!user) {
+    const user = db.users.find((u) => u.email === form.get('email'));
+    const rawPassword = form.get('password') || '';
+    if (!user || !verifyPassword(rawPassword, user.password)) {
       res.writeHead(302, { Location: '/login' });
       res.end();
       return;
+    }
+    // Migração transparente: usuário legado com senha em texto puro é convertido para hash no login bem-sucedido
+    if (!isHashedPassword(user.password)) {
+      user.password = hashPassword(rawPassword);
+      saveDb(db);
     }
     const sid = crypto.randomUUID();
     sessions.set(sid, user.id);
@@ -1317,7 +1348,8 @@ async function enviarArquivo(){
       const body = JSON.parse(await readBody(req) || '{}');
       const fileName = body.fileName || 'upload.csv';
       const buffer = Buffer.from(body.fileBase64 || '', 'base64');
-      const rows = parseRowsWithPython(fileName, buffer);
+      const parsed = parseRowsWithPython(fileName, buffer);
+      const rows = parsed.rows;
       const upload = { id: crypto.randomUUID(), fileName, uploadedAt: new Date().toISOString(), rowCount: rows.length };
       const allNewEntries = parseEntries(rows, upload.id, db);
 
@@ -1366,6 +1398,7 @@ async function enviarArquivo(){
         uploadId: upload.id,
         fileName,
         importedRows: entries.length,
+        invalidValueRows: Number(parsed.meta?.skippedInvalidValue || 0),
         duplicatesIgnored,
         foundNames: registry.length,
         pendingErrors: issues.filter((i) => i.level === 'erro').length,
@@ -2729,7 +2762,7 @@ async function boot() {
     // Modo local: garantir que o db.json existe
     if (!fs.existsSync(DB_PATH)) {
       fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
-      const emptyDb = { users: [{ id: 'owner-ckm', email: 'owner@ckm.local', password: '123456', role: 'owner' }], uploads: [], entries: [], issues: [], reviewRegistry: [], savedRules: [], manualAdjustments: [] };
+      const emptyDb = { users: [{ id: 'owner-ckm', email: 'owner@ckm.local', password: hashPassword('123456'), role: 'owner' }], uploads: [], entries: [], issues: [], reviewRegistry: [], savedRules: [], manualAdjustments: [] };
       fs.writeFileSync(DB_PATH, JSON.stringify(emptyDb, null, 2));
       console.log('[boot] db.json criado com usuário padrão.');
     }

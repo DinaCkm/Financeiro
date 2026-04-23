@@ -1,5 +1,14 @@
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
+
+const PASSWORD_PREFIX = 'scrypt$';
+
+function hashPassword(password) {
+  const salt = crypto.randomBytes(16).toString('hex');
+  const key = crypto.scryptSync(String(password), salt, 64).toString('hex');
+  return `${PASSWORD_PREFIX}${salt}$${key}`;
+}
 
 function createJsonStorage(dbPath) {
   return {
@@ -10,7 +19,7 @@ function createJsonStorage(dbPath) {
       }
       const db = JSON.parse(fs.readFileSync(dbPath, 'utf8'));
       if (!db.users.length) {
-        db.users.push({ id: 'owner-ckm', email: 'owner@ckm.local', password: '123456', role: 'owner' });
+        db.users.push({ id: 'owner-ckm', email: 'owner@ckm.local', password: hashPassword('123456'), role: 'owner' });
         fs.writeFileSync(dbPath, JSON.stringify(db, null, 2));
       }
     },
@@ -72,7 +81,7 @@ function createPostgresStorage(databaseUrl) {
   async function seedUser() {
     const count = await pool.query('SELECT COUNT(*)::int AS c FROM users');
     if (!count.rows[0].c) {
-      await pool.query('INSERT INTO users (id, email, password, role) VALUES ($1, $2, $3, $4)', ['owner-ckm', 'owner@ckm.local', '123456', 'owner']);
+      await pool.query('INSERT INTO users (id, email, password, role) VALUES ($1, $2, $3, $4)', ['owner-ckm', 'owner@ckm.local', hashPassword('123456'), 'owner']);
     }
   }
 
