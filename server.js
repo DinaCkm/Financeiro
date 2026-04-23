@@ -610,15 +610,15 @@ function reviewCards(list, allEntries) {
 
       return `
         <tr class='entry-view-row' id='view-${eId}' style='cursor:pointer' onclick="toggleEntryEdit('${eId}')" title='Clique para editar este lançamento'>
-          <td style='white-space:nowrap;font-size:.8rem'>${e.dataISO || e.data || '-'}</td>
-          <td style='font-size:.8rem'>${e.descricao || '-'}</td>
-          <td style='white-space:nowrap;${valColor};font-size:.8rem'>R$ ${Number(e.valor || 0).toFixed(2)}</td>
+          <td style='white-space:nowrap;font-size:.8rem;${!(e.dataISO||e.data)?'color:#dc2626;font-weight:700':''}'>${e.dataISO || e.data || '⚠ sem data'}</td>
+          <td style='font-size:.8rem;${!e.descricao?'color:#dc2626;font-weight:700':''}'>${e.descricao || '⚠ sem descrição'}</td>
+          <td style='white-space:nowrap;${(e.valor||0)===0?'color:#dc2626;font-weight:700':valColor};font-size:.8rem'>R$ ${Number(e.valor || 0).toFixed(2)}</td>
           <td style='${dcColor};font-weight:700;font-size:.8rem;text-align:center'>${dcLabel}</td>
-          <td style='font-size:.8rem'>${e.natureza || '-'}</td>
-          <td style='font-size:.8rem'>${e.centroCusto || '-'}</td>
-          <td style='font-size:.8rem'>${e.conta || '-'}</td>
-          <td style='font-size:.8rem'>${e.cliente || e.parceiro || '-'}</td>
-          <td style='font-size:.8rem'>${e.projeto || '-'}</td>
+          <td style='font-size:.8rem;${(!e.natureza||e.natureza==='Pendente')?'color:#dc2626;font-weight:700;background:#fff5f5':''}'>${e.natureza || '⚠ pendente'}</td>
+          <td style='font-size:.8rem;${!e.centroCusto?'color:#dc2626;font-weight:700;background:#fff5f5':''}'>${e.centroCusto || '⚠ vazio'}</td>
+          <td style='font-size:.8rem;${!e.conta?'color:#dc2626;font-weight:700;background:#fff5f5':''}'>${e.conta || '⚠ vazio'}</td>
+          <td style='font-size:.8rem;${!(e.cliente||e.parceiro)?'color:#dc2626;font-weight:700;background:#fff5f5':''}'>${e.cliente || e.parceiro || '⚠ vazio'}</td>
+          <td style='font-size:.8rem;color:#94a3b8'>${e.projeto || '-'}</td>
           <td style='font-size:.8rem'>${e.status || '-'}</td>
           <td style='font-size:.75rem;color:#1d4ed8;white-space:nowrap'>&#9998; editar</td>
         </tr>
@@ -627,50 +627,65 @@ function reviewCards(list, allEntries) {
             <div style='background:#fff;border:1px solid #bfdbfe;border-radius:8px;padding:1rem'>
               <p style='font-size:.75rem;font-weight:700;color:#1e40af;text-transform:uppercase;letter-spacing:.04em;margin-bottom:.75rem'>&#9998; Editar lançamento — preencha ou corrija os campos abaixo</p>
               <div style='display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:.6rem;margin-bottom:.75rem'>
-                <div>
-                  <label style='font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase'>Data</label>
-                  <input id='ef-data-${eId}' value='${e.dataISO || e.data || ''}' placeholder='YYYY-MM-DD' style='font-size:.8rem;padding:.3rem .5rem'/>
-                </div>
-                <div style='grid-column:span 2'>
-                  <label style='font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase'>Histórico / Descrição</label>
-                  <input id='ef-desc-${eId}' value='${(e.descricao||'').replace(/'/g,"&#39;")}' placeholder='Descrição do lançamento' style='font-size:.8rem;padding:.3rem .5rem'/>
-                </div>
-                <div>
-                  <label style='font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase'>Valor (R$)</label>
-                  <input id='ef-valor-${eId}' type='number' step='0.01' value='${Number(e.valor||0).toFixed(2)}' style='font-size:.8rem;padding:.3rem .5rem'/>
-                </div>
-                <div>
-                  <label style='font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase'>D/C</label>
-                  <select id='ef-dc-${eId}' style='font-size:.8rem;padding:.3rem .5rem'>
-                    <option value='D' ${dcLabel==='D'?'selected':''}>D — Débito (saída)</option>
-                    <option value='C' ${dcLabel==='C'?'selected':''}>C — Crédito (entrada)</option>
-                  </select>
-                </div>
-                <div>
-                  <label style='font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase'>Natureza</label>
-                  <select id='ef-nat-${eId}' style='font-size:.8rem;padding:.3rem .5rem'>${natOpts}</select>
-                </div>
-                <div>
-                  <label style='font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase'>Centro de Custo</label>
-                  <input id='ef-cc-${eId}' value='${(e.centroCusto||'').replace(/'/g,"&#39;")}' placeholder='Ex: ESCRITÓRIO, MK' style='font-size:.8rem;padding:.3rem .5rem'/>
-                </div>
-                <div>
-                  <label style='font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase'>Conta / Banco</label>
-                  <input id='ef-conta-${eId}' value='${(e.conta||'').replace(/'/g,"&#39;")}' placeholder='Ex: Itaú PJ, Nubank' style='font-size:.8rem;padding:.3rem .5rem'/>
-                </div>
-                <div>
-                  <label style='font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase'>Cliente / Parceiro</label>
-                  <input id='ef-cliente-${eId}' value='${(e.cliente||e.parceiro||'').replace(/'/g,"&#39;")}' placeholder='Nome do cliente' style='font-size:.8rem;padding:.3rem .5rem'/>
-                </div>
-                <div>
-                  <label style='font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase'>Projeto</label>
-                  <input id='ef-proj-${eId}' value='${(e.projeto||'').replace(/'/g,"&#39;")}' placeholder='Ex: BRB-PDL' style='font-size:.8rem;padding:.3rem .5rem'/>
-                </div>
-                <div>
-                  <label style='font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase'>Status</label>
-                  <select id='ef-status-${eId}' style='font-size:.8rem;padding:.3rem .5rem'>${statusOpts}</select>
-                </div>
-              </div>
+                ` + (function(){
+                  var dataVal = e.dataISO || e.data || '';
+                  var descVal = (e.descricao||'').replace(/'/g,"&#39;");
+                  var valorVal = Number(e.valor||0).toFixed(2);
+                  var ccVal = (e.centroCusto||'').replace(/'/g,"&#39;");
+                  var contaVal = (e.conta||'').replace(/'/g,"&#39;");
+                  var clienteVal = (e.cliente||e.parceiro||'').replace(/'/g,"&#39;");
+                  var projVal = (e.projeto||'').replace(/'/g,"&#39;");
+                  var isPendNat = !e.natureza || e.natureza==='Pendente';
+                  var fv = function(v){ return (!v||v==='-'||v==='0.00') ? 'border:2px solid #ef4444;background:#fff5f5' : ''; };
+                  var lv = function(v){ return (!v||v==='-'||v==='0.00') ? 'color:#dc2626;font-weight:700' : 'color:#64748b'; };
+                  var warn = function(v){ return (!v||v==='-'||v==='0.00') ? '⚠ ' : ''; };
+                  var natOpts2 = ['Receita Operacional','Despesa Direta','Despesa Indireta','Despesa Administrativa',
+                    'Despesa Financeira','Movimentação Financeira Não Operacional','Transferência','Pendente']
+                    .map(function(n){ return "<option value='"+n+"' "+(n===(e.natureza||'Pendente')?'selected':'')+">"+n+"</option>"; }).join('');
+                  return "<div>"
+                    + "<label style='font-size:.72rem;font-weight:700;"+lv(dataVal)+";text-transform:uppercase'>"+warn(dataVal)+"Data</label>"
+                    + "<input id='ef-data-"+eId+"' value='"+dataVal+"' placeholder='YYYY-MM-DD' style='font-size:.8rem;padding:.3rem .5rem;"+fv(dataVal)+"'/>"
+                    + "</div>"
+                    + "<div style='grid-column:span 2'>"
+                    + "<label style='font-size:.72rem;font-weight:700;"+lv(descVal)+";text-transform:uppercase'>"+warn(descVal)+"Histórico / Descrição</label>"
+                    + "<input id='ef-desc-"+eId+"' value='"+descVal+"' placeholder='Descrição do lançamento' style='font-size:.8rem;padding:.3rem .5rem;"+fv(descVal)+"'/>"
+                    + "</div>"
+                    + "<div>"
+                    + "<label style='font-size:.72rem;font-weight:700;"+(valorVal==='0.00'?'color:#dc2626;font-weight:700':'color:#64748b')+";text-transform:uppercase'>"+(valorVal==='0.00'?'⚠ ':'')+"Valor (R$)</label>"
+                    + "<input id='ef-valor-"+eId+"' type='number' step='0.01' value='"+valorVal+"' style='font-size:.8rem;padding:.3rem .5rem;"+(valorVal==='0.00'?'border:2px solid #ef4444;background:#fff5f5':'')+"'/>"
+                    + "</div>"
+                    + "<div>"
+                    + "<label style='font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase'>D/C</label>"
+                    + "<select id='ef-dc-"+eId+"' style='font-size:.8rem;padding:.3rem .5rem'>"
+                    + "<option value='D' "+(dcLabel==='D'?'selected':'')+">D — Débito (saída)</option>"
+                    + "<option value='C' "+(dcLabel==='C'?'selected':'')+">C — Crédito (entrada)</option>"
+                    + "</select>"
+                    + "</div>"
+                    + "<div>"
+                    + "<label style='font-size:.72rem;font-weight:700;"+(isPendNat?'color:#dc2626;font-weight:700':'color:#64748b')+";text-transform:uppercase'>"+(isPendNat?'⚠ ':'')+"Natureza</label>"
+                    + "<select id='ef-nat-"+eId+"' style='font-size:.8rem;padding:.3rem .5rem;"+(isPendNat?'border:2px solid #ef4444;background:#fff5f5':'')+"'>"+natOpts2+"</select>"
+                    + "</div>"
+                    + "<div>"
+                    + "<label style='font-size:.72rem;font-weight:700;"+lv(ccVal)+";text-transform:uppercase'>"+warn(ccVal)+"Centro de Custo</label>"
+                    + "<input id='ef-cc-"+eId+"' value='"+ccVal+"' placeholder='Ex: ESCRITÓRIO, MK' style='font-size:.8rem;padding:.3rem .5rem;"+fv(ccVal)+"'/>"
+                    + "</div>"
+                    + "<div>"
+                    + "<label style='font-size:.72rem;font-weight:700;"+lv(contaVal)+";text-transform:uppercase'>"+warn(contaVal)+"Conta / Banco</label>"
+                    + "<input id='ef-conta-"+eId+"' value='"+contaVal+"' placeholder='Ex: Itaú PJ, Nubank' style='font-size:.8rem;padding:.3rem .5rem;"+fv(contaVal)+"'/>"
+                    + "</div>"
+                    + "<div>"
+                    + "<label style='font-size:.72rem;font-weight:700;"+lv(clienteVal)+";text-transform:uppercase'>"+warn(clienteVal)+"Cliente / Parceiro</label>"
+                    + "<input id='ef-cliente-"+eId+"' value='"+clienteVal+"' placeholder='Nome do cliente' style='font-size:.8rem;padding:.3rem .5rem;"+fv(clienteVal)+"'/>"
+                    + "</div>"
+                    + "<div>"
+                    + "<label style='font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase'>Projeto</label>"
+                    + "<input id='ef-proj-"+eId+"' value='"+projVal+"' placeholder='Ex: BRB-PDL' style='font-size:.8rem;padding:.3rem .5rem'/>"
+                    + "</div>"
+                    + "<div>"
+                    + "<label style='font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase'>Status</label>"
+                    + "<select id='ef-status-"+eId+"' style='font-size:.8rem;padding:.3rem .5rem'>"+statusOpts+"</select>"
+                    + "</div>";
+                })() + `              </div>
               <div style='display:flex;gap:.5rem'>
                 <button onclick="salvarLancamento('${eId}')" style='background:#059669;font-size:.8rem;padding:.4rem .9rem'>&#10003; Salvar alterações</button>
                 <button onclick="toggleEntryEdit('${eId}')" style='background:#e2e8f0;color:#475569;font-size:.8rem;padding:.4rem .9rem;box-shadow:none'>Cancelar</button>
