@@ -2316,15 +2316,12 @@ Regras:
     if (!checkAuth(req, res)) return;
     const db = loadDb();
     const refs = db.referencias || { clientes: [], projetos: [], centrosCusto: [], contas: [] };
-    // Enriquecer com valores já usados nos entries
-    const usedCC = [...new Set(db.entries.map(e=>e.centroCusto||'').filter(v=>v&&v!=='-'))].sort();
-    const usedClientes = [...new Set(db.entries.map(e=>e.cliente||e.parceiro||'').filter(v=>v&&v!=='-'))].sort();
-    const usedProjetos = [...new Set(db.entries.map(e=>e.projeto||'').filter(v=>v&&v!=='-'))].sort();
-    const usedContas = [...new Set(db.entries.map(e=>e.conta||'').filter(v=>v&&v!=='-'))].sort();
-    const allCC = [...new Set([...refs.centrosCusto, ...usedCC])].sort();
-    const allClientes = [...new Set([...refs.clientes, ...usedClientes])].sort();
-    const allProjetos = [...new Set([...refs.projetos, ...usedProjetos])].sort();
-    const allContas = [...new Set([...refs.contas, ...usedContas])].sort();
+    // Mostrar apenas os valores cadastrados manualmente + CC_PADRAO
+    // Não carregar todos os entries para evitar crash de memória
+    const allCC = [...new Set([...CC_PADRAO, ...(refs.centrosCusto||[])])].sort();
+    const allClientes = [...(refs.clientes||[])].sort();
+    const allProjetos = [...(refs.projetos||[])].sort();
+    const allContas = [...(refs.contas||[])].sort();
     const section = (titulo, lista, tipo, cor) => `
       <div style='background:#fff;border:1px solid var(--gray-200);border-radius:10px;padding:1.25rem'>
         <div style='display:flex;align-items:center;justify-content:space-between;margin-bottom:1rem'>
