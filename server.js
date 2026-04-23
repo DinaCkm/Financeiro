@@ -4,11 +4,13 @@ const path = require('path');
 const crypto = require('crypto');
 const os = require('os');
 const { spawnSync } = require('child_process');
+const { createStorage } = require('./storage');
 
 const PORT = process.env.PORT || 3000;
 const DB_PATH = path.join(__dirname, 'data', 'db.json');
 const PARSER_PATH = path.join(__dirname, 'scripts', 'parse_spreadsheet.py');
 const sessions = new Map();
+const storage = createStorage({ dbPath: DB_PATH, databaseUrl: process.env.DATABASE_URL });
 
 const TYPE_OPTIONS = ['Cliente', 'Projeto', 'Prestador de Serviço', 'Fornecedor', 'Estrutura Interna', 'Financeiro / Não Operacional', 'Conta / Cartão', 'Pendente de Classificação'];
 const BLOCKING_ISSUES = ['DESPESA_SEM_PROJETO', 'ESTRUTURA_COMO_CLIENTE', 'MUTUO_COMO_CLIENTE', 'MUTUO_CLASSIFICACAO', 'VALOR_INVALIDO', 'DATA_INVALIDA'];
@@ -45,14 +47,6 @@ const COLUMN_ALIASES = {
   detDespesa: ['det-despesa', 'det despesa', 'detalhe despesa', 'det_despesa'],
   statusPlanilha: ['status', 'status_planilha']
 };
-
-function loadDb() {
-  return JSON.parse(fs.readFileSync(DB_PATH, 'utf8'));
-}
-
-function saveDb(db) {
-  fs.writeFileSync(DB_PATH, JSON.stringify(db, null, 2));
-}
 
 function parseCookies(req) {
   const pairs = (req.headers.cookie || '').split(';').map((c) => c.trim()).filter(Boolean);
@@ -413,7 +407,7 @@ function calculateDashboard(db) {
 }
 
 const server = http.createServer(async (req, res) => {
-  const db = loadDb();
+  const db = await storage.loadDb();
   const url = new URL(req.url, `http://${req.headers.host}`);
 
   if (req.url.startsWith('/public/') && serveStatic(req, res)) return;
@@ -514,7 +508,7 @@ async function enviarArquivo(){
       db.entries.push(...entries);
       db.issues.push(...issues);
       db.reviewRegistry = mergeRegistry(db.reviewRegistry, registry);
-      saveDb(db);
+      await storage.saveDb(db);
 
       const summary = buildPreAnalysisSummary(db);
       json(res, 200, {
@@ -600,7 +594,7 @@ async function reclassificar(tipo){const idField=tipo.includes('Estrutura')?'toE
     const item = db.reviewRegistry.find((r) => r.id === id);
     if (!item) return json(res, 404, { error: 'Registro não encontrado' });
     Object.assign(item, JSON.parse(await readBody(req) || '{}'));
-    saveDb(db);
+    await storage.saveDb(db);
     return json(res, 200, item);
   }
 
@@ -623,7 +617,7 @@ async function reclassificar(tipo){const idField=tipo.includes('Estrutura')?'toE
     if (applyRule) {
       db.savedRules.push({ id: crypto.randomUUID(), type: 'alias', matchValue: source, targetValue: target, active: true });
     }
-    saveDb(db);
+    await storage.saveDb(db);
     return json(res, 200, { ok: true });
   }
 
@@ -643,7 +637,7 @@ async function reclassificar(tipo){const idField=tipo.includes('Estrutura')?'toE
       if (normalizeName(e.projeto) === project) e.cliente = client;
     });
     if (applyRule) db.savedRules.push({ id: crypto.randomUUID(), type: 'project_client_link', projectName: project, clientName: client, active: true });
-    saveDb(db);
+    await storage.saveDb(db);
     return json(res, 200, { ok: true });
   }
 
@@ -666,14 +660,14 @@ async function reclassificar(tipo){const idField=tipo.includes('Estrutura')?'toE
         active: true
       });
     }
-    saveDb(db);
+    await storage.saveDb(db);
     return json(res, 200, { ok: true });
   }
 
   if (req.method === 'POST' && url.pathname === '/api/review/save-rule') {
     const body = JSON.parse(await readBody(req) || '{}');
     db.savedRules.push({ id: crypto.randomUUID(), type: 'entry_update', active: true, ...body });
-    saveDb(db);
+    await storage.saveDb(db);
     return json(res, 201, { ok: true });
   }
 
@@ -684,7 +678,7 @@ async function reclassificar(tipo){const idField=tipo.includes('Estrutura')?'toE
     const changes = JSON.parse(await readBody(req) || '{}');
     const editable = ['cliente', 'projeto', 'natureza', 'centroCusto', 'parceiro', 'categoria', 'detalhe', 'conta', 'formaPagamento', 'status'];
     editable.forEach((k) => { if (changes[k] !== undefined) entry[k] = changes[k]; });
-    saveDb(db);
+    await storage.saveDb(db);
     return json(res, 200, entry);
   }
 
@@ -711,6 +705,11 @@ async function reclassificar(tipo){const idField=tipo.includes('Estrutura')?'toE
   res.end('Not found');
 });
 
-server.listen(PORT, () => {
-  console.log(`CKM MVP running at http://localhost:${PORT}`);
+storage.init().then(() => {
+  server.listen(PORT, () => {
+    console.log(`CKM MVP running at http://localhost:${PORT}`);
+  });
+}).catch((error) => {
+  console.error('Falha ao iniciar storage:', error);
+  process.exit(1);
 });

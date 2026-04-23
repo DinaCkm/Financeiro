@@ -24,7 +24,8 @@
 - Guia de teste com planilha real CKM + limitações atuais.
 
 ## Sprint 4 (próxima)
-- Migração para Next.js + PostgreSQL.
-- Processamento diário consolidado com fechamento por competência.
-- Auditoria completa de alterações e governança de regras.
+- Estabilização para uso real com PostgreSQL (em andamento).
+- Persistência contínua de importações, lançamentos, pendências, cadastros e regras.
+- Velocidade de revisão diária (filtros e ações objetivas).
+- Dashboard diário reforçado para operação gerencial.
 - Hardening, observabilidade e preparo para produção.

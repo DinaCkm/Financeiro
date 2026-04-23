@@ -12,7 +12,13 @@ Usuário de teste:
 - email: `owner@ckm.local`
 - senha: `123456`
 
-## Sprint 3 (entrega atual)
+## Sprint 4 (estabilização em andamento)
+- Persistência com adapter de storage:
+  - sem `DATABASE_URL`: JSON local (`data/db.json`);
+  - com `DATABASE_URL`: PostgreSQL (uso contínuo).
+- Escopo da Sprint 4 orientado a operação real: estabilidade de dados, revisão diária e dashboard gerencial.
+
+## Sprint 3 (entrega anterior)
 - Pré-análise refinada com destaque claro para:
   - despesas sem projeto,
   - estrutura lançada como cliente,
@@ -66,9 +72,22 @@ Sinônimos aceitos (exemplos):
 7. Faça novo upload da mesma base (ou base incremental) e confirme se regras anteriores foram reaplicadas.
 8. Valide no resumo da pré-análise os alertas CKM específicos: `RECEITA_SEM_CLIENTE` e `CANCELADO_COM_VALOR`.
 
+## PostgreSQL (Sprint 4)
+Defina a variável de ambiente para ativar persistência no Postgres:
+
+```bash
+export DATABASE_URL='postgresql://usuario:senha@host:5432/banco'
+npm run dev
+```
+
+Sem `DATABASE_URL`, o sistema permanece no modo JSON local.
+
 ## Limitações conhecidas
 - Parser XLSX/XLSM lê a **primeira aba** apenas.
 - Fórmulas complexas, células muito mescladas e múltiplos layouts na mesma aba podem exigir ajustes.
 - Não há importação via `multipart/form-data` nesta fase (envio em base64 pelo frontend).
 - Persistência permanece em `data/db.json` (migração SQL já mapeada em `docs/modelo-dados-inicial.sql`).
 - Colunas bancárias de saldo por linha (ex.: `BB`, `ITAÚ`, `BRB`) ainda não são pivotadas para lançamentos individuais.
+
+## Documento de estabilização Sprint 4
+- Modelo + migração + impacto + backlog: `docs/sprint4-estabilizacao.md`.

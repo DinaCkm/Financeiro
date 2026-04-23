@@ -3,6 +3,7 @@
 ## Épico 1 - Fundação
 - [x] Estruturar projeto base Node.js.
 - [x] Implementar autenticação simples por sessão.
+- [x] Adapter de persistência JSON/PostgreSQL.
 - [ ] Migrar para Next.js.
 
 ## Épico 2 - Importação
@@ -26,3 +27,9 @@
 - [x] Projeção 7/30 dias.
 - [x] Contas a pagar e contas a receber.
 - [ ] Indicador de risco de caixa com cenários.
+
+## Épico 5 - Estabilização Sprint 4
+- [x] Conectar persistência opcional com PostgreSQL via `DATABASE_URL`.
+- [ ] Migrar dados legados de `data/db.json` para Postgres com script automatizado.
+- [ ] Criar auditoria de ajustes manuais e trilha de revisão.
+- [ ] Adicionar filtros operacionais para revisão diária.
