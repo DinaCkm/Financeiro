@@ -627,7 +627,7 @@ function reviewCards(list, allEntries) {
           <td style='${dcColor};font-weight:700;font-size:.8rem;text-align:center'>${dcLabel}</td>
           <td style='font-size:.8rem;${!congelado&&(!e.natureza||e.natureza==='Pendente')?'color:#dc2626;font-weight:700;background:#fff5f5':''}'>${e.natureza || '-'}</td>
           <td style='font-size:.8rem;${!congelado&&!e.centroCusto?'color:#dc2626;font-weight:700;background:#fff5f5':''}'>${e.centroCusto || '-'}</td>
-          <td style='font-size:.8rem;${!congelado&&!e.conta?'color:#dc2626;font-weight:700;background:#fff5f5':''}'>${e.conta || '-'}</td>
+          <td style='font-size:.8rem;color:#64748b'>${e.conta || '-'}</td>
           <td style='font-size:.8rem;${!congelado&&!(e.cliente||e.parceiro)?'color:#dc2626;font-weight:700;background:#fff5f5':''}'>${e.cliente || e.parceiro || '-'}</td>
           <td style='font-size:.8rem;color:#94a3b8'>${e.projeto || '-'}</td>
           <td style='font-size:.8rem'>${e.status || '-'}</td>
@@ -684,8 +684,8 @@ function reviewCards(list, allEntries) {
                     + "<input id='ef-cc-"+eId+"' value='"+ccVal+"' placeholder='Ex: ESCRITÓRIO, MK' style='font-size:.8rem;padding:.3rem .5rem;"+fv(ccVal)+"'/>"
                     + "</div>"
                     + "<div>"
-                    + "<label style='font-size:.72rem;font-weight:700;"+lv(contaVal)+";text-transform:uppercase'>"+warn(contaVal)+"Conta / Banco</label>"
-                    + "<input id='ef-conta-"+eId+"' value='"+contaVal+"' placeholder='Ex: Itaú PJ, Nubank' style='font-size:.8rem;padding:.3rem .5rem;"+fv(contaVal)+"'/>"
+                    + "<label style='font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase'>Conta / Banco</label>"
+                    + "<input id='ef-conta-"+eId+"' value='"+contaVal+"' placeholder='Ex: Itaú PJ, Nubank' style='font-size:.8rem;padding:.3rem .5rem'/>"
                     + "</div>"
                     + "<div>"
                     + "<label style='font-size:.72rem;font-weight:700;"+lv(clienteVal)+";text-transform:uppercase'>"+warn(clienteVal)+"Cliente / Parceiro</label>"
