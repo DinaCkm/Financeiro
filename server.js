@@ -17,6 +17,11 @@ const BLOCKING_ISSUES = ['DESPESA_SEM_PROJETO', 'ESTRUTURA_COMO_CLIENTE', 'MUTUO
 
 const OFFICIAL_CLIENTS = ['BRB', 'SEBRAE TO', 'SEBRAE-AC'];
 const OFFICIAL_PROJECTS = ['BRB-PDL', 'SEBRAE 10º CICLO', 'SEBRAE 9º CICLO', 'PS SEBRAE 2022', 'CESAMA CARTA-CONTRATO 20/2023 ETAPA 4'];
+// Corte histórico: lançamentos anteriores a esta data ficam congelados
+// (incluídos apenas no saldo acumulado, fora de revisão e cálculos operacionais)
+const CORTE_DATA = '2024-06-01';
+const isAtivo = (e) => (e.dataISO || e.data || '') >= CORTE_DATA;
+const isHistorico = (e) => (e.dataISO || e.data || '') < CORTE_DATA;
 
 const ALIAS_RULES = {
   BRB: 'BRB',
@@ -358,8 +363,9 @@ function buildIssues(entries, db) {
   const issues = [];
   const newNames = new Set();
   const knownNames = new Set((db.reviewRegistry || []).map((item) => normalizeName(item.nomeOficial)));
-
-  for (const e of entries) {
+  // Apenas lançamentos ativos (a partir do corte) geram issues
+  const activeEntries = entries.filter(isAtivo);
+  for (const e of activeEntries) {
     const desc = normalizeName(e.descricao);
     const client = normalizeName(e.cliente);
     const project = normalizeName(e.projeto);
@@ -460,7 +466,9 @@ function buildIssues(entries, db) {
 
 function buildReviewRegistry(entries) {
   const map = new Map();
-  for (const e of entries) {
+  // Apenas lançamentos ativos (a partir do corte) geram cadastros para revisão
+  const activeEntries = entries.filter(isAtivo);
+  for (const e of activeEntries) {
     [e.cliente, e.projeto, e.parceiro].forEach((name) => {
       if (!name) return;
       const key = normalizeName(name);
@@ -602,6 +610,7 @@ function reviewCards(list, allEntries) {
       const dcLabel = e.dc ? e.dc : (e.valor >= 0 ? 'C' : 'D');
       const dcColor = dcLabel === 'C' ? 'color:#065f46' : 'color:#991b1b';
       const eId = e.id;
+      const congelado = isHistorico(e);
       const natOpts = ['Receita Operacional','Despesa Direta','Despesa Indireta','Despesa Administrativa',
         'Despesa Financeira','Movimentação Financeira Não Operacional','Transferência','Pendente']
         .map((n) => `<option value='${n}' ${n === (e.natureza||'Pendente') ? 'selected' : ''}>${n}</option>`).join('');
@@ -609,23 +618,28 @@ function reviewCards(list, allEntries) {
         .map((s) => `<option value='${s}' ${s === (e.status||'ok') ? 'selected' : ''}>${s}</option>`).join('');
 
       return `
-        <tr class='entry-view-row' id='view-${eId}' style='cursor:pointer' onclick="toggleEntryEdit('${eId}')" title='Clique para editar este lançamento'>
-          <td style='white-space:nowrap;font-size:.8rem;${!(e.dataISO||e.data)?'color:#dc2626;font-weight:700':''}'>${e.dataISO || e.data || '⚠ sem data'}</td>
-          <td style='font-size:.8rem;${!e.descricao?'color:#dc2626;font-weight:700':''}'>${e.descricao || '⚠ sem descrição'}</td>
-          <td style='white-space:nowrap;${(e.valor||0)===0?'color:#dc2626;font-weight:700':valColor};font-size:.8rem'>R$ ${Number(e.valor || 0).toFixed(2)}</td>
+        <tr class='entry-view-row' id='view-${eId}'
+          style='${congelado ? 'opacity:.55;background:#f8fafc;cursor:default' : 'cursor:pointer'}'
+          ${congelado ? '' : `onclick="toggleEntryEdit('${eId}')" title='Clique para editar este lançamento'`}>
+          <td style='white-space:nowrap;font-size:.8rem;${!congelado&&!(e.dataISO||e.data)?'color:#dc2626;font-weight:700':''}'>${e.dataISO || e.data || (congelado?'-':'⚠ sem data')}</td>
+          <td style='font-size:.8rem;${!congelado&&!e.descricao?'color:#dc2626;font-weight:700':''}'>${e.descricao || (congelado?'-':'⚠ sem descrição')}</td>
+          <td style='white-space:nowrap;${!congelado&&(e.valor||0)===0?'color:#dc2626;font-weight:700':valColor};font-size:.8rem'>R$ ${Number(e.valor || 0).toFixed(2)}</td>
           <td style='${dcColor};font-weight:700;font-size:.8rem;text-align:center'>${dcLabel}</td>
-          <td style='font-size:.8rem;${(!e.natureza||e.natureza==='Pendente')?'color:#dc2626;font-weight:700;background:#fff5f5':''}'>${e.natureza || '⚠ pendente'}</td>
-          <td style='font-size:.8rem;${!e.centroCusto?'color:#dc2626;font-weight:700;background:#fff5f5':''}'>${e.centroCusto || '⚠ vazio'}</td>
-          <td style='font-size:.8rem;${!e.conta?'color:#dc2626;font-weight:700;background:#fff5f5':''}'>${e.conta || '⚠ vazio'}</td>
-          <td style='font-size:.8rem;${!(e.cliente||e.parceiro)?'color:#dc2626;font-weight:700;background:#fff5f5':''}'>${e.cliente || e.parceiro || '⚠ vazio'}</td>
+          <td style='font-size:.8rem;${!congelado&&(!e.natureza||e.natureza==='Pendente')?'color:#dc2626;font-weight:700;background:#fff5f5':''}'>${e.natureza || '-'}</td>
+          <td style='font-size:.8rem;${!congelado&&!e.centroCusto?'color:#dc2626;font-weight:700;background:#fff5f5':''}'>${e.centroCusto || '-'}</td>
+          <td style='font-size:.8rem;${!congelado&&!e.conta?'color:#dc2626;font-weight:700;background:#fff5f5':''}'>${e.conta || '-'}</td>
+          <td style='font-size:.8rem;${!congelado&&!(e.cliente||e.parceiro)?'color:#dc2626;font-weight:700;background:#fff5f5':''}'>${e.cliente || e.parceiro || '-'}</td>
           <td style='font-size:.8rem;color:#94a3b8'>${e.projeto || '-'}</td>
           <td style='font-size:.8rem'>${e.status || '-'}</td>
-          <td style='font-size:.75rem;color:#1d4ed8;white-space:nowrap'>&#9998; editar</td>
+          <td style='font-size:.75rem;white-space:nowrap'>${congelado ? '<span style="color:#94a3b8;font-size:.7rem">🔒 histórico</span>' : '&#9998; <span style="color:#1d4ed8">editar</span>'}</td>
         </tr>
-        <tr class='entry-edit-row' id='edit-${eId}' style='display:none;background:#f0f9ff'>
+        <tr class='entry-edit-row' id='edit-${eId}' style='display:none;background:${congelado?'#f8fafc':'#f0f9ff'}'>
           <td colspan='11' style='padding:.75rem 1rem'>
-            <div style='background:#fff;border:1px solid #bfdbfe;border-radius:8px;padding:1rem'>
-              <p style='font-size:.75rem;font-weight:700;color:#1e40af;text-transform:uppercase;letter-spacing:.04em;margin-bottom:.75rem'>&#9998; Editar lançamento — preencha ou corrija os campos abaixo</p>
+            <div style='background:#fff;border:1px solid ${congelado?'#e2e8f0':'#bfdbfe'};border-radius:8px;padding:1rem'>
+              ${congelado
+                ? `<p style='font-size:.8rem;color:#64748b;margin:0'>&#128274; Este lançamento é <strong>histórico</strong> (anterior a ${CORTE_DATA}) e está congelado. Ele entra apenas no saldo acumulado e não pode ser editado.</p>`
+                : `<p style='font-size:.75rem;font-weight:700;color:#1e40af;text-transform:uppercase;letter-spacing:.04em;margin-bottom:.75rem'>&#9998; Editar lançamento — preencha ou corrija os campos abaixo</p>`
+              }
               <div style='display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:.6rem;margin-bottom:.75rem'>
                 ` + (function(){
                   var dataVal = e.dataISO || e.data || '';
@@ -685,11 +699,13 @@ function reviewCards(list, allEntries) {
                     + "<label style='font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase'>Status</label>"
                     + "<select id='ef-status-"+eId+"' style='font-size:.8rem;padding:.3rem .5rem'>"+statusOpts+"</select>"
                     + "</div>";
-                })() + `              </div>
+                })() + `
+              ${congelado ? '' : `
+              </div>
               <div style='display:flex;gap:.5rem'>
                 <button onclick="salvarLancamento('${eId}')" style='background:#059669;font-size:.8rem;padding:.4rem .9rem'>&#10003; Salvar alterações</button>
                 <button onclick="toggleEntryEdit('${eId}')" style='background:#e2e8f0;color:#475569;font-size:.8rem;padding:.4rem .9rem;box-shadow:none'>Cancelar</button>
-              </div>
+              </div>`}
             </div>
           </td>
         </tr>`;
@@ -821,31 +837,45 @@ function calculateDashboard(db) {
   const d7 = addDays(today, 7);
   const d30 = addDays(today, 30);
 
-  const sortedEntries = [...db.entries].sort((a, b) => (a.dataISO || '').localeCompare(b.dataISO || ''));
-  let rolling = 0;
-  for (const e of sortedEntries) {
-    rolling += e.valor;
-  }
-  const saldoHoje = sortedEntries.filter((e) => e.dataISO <= today).reduce((acc, e) => acc + e.valor, 0);
-  const proj7 = sortedEntries.filter((e) => e.dataISO <= d7).reduce((acc, e) => acc + e.valor, 0);
-  const proj30 = sortedEntries.filter((e) => e.dataISO <= d30).reduce((acc, e) => acc + e.valor, 0);
-  const contasPagar = sortedEntries.filter((e) => e.dataISO > today && e.valor < 0).reduce((acc, e) => acc + Math.abs(e.valor), 0);
-  const contasReceber = sortedEntries.filter((e) => e.dataISO > today && e.valor > 0).reduce((acc, e) => acc + e.valor, 0);
-  const upcoming7 = sortedEntries.filter((e) => e.dataISO > today && e.dataISO <= d7);
-  const riscoCaixa = proj7 < 0 ? 'alto' : proj30 < 0 ? 'moderado' : 'controlado';
-  const mutuoEntries = sortedEntries.filter((e) => normalizeName(`${e.descricao} ${e.tipoOriginal} ${e.natureza}`).includes('MUTUO') || normalizeName(`${e.descricao} ${e.tipoOriginal} ${e.natureza}`).includes('MÚTUO'));
-  const saldoMutuo = mutuoEntries.reduce((acc, e) => acc + e.valor, 0);
+  // Todos os lançamentos ordenados por data
+  const allSorted = [...db.entries].sort((a, b) => (a.dataISO || '').localeCompare(b.dataISO || ''));
 
+  // Lançamentos ativos (a partir do corte) — usados em todos os cálculos operacionais
+  const sortedEntries = allSorted.filter(isAtivo);
+
+  // Saldo acumulado histórico (todos os lançamentos, inclusive anteriores ao corte)
+  const saldoHoje = allSorted.filter((e) => (e.dataISO || '') <= today).reduce((acc, e) => acc + (e.valor || 0), 0);
+
+  // Projeções e cálculos operacionais: apenas lançamentos ativos
+  const proj7 = sortedEntries.filter((e) => (e.dataISO || '') <= d7).reduce((acc, e) => acc + (e.valor || 0), 0);
+  const proj30 = sortedEntries.filter((e) => (e.dataISO || '') <= d30).reduce((acc, e) => acc + (e.valor || 0), 0);
+  const contasPagar = sortedEntries.filter((e) => (e.dataISO || '') > today && (e.valor || 0) < 0).reduce((acc, e) => acc + Math.abs(e.valor), 0);
+  const contasReceber = sortedEntries.filter((e) => (e.dataISO || '') > today && (e.valor || 0) > 0).reduce((acc, e) => acc + (e.valor || 0), 0);
+  const upcoming7 = sortedEntries.filter((e) => (e.dataISO || '') > today && (e.dataISO || '') <= d7);
+  const riscoCaixa = proj7 < 0 ? 'alto' : proj30 < 0 ? 'moderado' : 'controlado';
+
+  // Saldo de mútuo: calculado sobre TODOS os lançamentos (históricos + ativos)
+  // pois representa uma dívida acumulada desde o início
+  const isMutuo = (e) => {
+    const txt = normalizeName(`${e.descricao || ''} ${e.tipoOriginal || ''} ${e.natureza || ''} ${e.centroCusto || ''}`);
+    return txt.includes('MUTUO') || txt.includes('MÚTUO');
+  };
+  const mutuoEntries = allSorted.filter(isMutuo);
+  const saldoMutuo = mutuoEntries.reduce((acc, e) => acc + (e.valor || 0), 0);
+  const mutuoCount = mutuoEntries.length;
+
+  // Distribuição por cliente e projeto: apenas lançamentos ativos
   const byClient = {};
   const byProject = {};
-  db.entries.forEach((e) => {
+  sortedEntries.forEach((e) => {
     const c = e.cliente || 'SEM CLIENTE';
     const p = e.projeto || 'SEM PROJETO';
-    byClient[c] = (byClient[c] || 0) + e.valor;
-    byProject[p] = (byProject[p] || 0) + e.valor;
+    byClient[c] = (byClient[c] || 0) + (e.valor || 0);
+    byProject[p] = (byProject[p] || 0) + (e.valor || 0);
   });
 
-  return { saldoHoje, proj7, proj30, contasPagar, contasReceber, byClient, byProject, rolling, upcoming7, riscoCaixa, saldoMutuo };
+  const rolling = allSorted.reduce((acc, e) => acc + (e.valor || 0), 0);
+  return { saldoHoje, proj7, proj30, contasPagar, contasReceber, byClient, byProject, rolling, upcoming7, riscoCaixa, saldoMutuo, mutuoCount, corteData: CORTE_DATA };
 }
 
 function sortEntries(entries, mode = 'date_desc') {
