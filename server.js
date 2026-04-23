@@ -518,6 +518,17 @@ function page(title, body, user) {
 <main>${body}</main></body></html>`;
 }
 
+const TYPE_GUIDE = {
+  'Cliente': 'Empresa ou pessoa que contrata e paga pelos serviços da CKM. Ex: BRB, SEBRAE.',
+  'Projeto': 'Contrato ou frente de trabalho específica vinculada a um cliente. Ex: BRB-PDL, SEBRAE 10º CICLO.',
+  'Prestador de Serviço': 'Pessoa física ou empresa contratada para executar trabalho para a CKM. Ex: consultores, designers.',
+  'Fornecedor': 'Empresa que fornece produtos ou serviços de suporte à operação. Ex: locador de imóvel, internet, software.',
+  'Estrutura Interna': 'Despesa fixa da própria empresa, sem vínculo com cliente. Ex: aluguel do escritório, salários, contábil.',
+  'Financeiro / Não Operacional': 'Movimentação financeira que não é receita nem despesa operacional. Ex: mútuo, empréstimo, transferência entre contas.',
+  'Conta / Cartão': 'Conta bancária ou cartão de crédito usado como meio de pagamento. Ex: Itaú PJ, Nubank.',
+  'Pendente de Classificação': 'Ainda não classificado. Selecione um dos tipos acima para resolver.'
+};
+
 function reviewCards(list, allEntries) {
   return list.map((r) => {
     const nome = normalizeName(r.nomeOficial);
@@ -530,7 +541,11 @@ function reviewCards(list, allEntries) {
     const totalColor = total >= 0 ? 'color:#065f46' : 'color:#991b1b';
     const badgeClass = r.statusRevisao === 'revisado' ? 'badge-green' : 'badge-amber';
     const badgeLabel = r.statusRevisao === 'revisado' ? 'Revisado' : 'Pendente';
-    const lancRows = linked.slice(0, 8).map((e) => {
+    const isPendente = r.tipoFinal === 'Pendente de Classificação' || !r.tipoFinal;
+    const tipoAtual = r.tipoFinal || 'Pendente de Classificação';
+    const guiaTexto = TYPE_GUIDE[tipoAtual] || '';
+
+    const lancRows = linked.slice(0, 10).map((e) => {
       const valColor = e.valor >= 0 ? 'color:#065f46;font-weight:600' : 'color:#991b1b;font-weight:600';
       return `<tr>
         <td style='white-space:nowrap'>${e.dataISO || e.data || '-'}</td>
@@ -541,47 +556,79 @@ function reviewCards(list, allEntries) {
         <td>${e.status || '-'}</td>
       </tr>`;
     }).join('');
-    const maisLabel = linked.length > 8 ? `<p style='font-size:.78rem;color:var(--gray-400);margin:.4rem 0 0'>+ ${linked.length - 8} lançamentos não exibidos</p>` : '';
+    const maisLabel = linked.length > 10 ? `<p style='font-size:.78rem;color:var(--gray-400);margin:.5rem 0 0'>+ ${linked.length - 10} lançamentos não exibidos</p>` : '';
     const lancTable = linked.length > 0
       ? `<div class='review-entries'><table><thead><tr><th>Data</th><th>Histórico</th><th>Valor</th><th>Natureza</th><th>Conta/CC</th><th>Status</th></tr></thead><tbody>${lancRows}</tbody></table>${maisLabel}</div>`
-      : `<p style='font-size:.82rem;color:var(--gray-400);margin:.5rem 0'>Nenhum lançamento vinculado.</p>`;
+      : `<p style='font-size:.82rem;color:var(--gray-400);margin:.5rem 0'>Nenhum lançamento vinculado encontrado.</p>`;
+
+    const alertaBanner = isPendente ? `
+      <div style='background:#fffbeb;border:1px solid #fcd34d;border-radius:8px;padding:.85rem 1rem;margin-bottom:1rem;display:flex;gap:.75rem;align-items:flex-start'>
+        <span style='font-size:1.1rem'>&#9888;</span>
+        <div>
+          <strong style='font-size:.85rem;color:#92400e'>O que precisa ser feito aqui?</strong>
+          <p style='font-size:.82rem;color:#78350f;margin:.2rem 0 0'>Este cadastro apareceu nos lançamentos mas ainda não foi classificado. Veja os lançamentos abaixo, identifique o que este nome representa para a CKM e selecione o <strong>Tipo</strong> correto no painel ao lado. Se for um prestador ou fornecedor vinculado a um cliente/projeto, preencha também esses campos.</p>
+        </div>
+      </div>` : '';
+
+    const sugestaoBox = `<div id='sug-${r.id}' style='background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;padding:.75rem 1rem;margin-bottom:1rem;display:flex;gap:.75rem;align-items:flex-start'>
+      <span style='font-size:1.1rem'>&#129302;</span>
+      <div style='flex:1'>
+        <strong style='font-size:.82rem;color:#1e40af'>Sugestão da IA</strong>
+        <p id='sug-text-${r.id}' style='font-size:.82rem;color:#1e3a8a;margin:.2rem 0 .5rem'>Clique em “Analisar com IA” para receber uma sugestão de classificação baseada nos históricos dos lançamentos.</p>
+        <button onclick="analisarIA('${r.id}')" id='sug-btn-${r.id}' style='background:#1d4ed8;font-size:.78rem;padding:.35rem .8rem'>&#128269; Analisar com IA</button>
+      </div>
+    </div>`;
+
+    const typeOptions = TYPE_OPTIONS.map((t) => {
+      const guide = TYPE_GUIDE[t] || '';
+      return `<option value='${t}' title='${guide}' ${t === tipoAtual ? 'selected' : ''}>${t}</option>`;
+    }).join('');
+
     return `<div class='review-card' data-id='${r.id}' data-status='${r.statusRevisao}'>
   <div class='review-card-header' onclick="toggleCard('${r.id}')">
     <div class='review-card-title'>
-      <span class='badge ${badgeClass}'>${badgeLabel}</span>
+      <span class='badge ${badgeClass}' id='badge-status-${r.id}'>${badgeLabel}</span>
       <strong>${r.nomeOficial}</strong>
       ${r.nomeOriginal !== r.nomeOficial ? `<span style='font-size:.78rem;color:var(--gray-400)'>(orig: ${r.nomeOriginal})</span>` : ''}
     </div>
     <div class='review-card-meta'>
-      <span class='badge badge-blue'>${r.tipoFinal || r.tipoSugerido}</span>
+      <span class='badge badge-blue' id='badge-tipo-${r.id}'>${tipoAtual}</span>
       <span style='font-size:.82rem;color:var(--gray-600)'>${linked.length} lançamento${linked.length !== 1 ? 's' : ''}</span>
       <span style='font-size:.82rem;font-weight:700;${totalColor}'>Total: R$ ${total.toFixed(2)}</span>
       <span class='review-toggle-icon' id='icon-${r.id}'>▼</span>
     </div>
   </div>
   <div class='review-card-body' id='body-${r.id}' style='display:none'>
-    ${lancTable}
-    <div class='review-actions'>
-      <div class='review-action-group'>
-        <label>Tipo final</label>
-        <select onchange="alterarTipo('${r.id}', this.value)">${TYPE_OPTIONS.map((t) => `<option ${t === r.tipoFinal ? 'selected' : ''}>${t}</option>`).join('')}</select>
+    <div style='display:grid;grid-template-columns:1fr 1fr;gap:1rem;margin-bottom:1.25rem'>
+      <div>
+        ${alertaBanner}
+        ${sugestaoBox}
       </div>
-      <div class='review-action-group'>
-        <label>Cliente vinculado</label>
-        <input value='${r.clienteVinculado || ''}' placeholder='Nome do cliente' onchange="vincularCliente('${r.id}', this.value)"/>
-      </div>
-      <div class='review-action-group'>
-        <label>Projeto vinculado</label>
-        <input value='${r.projetoVinculado || ''}' placeholder='Nome do projeto' onchange="vincularProjeto('${r.id}', this.value)"/>
-      </div>
-      <div class='review-action-group'>
-        <label>Status de revisão</label>
-        <select onchange="marcarRevisao('${r.id}', this.value)">
-          <option ${r.statusRevisao === 'pendente' ? 'selected' : ''} value='pendente'>Pendente</option>
-          <option ${r.statusRevisao === 'revisado' ? 'selected' : ''} value='revisado'>Revisado ✓</option>
-        </select>
+      <div style='background:var(--white);border:1px solid var(--gray-200);border-radius:8px;padding:1rem'>
+        <p style='font-size:.75rem;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--gray-400);margin-bottom:.75rem'>&#9998; Classificação deste cadastro</p>
+        <div style='display:flex;flex-direction:column;gap:.75rem'>
+          <div>
+            <label style='font-size:.78rem;font-weight:700;color:var(--gray-600);text-transform:uppercase;letter-spacing:.04em'>Tipo <span style='color:#dc2626'>*</span></label>
+            <select id='tipo-select-${r.id}' onchange="alterarTipo('${r.id}', this.value); atualizarGuia('${r.id}', this.value)">${typeOptions}</select>
+            <p id='guia-tipo-${r.id}' style='font-size:.76rem;color:var(--gray-400);margin:.3rem 0 0;font-style:italic'>${guiaTexto}</p>
+          </div>
+          <div>
+            <label style='font-size:.78rem;font-weight:700;color:var(--gray-600);text-transform:uppercase;letter-spacing:.04em'>Cliente vinculado <span style='font-weight:400;color:var(--gray-400)'>(se for prestador/projeto)</span></label>
+            <input id='cliente-input-${r.id}' value='${r.clienteVinculado || ''}' placeholder='Ex: BRB, SEBRAE TO...' onchange="vincularCliente('${r.id}', this.value)"/>
+          </div>
+          <div>
+            <label style='font-size:.78rem;font-weight:700;color:var(--gray-600);text-transform:uppercase;letter-spacing:.04em'>Projeto vinculado <span style='font-weight:400;color:var(--gray-400)'>(se for prestador)</span></label>
+            <input id='projeto-input-${r.id}' value='${r.projetoVinculado || ''}' placeholder='Ex: BRB-PDL, SEBRAE 10º CICLO...' onchange="vincularProjeto('${r.id}', this.value)"/>
+          </div>
+          <div style='display:flex;gap:.5rem;align-items:center;padding-top:.25rem;border-top:1px solid var(--gray-100)'>
+            <button onclick="marcarRevisado('${r.id}')" style='flex:1;background:#059669;font-size:.82rem'>&#10003; Confirmar revisão</button>
+            <button onclick="marcarPendente('${r.id}')" style='background:var(--gray-200);color:var(--gray-600);font-size:.78rem;padding:.5rem .75rem;box-shadow:none'>Desfazer</button>
+          </div>
+        </div>
       </div>
     </div>
+    <p style='font-size:.75rem;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--gray-400);margin-bottom:.5rem'>&#128196; Lançamentos vinculados a este cadastro</p>
+    ${lancTable}
   </div>
 </div>`;
   }).join('');
@@ -1006,6 +1053,58 @@ async function consolidarAlias(){const sourceName=document.getElementById('alias
 async function vincularProjetoCliente(){const projectName=document.getElementById('projectName').value;const clientName=document.getElementById('clientName').value;await fetch('/api/review/link-project',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({projectName,clientName,applyRule:true})});location.reload();}
 async function reclassificar(tipo){const idField=tipo.includes('Estrutura')?'toEstrutura':'toFinanceiro';const nome=document.getElementById(idField).value;await fetch('/api/review/reclassify',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({nome,tipoFinal:tipo,applyRule:true})});location.reload();}
 async function revisarEmLote(){const ids=[...document.querySelectorAll('#review-list [data-id]')].map(r=>r.getAttribute('data-id'));await fetch('/api/review/bulk-review',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({ids,statusRevisao:'revisado'})});location.reload();}
+const TYPE_GUIDE_JS={
+  'Cliente':'Empresa ou pessoa que contrata e paga pelos servi\u00e7os da CKM. Ex: BRB, SEBRAE.',
+  'Projeto':'Contrato ou frente de trabalho espec\u00edfica vinculada a um cliente. Ex: BRB-PDL, SEBRAE 10\u00ba CICLO.',
+  'Prestador de Servi\u00e7o':'Pessoa f\u00edsica ou empresa contratada para executar trabalho para a CKM. Ex: consultores, designers.',
+  'Fornecedor':'Empresa que fornece produtos ou servi\u00e7os de suporte \u00e0 opera\u00e7\u00e3o. Ex: locador de im\u00f3vel, internet, software.',
+  'Estrutura Interna':'Despesa fixa da pr\u00f3pria empresa, sem v\u00ednculo com cliente. Ex: aluguel do escrit\u00f3rio, sal\u00e1rios, cont\u00e1bil.',
+  'Financeiro / N\u00e3o Operacional':'Movimenta\u00e7\u00e3o financeira que n\u00e3o \u00e9 receita nem despesa operacional. Ex: m\u00fatuo, empr\u00e9stimo, transfer\u00eancia entre contas.',
+  'Conta / Cart\u00e3o':'Conta banc\u00e1ria ou cart\u00e3o de cr\u00e9dito usado como meio de pagamento. Ex: Ita\u00fa PJ, Nubank.',
+  'Pendente de Classifica\u00e7\u00e3o':'Ainda n\u00e3o classificado. Selecione um dos tipos acima para resolver.'
+};
+function atualizarGuia(id,tipo){
+  const el=document.getElementById('guia-tipo-'+id);
+  if(el) el.textContent=TYPE_GUIDE_JS[tipo]||'';
+  const badge=document.getElementById('badge-tipo-'+id);
+  if(badge) badge.textContent=tipo;
+}
+async function marcarRevisado(id){
+  await fetch('/api/review/'+id,{method:'PATCH',headers:{'content-type':'application/json'},body:JSON.stringify({statusRevisao:'revisado'})});
+  const card=document.querySelector('[data-id="'+id+'"]');
+  if(card){
+    const b=document.getElementById('badge-status-'+id);
+    if(b){b.className='badge badge-green';b.textContent='Revisado';}
+    card.dataset.status='revisado';
+  }
+}
+async function marcarPendente(id){
+  await fetch('/api/review/'+id,{method:'PATCH',headers:{'content-type':'application/json'},body:JSON.stringify({statusRevisao:'pendente'})});
+  const b=document.getElementById('badge-status-'+id);
+  if(b){b.className='badge badge-amber';b.textContent='Pendente';}
+}
+async function analisarIA(id){
+  const btn=document.getElementById('sug-btn-'+id);
+  const txt=document.getElementById('sug-text-'+id);
+  if(btn) btn.disabled=true;
+  if(txt) txt.textContent='Analisando os lan\u00e7amentos...';
+  try{
+    const resp=await fetch('/api/review/sugerir/'+id,{method:'POST'});
+    const data=await resp.json();
+    if(data.tipoSugerido){
+      if(txt) txt.innerHTML='<strong>Sugest\u00e3o: '+data.tipoSugerido+'</strong><br><span style="color:#1e3a8a">'+data.explicacao+'</span>';
+      const sel=document.getElementById('tipo-select-'+id);
+      if(sel){sel.value=data.tipoSugerido; atualizarGuia(id,data.tipoSugerido);}
+      if(btn){btn.textContent='\u2713 Aplicar sugest\u00e3o';btn.disabled=false;btn.onclick=function(){alterarTipo(id,data.tipoSugerido);marcarRevisado(id);btn.textContent='\u2713 Aplicado!';btn.disabled=true;};}
+    } else {
+      if(txt) txt.textContent='N\u00e3o foi poss\u00edvel gerar sugest\u00e3o. Classifique manualmente.';
+      if(btn){btn.textContent='Tentar novamente';btn.disabled=false;}
+    }
+  }catch(e){
+    if(txt) txt.textContent='Erro ao consultar IA. Tente novamente.';
+    if(btn){btn.textContent='Tentar novamente';btn.disabled=false;}
+  }
+}
 </script>`, user);
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
     res.end(html);
@@ -1097,6 +1196,80 @@ async function revisarEmLote(){const ids=[...document.querySelectorAll('#review-
     });
     saveDb(db);
     return json(res, 200, { ok: true, updated: set.size });
+  }
+
+  if (req.method === 'POST' && url.pathname.startsWith('/api/review/sugerir/')) {
+    if (!requireAuth(req, res, db)) return;
+    const regId = url.pathname.split('/').pop();
+    const item = db.reviewRegistry.find((r) => r.id === regId);
+    if (!item) return json(res, 404, { error: 'Registro não encontrado' });
+
+    const nome = normalizeName(item.nomeOficial);
+    const linked = db.entries.filter((e) =>
+      normalizeName(e.cliente) === nome ||
+      normalizeName(e.projeto) === nome ||
+      normalizeName(e.parceiro) === nome
+    ).slice(0, 15);
+
+    const resumo = linked.map((e) =>
+      `- ${e.dataISO || e.data}: ${e.descricao || '(sem histórico)'} | Valor: R$ ${Number(e.valor||0).toFixed(2)} | Natureza: ${e.natureza||'-'} | CC: ${e.centroCusto||'-'}`
+    ).join('\n');
+
+    const tipos = ['Cliente','Projeto','Prestador de Serviço','Fornecedor','Estrutura Interna','Financeiro / Não Operacional','Conta / Cartão'];
+
+    // Buscar exemplos de nomes já revisados com lançamentos similares (por palavras-chave no histórico)
+    const palavrasChave = linked
+      .flatMap((e) => (e.descricao || '').toLowerCase().split(/\s+/))
+      .filter((w) => w.length > 4)
+      .slice(0, 10);
+
+    const exemplosRevisados = (db.reviewRegistry || [])
+      .filter((r) => r.statusRevisao === 'revisado' && r.tipoFinal && r.tipoFinal !== 'Pendente de Classificação' && r.id !== regId)
+      .map((r) => {
+        const nomeRev = normalizeName(r.nomeOficial);
+        const lancRev = db.entries.filter((e) =>
+          normalizeName(e.cliente) === nomeRev ||
+          normalizeName(e.projeto) === nomeRev ||
+          normalizeName(e.parceiro) === nomeRev
+        );
+        const textos = lancRev.map((e) => (e.descricao || '').toLowerCase()).join(' ');
+        const score = palavrasChave.filter((w) => textos.includes(w)).length;
+        return { r, score, lancRev };
+      })
+      .filter((x) => x.score > 0)
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 5);
+
+    let contextoExemplos = '';
+    if (exemplosRevisados.length > 0) {
+      contextoExemplos = '\n\nExemplos de cadastros similares já classificados pela empresa (use como referência principal):\n';
+      contextoExemplos += exemplosRevisados.map(({ r, lancRev }) => {
+        const amostras = lancRev.slice(0, 3).map((e) => e.descricao || '-').join('; ');
+        return `- "${r.nomeOficial}" → ${r.tipoFinal} (ex. lançamentos: ${amostras})`;
+      }).join('\n');
+    }
+
+    const prompt = `Você é um assistente financeiro da empresa CKM Consultoria. Analise os lançamentos abaixo vinculados ao nome "${item.nomeOficial}" e classifique este cadastro em um dos seguintes tipos:\n${tipos.map((t,i)=>`${i+1}. ${t}`).join('\n')}\n\nDefinições:\n- Cliente: empresa que contrata e paga a CKM pelos serviços prestados\n- Projeto: contrato ou frente de trabalho específica vinculada a um cliente\n- Prestador de Serviço: pessoa física ou empresa contratada pela CKM para executar trabalho\n- Fornecedor: empresa que fornece produtos ou serviços de suporte à operação (aluguel, internet, pedágio, tag, software, etc)\n- Estrutura Interna: despesa fixa da própria empresa sem vínculo com cliente (salários, aluguel do escritório, contabilidade)\n- Financeiro / Não Operacional: mútuo, empréstimo, transferência entre contas, operação financeira\n- Conta / Cartão: conta bancária ou cartão de crédito usado como meio de pagamento\n\nLançamentos deste cadastro:\n${resumo}${contextoExemplos}\n\nSe houver exemplos similares já classificados, use-os como referência principal e mencione a analogia na explicação.\n\nResponda APENAS em JSON válido:\n{"tipoSugerido": "<um dos tipos acima exatamente>", "explicacao": "<explicação em 1-2 frases em português simples, mencionando analogia se houver>"}`;
+
+    try {
+      const { OpenAI } = require('openai');
+      const openai = new OpenAI();
+      const completion = await openai.chat.completions.create({
+        model: 'gpt-4.1-mini',
+        messages: [{ role: 'user', content: prompt }],
+        temperature: 0.2,
+        max_tokens: 300
+      });
+      const raw = (completion.choices[0]?.message?.content || '').trim();
+      const parsed = JSON.parse(raw);
+      if (tipos.includes(parsed.tipoSugerido)) {
+        return json(res, 200, { tipoSugerido: parsed.tipoSugerido, explicacao: parsed.explicacao });
+      }
+      return json(res, 200, { tipoSugerido: null, explicacao: 'Não foi possível determinar o tipo.' });
+    } catch (err) {
+      console.error('[IA sugerir]', err.message);
+      return json(res, 500, { error: 'Erro ao consultar IA', detail: err.message });
+    }
   }
 
   if (req.method === 'POST' && url.pathname === '/api/review/save-rule') {
