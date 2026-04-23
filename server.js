@@ -2587,6 +2587,86 @@ async function excluirRef(tipo,nome){
   res.end('Not found');
 });
 
+// ===== LIMPEZA AUTOMÁTICA: executada no boot e após cada upload =====
+// Garante que dc=T seja marcado como transferência interna e que o reviewRegistry
+// não contenha entradas geradas por esses lançamentos.
+function limparCadastrosAutomatico(db) {
+  const isLixo = (val) => {
+    if (!val) return true;
+    const s = String(val).trim();
+    if (/^\d+(\.\d+)+$/.test(s)) return true;
+    if (/^\d+$/.test(s)) return true;
+    if (s === '' || s === '-' || s === '--' || s === '.') return true;
+    return false;
+  };
+
+  // 1. Marcar entries dc=T como transferência interna
+  let transferenciasInternas = 0;
+  for (const e of db.entries) {
+    let changed = false;
+    const novoParceiro = normalizeParceiro(e.parceiro || '');
+    if (novoParceiro !== (e.parceiro || '')) { e.parceiro = novoParceiro; changed = true; }
+    if (isLixo(e.cliente)) { if (e.cliente) { e.cliente = ''; changed = true; } }
+    if (String(e.dc || '').toUpperCase().trim() === 'T' && !e.isTransferenciaInterna) {
+      e.isTransferenciaInterna = true;
+      e.natureza = 'Transferência Interna';
+      e.tipo = 'transferencia_interna';
+      changed = true;
+      transferenciasInternas++;
+    }
+  }
+
+  // 2. Reconstruir reviewRegistry sem entradas de dc=T
+  const CORTE = '2024-06-01';
+  const revisados = (db.reviewRegistry || []).filter(r => r.statusRevisao === 'revisado');
+  const revisadosKeys = new Set(revisados.map(r => (r.nomeOficial || '').toUpperCase()));
+
+  const novosNomes = new Map();
+  for (const e of db.entries) {
+    const dataISO = e.dataISO || e.data || '';
+    if (dataISO < CORTE) continue;
+    if (e.isTransferenciaInterna || String(e.dc || '').toUpperCase().trim() === 'T') continue;
+    for (const campo of ['cliente', 'projeto', 'parceiro']) {
+      const val = (e[campo] || '').trim();
+      if (!val || val === '-' || isLixo(val)) continue;
+      const key = val.toUpperCase();
+      if (!novosNomes.has(key)) novosNomes.set(key, { nomeOriginal: val, nomeOficial: key });
+    }
+  }
+
+  const novosPendentes = [];
+  for (const [key, info] of novosNomes) {
+    if (revisadosKeys.has(key)) continue;
+    novosPendentes.push({
+      id: crypto.randomUUID(),
+      nomeOriginal: info.nomeOriginal,
+      nomeOficial: key,
+      tipoSugerido: 'Pendente de Classificação',
+      tipoFinal: 'Pendente de Classificação',
+      clienteVinculado: '',
+      projetoVinculado: '',
+      manterAlias: true,
+      observacao: '',
+      statusRevisao: 'pendente'
+    });
+  }
+  db.reviewRegistry = [...revisados, ...novosPendentes];
+
+  // 3. Limpar issues NOVO_CADASTRO de transferências internas
+  const nomesValidos = new Set(db.reviewRegistry.map(r => (r.nomeOficial || '').toUpperCase()));
+  db.issues = (db.issues || []).filter(i => {
+    if (i.code !== 'NOVO_CADASTRO') return true;
+    const match = (i.message || '').match(/Novo cadastro identificado: (.+)\./);
+    if (!match) return false;
+    const nome = match[1].trim().toUpperCase();
+    return nomesValidos.has(nome);
+  });
+
+  if (transferenciasInternas > 0 || novosPendentes.length !== (db.reviewRegistry.length - revisados.length)) {
+    console.log(`[limpeza] dc=T marcados: ${transferenciasInternas} | registry: ${revisados.length} revisados + ${novosPendentes.length} pendentes`);
+  }
+}
+
 // Boot: se DATABASE_URL estiver configurado, carregar dados do PostgreSQL
 // e sincronizar o db.json local antes de aceitar requisições
 async function boot() {
@@ -2599,6 +2679,11 @@ async function boot() {
       // Sincronizar db.json local com os dados do PostgreSQL
       fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
       fs.writeFileSync(DB_PATH, JSON.stringify(pgDb, null, 2));
+      // Executar limpeza automática após carregar o banco
+      limparCadastrosAutomatico(pgDb);
+      fs.writeFileSync(DB_PATH, JSON.stringify(pgDb, null, 2));
+      // Persistir limpeza de volta ao PostgreSQL
+      await storage.saveDb(pgDb).catch(e => console.error('[boot] Erro ao salvar limpeza:', e.message));
       console.log(`[boot] Sincronizado: ${pgDb.entries.length} lançamentos, ${pgDb.reviewRegistry.length} cadastros, ${pgDb.savedRules.length} regras`);
     } catch (err) {
       console.error('[boot] Erro ao carregar PostgreSQL:', err.message);
