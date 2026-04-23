@@ -543,29 +543,100 @@ function reviewCards(list, allEntries) {
     const badgeLabel = r.statusRevisao === 'revisado' ? 'Revisado' : 'Pendente';
     const isPendente = r.tipoFinal === 'Pendente de Classificação' || !r.tipoFinal;
     const tipoAtual = r.tipoFinal || 'Pendente de Classificação';
-    const guiaTexto = TYPE_GUIDE[tipoAtual] || '';
 
+    // Natureza options para cada linha
+    const naturezaOpts = ['Receita Operacional','Despesa Direta','Despesa Indireta','Despesa Administrativa',
+      'Despesa Financeira','Movimentação Financeira Não Operacional','Transferência','Pendente']
+      .map((n) => `<option value='${n}'>${n}</option>`).join('');
+
+    // Cada linha tem uma linha de visualização + linha de edição (oculta por padrão)
     const lancRows = linked.map((e) => {
       const valColor = e.valor >= 0 ? 'color:#065f46;font-weight:600' : 'color:#991b1b;font-weight:600';
       const dcLabel = e.dc ? e.dc : (e.valor >= 0 ? 'C' : 'D');
       const dcColor = dcLabel === 'C' ? 'color:#065f46' : 'color:#991b1b';
-      return `<tr>
-        <td style='white-space:nowrap;font-size:.8rem'>${e.dataISO || e.data || '-'}</td>
-        <td style='font-size:.8rem;max-width:280px'>${e.descricao || '-'}</td>
-        <td style='white-space:nowrap;${valColor};font-size:.8rem'>R$ ${Number(e.valor || 0).toFixed(2)}</td>
-        <td style='${dcColor};font-weight:700;font-size:.8rem;text-align:center'>${dcLabel}</td>
-        <td style='font-size:.8rem'>${e.natureza || '-'}</td>
-        <td style='font-size:.8rem'>${e.centroCusto || e.conta || '-'}</td>
-        <td style='font-size:.8rem'>${e.conta || '-'}</td>
-        <td style='font-size:.8rem'>${e.cliente || e.parceiro || '-'}</td>
-        <td style='font-size:.8rem'>${e.projeto || '-'}</td>
-        <td style='font-size:.8rem'>${e.status || '-'}</td>
-      </tr>`;
+      const eId = e.id;
+      const natOpts = ['Receita Operacional','Despesa Direta','Despesa Indireta','Despesa Administrativa',
+        'Despesa Financeira','Movimentação Financeira Não Operacional','Transferência','Pendente']
+        .map((n) => `<option value='${n}' ${n === (e.natureza||'Pendente') ? 'selected' : ''}>${n}</option>`).join('');
+      const statusOpts = ['ok','pendente','cancelado','revisado']
+        .map((s) => `<option value='${s}' ${s === (e.status||'ok') ? 'selected' : ''}>${s}</option>`).join('');
+
+      return `
+        <tr class='entry-view-row' id='view-${eId}' style='cursor:pointer' onclick="toggleEntryEdit('${eId}')" title='Clique para editar este lançamento'>
+          <td style='white-space:nowrap;font-size:.8rem'>${e.dataISO || e.data || '-'}</td>
+          <td style='font-size:.8rem'>${e.descricao || '-'}</td>
+          <td style='white-space:nowrap;${valColor};font-size:.8rem'>R$ ${Number(e.valor || 0).toFixed(2)}</td>
+          <td style='${dcColor};font-weight:700;font-size:.8rem;text-align:center'>${dcLabel}</td>
+          <td style='font-size:.8rem'>${e.natureza || '-'}</td>
+          <td style='font-size:.8rem'>${e.centroCusto || '-'}</td>
+          <td style='font-size:.8rem'>${e.conta || '-'}</td>
+          <td style='font-size:.8rem'>${e.cliente || e.parceiro || '-'}</td>
+          <td style='font-size:.8rem'>${e.projeto || '-'}</td>
+          <td style='font-size:.8rem'>${e.status || '-'}</td>
+          <td style='font-size:.75rem;color:#1d4ed8;white-space:nowrap'>&#9998; editar</td>
+        </tr>
+        <tr class='entry-edit-row' id='edit-${eId}' style='display:none;background:#f0f9ff'>
+          <td colspan='11' style='padding:.75rem 1rem'>
+            <div style='background:#fff;border:1px solid #bfdbfe;border-radius:8px;padding:1rem'>
+              <p style='font-size:.75rem;font-weight:700;color:#1e40af;text-transform:uppercase;letter-spacing:.04em;margin-bottom:.75rem'>&#9998; Editar lançamento — preencha ou corrija os campos abaixo</p>
+              <div style='display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:.6rem;margin-bottom:.75rem'>
+                <div>
+                  <label style='font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase'>Data</label>
+                  <input id='ef-data-${eId}' value='${e.dataISO || e.data || ''}' placeholder='YYYY-MM-DD' style='font-size:.8rem;padding:.3rem .5rem'/>
+                </div>
+                <div style='grid-column:span 2'>
+                  <label style='font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase'>Histórico / Descrição</label>
+                  <input id='ef-desc-${eId}' value='${(e.descricao||'').replace(/'/g,"&#39;")}' placeholder='Descrição do lançamento' style='font-size:.8rem;padding:.3rem .5rem'/>
+                </div>
+                <div>
+                  <label style='font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase'>Valor (R$)</label>
+                  <input id='ef-valor-${eId}' type='number' step='0.01' value='${Number(e.valor||0).toFixed(2)}' style='font-size:.8rem;padding:.3rem .5rem'/>
+                </div>
+                <div>
+                  <label style='font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase'>D/C</label>
+                  <select id='ef-dc-${eId}' style='font-size:.8rem;padding:.3rem .5rem'>
+                    <option value='D' ${dcLabel==='D'?'selected':''}>D — Débito (saída)</option>
+                    <option value='C' ${dcLabel==='C'?'selected':''}>C — Crédito (entrada)</option>
+                  </select>
+                </div>
+                <div>
+                  <label style='font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase'>Natureza</label>
+                  <select id='ef-nat-${eId}' style='font-size:.8rem;padding:.3rem .5rem'>${natOpts}</select>
+                </div>
+                <div>
+                  <label style='font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase'>Centro de Custo</label>
+                  <input id='ef-cc-${eId}' value='${(e.centroCusto||'').replace(/'/g,"&#39;")}' placeholder='Ex: ESCRITÓRIO, MK' style='font-size:.8rem;padding:.3rem .5rem'/>
+                </div>
+                <div>
+                  <label style='font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase'>Conta / Banco</label>
+                  <input id='ef-conta-${eId}' value='${(e.conta||'').replace(/'/g,"&#39;")}' placeholder='Ex: Itaú PJ, Nubank' style='font-size:.8rem;padding:.3rem .5rem'/>
+                </div>
+                <div>
+                  <label style='font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase'>Cliente / Parceiro</label>
+                  <input id='ef-cliente-${eId}' value='${(e.cliente||e.parceiro||'').replace(/'/g,"&#39;")}' placeholder='Nome do cliente' style='font-size:.8rem;padding:.3rem .5rem'/>
+                </div>
+                <div>
+                  <label style='font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase'>Projeto</label>
+                  <input id='ef-proj-${eId}' value='${(e.projeto||'').replace(/'/g,"&#39;")}' placeholder='Ex: BRB-PDL' style='font-size:.8rem;padding:.3rem .5rem'/>
+                </div>
+                <div>
+                  <label style='font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase'>Status</label>
+                  <select id='ef-status-${eId}' style='font-size:.8rem;padding:.3rem .5rem'>${statusOpts}</select>
+                </div>
+              </div>
+              <div style='display:flex;gap:.5rem'>
+                <button onclick="salvarLancamento('${eId}')" style='background:#059669;font-size:.8rem;padding:.4rem .9rem'>&#10003; Salvar alterações</button>
+                <button onclick="toggleEntryEdit('${eId}')" style='background:#e2e8f0;color:#475569;font-size:.8rem;padding:.4rem .9rem;box-shadow:none'>Cancelar</button>
+              </div>
+            </div>
+          </td>
+        </tr>`;
     }).join('');
-    const maisLabel = '';
+
     const lancTable = linked.length > 0
       ? `<div class='review-entries' style='overflow-x:auto;margin-bottom:1rem'>
-          <table style='min-width:900px;font-size:.8rem'>
+          <p style='font-size:.72rem;color:#94a3b8;margin-bottom:.3rem'>&#128161; Clique em qualquer linha para editar os campos daquele lançamento</p>
+          <table style='min-width:1000px;font-size:.8rem'>
             <thead><tr>
               <th style='white-space:nowrap'>Data</th>
               <th>Histórico</th>
@@ -577,34 +648,60 @@ function reviewCards(list, allEntries) {
               <th>Cliente/Parceiro</th>
               <th>Projeto</th>
               <th>Status</th>
+              <th></th>
             </tr></thead>
             <tbody>${lancRows}</tbody>
           </table>
         </div>`
       : `<p style='font-size:.82rem;color:var(--gray-400);margin:.5rem 0'>Nenhum lançamento vinculado encontrado.</p>`;
 
-    const alertaBanner = isPendente ? `
-      <div style='background:#fffbeb;border:1px solid #fcd34d;border-radius:8px;padding:.75rem 1rem;margin-bottom:.75rem;display:flex;gap:.75rem;align-items:flex-start'>
-        <span style='font-size:1rem'>&#9888;</span>
-        <div>
-          <strong style='font-size:.82rem;color:#92400e'>O que precisa ser feito aqui?</strong>
-          <p style='font-size:.79rem;color:#78350f;margin:.15rem 0 0'>Veja os lançamentos acima, identifique o que este nome representa para a CKM e selecione o <strong>Tipo</strong> correto abaixo. Se for prestador/fornecedor vinculado a um cliente ou projeto, preencha também esses campos.</p>
-        </div>
-      </div>` : '';
-
-    const sugestaoBox = `<div id='sug-${r.id}' style='background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;padding:.65rem 1rem;margin-bottom:.75rem;display:flex;gap:.65rem;align-items:flex-start'>
-      <span style='font-size:1rem'>&#129302;</span>
-      <div style='flex:1'>
-        <strong style='font-size:.8rem;color:#1e40af'>Sugestão da IA</strong>
-        <p id='sug-text-${r.id}' style='font-size:.79rem;color:#1e3a8a;margin:.15rem 0 .4rem'>Clique em "Analisar com IA" para receber uma sugestão de classificação baseada nos históricos dos lançamentos e em cadastros similares já revisados.</p>
-        <button onclick="analisarIA('${r.id}')" id='sug-btn-${r.id}' style='background:#1d4ed8;font-size:.76rem;padding:.3rem .7rem'>&#128269; Analisar com IA</button>
-      </div>
-    </div>`;
-
+    // Painel de classificação do cadastro (tipo, cliente vinculado, projeto vinculado)
     const typeOptions = TYPE_OPTIONS.map((t) => {
       const guide = TYPE_GUIDE[t] || '';
       return `<option value='${t}' title='${guide}' ${t === tipoAtual ? 'selected' : ''}>${t}</option>`;
     }).join('');
+    const guiaTexto = TYPE_GUIDE[tipoAtual] || '';
+
+    const classifPanel = `
+      <div style='display:grid;grid-template-columns:1fr 1fr;gap:1rem;margin-top:.75rem'>
+        <div style='background:#fffbeb;border:1px solid #fcd34d;border-radius:8px;padding:.75rem 1rem'>
+          <strong style='font-size:.8rem;color:#92400e'>&#9888; Classificação do cadastro</strong>
+          <p style='font-size:.78rem;color:#78350f;margin:.25rem 0 .6rem'>Defina o <strong>Tipo</strong> deste nome para a CKM. Isso se aplica a todos os lançamentos vinculados.</p>
+          <div style='display:flex;flex-direction:column;gap:.5rem'>
+            <div>
+              <label style='font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase'>Tipo *</label>
+              <select id='tipo-select-${r.id}' onchange="alterarTipo('${r.id}', this.value); atualizarGuia('${r.id}', this.value)" style='font-size:.82rem'>${typeOptions}</select>
+              <p id='guia-tipo-${r.id}' style='font-size:.74rem;color:#94a3b8;margin:.2rem 0 0;font-style:italic'>${guiaTexto}</p>
+            </div>
+            <div>
+              <label style='font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase'>Cliente vinculado <span style='font-weight:400'>(se prestador/projeto)</span></label>
+              <input id='cliente-input-${r.id}' value='${r.clienteVinculado || ''}' placeholder='Ex: BRB, SEBRAE TO...' style='font-size:.82rem' onchange="vincularCliente('${r.id}', this.value)"/>
+            </div>
+            <div>
+              <label style='font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase'>Projeto vinculado <span style='font-weight:400'>(se prestador)</span></label>
+              <input id='projeto-input-${r.id}' value='${r.projetoVinculado || ''}' placeholder='Ex: BRB-PDL, SEBRAE 10º CICLO...' style='font-size:.82rem' onchange="vincularProjeto('${r.id}', this.value)"/>
+            </div>
+            <div style='display:flex;gap:.5rem;padding-top:.25rem;border-top:1px solid #fde68a'>
+              <button onclick="marcarRevisado('${r.id}')" style='flex:1;background:#059669;font-size:.8rem;padding:.4rem'>&#10003; Confirmar revisão do cadastro</button>
+              <button onclick="marcarPendente('${r.id}')" style='background:#e2e8f0;color:#475569;font-size:.78rem;padding:.4rem .7rem;box-shadow:none'>Desfazer</button>
+            </div>
+          </div>
+        </div>
+        <div style='background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;padding:.75rem 1rem;display:flex;flex-direction:column;gap:.5rem'>
+          <strong style='font-size:.8rem;color:#1e40af'>&#129302; Pergunte à IA sobre estes lançamentos</strong>
+          <p style='font-size:.76rem;color:#1e3a8a;margin:0'>A IA responde com base <strong>apenas nos dados da sua planilha</strong>. Exemplos de perguntas:</p>
+          <ul style='font-size:.74rem;color:#1e3a8a;margin:.1rem 0 .4rem;padding-left:1.1rem'>
+            <li>Tem outros lançamentos similares a este já classificados?</li>
+            <li>Quem é o cliente deste prestador?</li>
+            <li>Como outros lançamentos de mútuo foram classificados?</li>
+          </ul>
+          <div id='chat-msgs-${r.id}' style='max-height:120px;overflow-y:auto;font-size:.78rem;display:flex;flex-direction:column;gap:.3rem'></div>
+          <div style='display:flex;gap:.4rem;margin-top:.25rem'>
+            <input id='chat-input-${r.id}' placeholder='Digite sua pergunta...' style='flex:1;font-size:.8rem;padding:.35rem .6rem' onkeydown="if(event.key==='Enter')perguntarIA('${r.id}')"/>
+            <button onclick="perguntarIA('${r.id}')" style='background:#1d4ed8;font-size:.78rem;padding:.35rem .7rem;white-space:nowrap'>Perguntar</button>
+          </div>
+        </div>
+      </div>`;
 
     return `<div class='review-card' data-id='${r.id}' data-status='${r.statusRevisao}'>
   <div class='review-card-header' onclick="toggleCard('${r.id}')">
@@ -621,38 +718,9 @@ function reviewCards(list, allEntries) {
     </div>
   </div>
   <div class='review-card-body' id='body-${r.id}' style='display:none'>
-
-    <p style='font-size:.75rem;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--gray-400);margin-bottom:.5rem'>&#128196; Lançamentos vinculados (${linked.length})</p>
+    <p style='font-size:.75rem;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--gray-400);margin-bottom:.4rem'>&#128196; Lançamentos vinculados (${linked.length})</p>
     ${lancTable}
-
-    <div style='display:grid;grid-template-columns:1fr 1fr;gap:1rem;margin-top:.5rem'>
-      <div>
-        ${alertaBanner}
-        ${sugestaoBox}
-      </div>
-      <div style='background:var(--white);border:1px solid var(--gray-200);border-radius:8px;padding:1rem'>
-        <p style='font-size:.75rem;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--gray-400);margin-bottom:.75rem'>&#9998; Classificação deste cadastro</p>
-        <div style='display:flex;flex-direction:column;gap:.65rem'>
-          <div>
-            <label style='font-size:.78rem;font-weight:700;color:var(--gray-600);text-transform:uppercase;letter-spacing:.04em'>Tipo <span style='color:#dc2626'>*</span></label>
-            <select id='tipo-select-${r.id}' onchange="alterarTipo('${r.id}', this.value); atualizarGuia('${r.id}', this.value)">${typeOptions}</select>
-            <p id='guia-tipo-${r.id}' style='font-size:.76rem;color:var(--gray-400);margin:.25rem 0 0;font-style:italic'>${guiaTexto}</p>
-          </div>
-          <div>
-            <label style='font-size:.78rem;font-weight:700;color:var(--gray-600);text-transform:uppercase;letter-spacing:.04em'>Cliente vinculado <span style='font-weight:400;color:var(--gray-400)'>(se for prestador/projeto)</span></label>
-            <input id='cliente-input-${r.id}' value='${r.clienteVinculado || ''}' placeholder='Ex: BRB, SEBRAE TO...' onchange="vincularCliente('${r.id}', this.value)"/>
-          </div>
-          <div>
-            <label style='font-size:.78rem;font-weight:700;color:var(--gray-600);text-transform:uppercase;letter-spacing:.04em'>Projeto vinculado <span style='font-weight:400;color:var(--gray-400)'>(se for prestador)</span></label>
-            <input id='projeto-input-${r.id}' value='${r.projetoVinculado || ''}' placeholder='Ex: BRB-PDL, SEBRAE 10º CICLO...' onchange="vincularProjeto('${r.id}', this.value)"/>
-          </div>
-          <div style='display:flex;gap:.5rem;align-items:center;padding-top:.25rem;border-top:1px solid var(--gray-100)'>
-            <button onclick="marcarRevisado('${r.id}')" style='flex:1;background:#059669;font-size:.82rem'>&#10003; Confirmar revisão</button>
-            <button onclick="marcarPendente('${r.id}')" style='background:var(--gray-200);color:var(--gray-600);font-size:.78rem;padding:.5rem .75rem;box-shadow:none'>Desfazer</button>
-          </div>
-        </div>
-      </div>
-    </div>
+    ${classifPanel}
   </div>
 </div>`;
   }).join('');
@@ -1128,6 +1196,84 @@ async function analisarIA(id){
     if(btn){btn.textContent='Tentar novamente';btn.disabled=false;}
   }
 }
+function toggleEntryEdit(eId){
+  const editRow=document.getElementById('edit-'+eId);
+  const viewRow=document.getElementById('view-'+eId);
+  if(!editRow) return;
+  const isOpen=editRow.style.display!=='none';
+  editRow.style.display=isOpen?'none':'table-row';
+  if(viewRow) viewRow.style.background=isOpen?'':'#e0f2fe';
+}
+async function salvarLancamento(eId){
+  const data={
+    data: document.getElementById('ef-data-'+eId)?.value||undefined,
+    dataISO: document.getElementById('ef-data-'+eId)?.value||undefined,
+    descricao: document.getElementById('ef-desc-'+eId)?.value||undefined,
+    valor: parseFloat(document.getElementById('ef-valor-'+eId)?.value)||undefined,
+    dc: document.getElementById('ef-dc-'+eId)?.value||undefined,
+    natureza: document.getElementById('ef-nat-'+eId)?.value||undefined,
+    centroCusto: document.getElementById('ef-cc-'+eId)?.value||undefined,
+    conta: document.getElementById('ef-conta-'+eId)?.value||undefined,
+    cliente: document.getElementById('ef-cliente-'+eId)?.value||undefined,
+    projeto: document.getElementById('ef-proj-'+eId)?.value||undefined,
+    status: document.getElementById('ef-status-'+eId)?.value||undefined
+  };
+  // Ajustar sinal do valor conforme D/C
+  if(data.valor!==undefined && data.dc==='D') data.valor=-Math.abs(data.valor);
+  if(data.valor!==undefined && data.dc==='C') data.valor=Math.abs(data.valor);
+  try{
+    const resp=await fetch('/api/entries/'+eId,{method:'PATCH',headers:{'content-type':'application/json'},body:JSON.stringify(data)});
+    if(resp.ok){
+      toggleEntryEdit(eId);
+      // Atualizar a linha de visualização sem recarregar a página
+      const viewRow=document.getElementById('view-'+eId);
+      if(viewRow){
+        const cells=viewRow.querySelectorAll('td');
+        if(cells[0]) cells[0].textContent=data.dataISO||cells[0].textContent;
+        if(cells[1]) cells[1].textContent=data.descricao||cells[1].textContent;
+        if(cells[2]){
+          const v=data.valor!==undefined?data.valor:parseFloat(cells[2].textContent.replace('R$ ',''));
+          cells[2].textContent='R$ '+v.toFixed(2);
+          cells[2].style.color=v>=0?'#065f46':'#991b1b';
+        }
+        if(cells[3]&&data.dc){cells[3].textContent=data.dc;cells[3].style.color=data.dc==='C'?'#065f46':'#991b1b';}
+        if(cells[4]&&data.natureza) cells[4].textContent=data.natureza;
+        if(cells[5]&&data.centroCusto) cells[5].textContent=data.centroCusto;
+        if(cells[6]&&data.conta) cells[6].textContent=data.conta;
+        if(cells[7]&&data.cliente) cells[7].textContent=data.cliente;
+        if(cells[8]&&data.projeto) cells[8].textContent=data.projeto;
+        if(cells[9]&&data.status) cells[9].textContent=data.status;
+        viewRow.style.background='';
+      }
+      // Feedback visual
+      const btn=document.querySelector('#edit-'+eId+' button');
+      if(btn){const orig=btn.textContent;btn.textContent='\u2713 Salvo!';btn.style.background='#059669';setTimeout(()=>{btn.textContent=orig;},1500);}
+    } else {
+      alert('Erro ao salvar. Tente novamente.');
+    }
+  }catch(e){alert('Erro: '+e.message);}
+}
+async function perguntarIA(cardId){
+  const input=document.getElementById('chat-input-'+cardId);
+  const msgs=document.getElementById('chat-msgs-'+cardId);
+  const pergunta=input?.value?.trim();
+  if(!pergunta||!msgs) return;
+  // Adicionar mensagem do usuário
+  msgs.innerHTML+='<div style="background:#dbeafe;border-radius:6px;padding:.3rem .6rem;align-self:flex-end"><strong style="font-size:.72rem;color:#1e40af">Você:</strong> <span style="font-size:.76rem">'+pergunta+'</span></div>';
+  input.value='';
+  msgs.innerHTML+='<div id="ia-loading-'+cardId+'" style="font-size:.74rem;color:#94a3b8;font-style:italic">&#9203; Buscando nos dados...</div>';
+  msgs.scrollTop=msgs.scrollHeight;
+  try{
+    const resp=await fetch('/api/review/chat',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({cardId,pergunta})});
+    const data=await resp.json();
+    document.getElementById('ia-loading-'+cardId)?.remove();
+    msgs.innerHTML+='<div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:6px;padding:.3rem .6rem"><strong style="font-size:.72rem;color:#166534">IA:</strong> <span style="font-size:.76rem;color:#14532d">'+( data.resposta||'Sem resposta.')+'</span></div>';
+    msgs.scrollTop=msgs.scrollHeight;
+  }catch(e){
+    document.getElementById('ia-loading-'+cardId)?.remove();
+    msgs.innerHTML+='<div style="font-size:.74rem;color:#dc2626">Erro ao consultar IA.</div>';
+  }
+}
 </script>`, user);
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
     res.end(html);
@@ -1302,12 +1448,70 @@ async function analisarIA(id){
     return json(res, 201, { ok: true });
   }
 
+  if (req.method === 'POST' && url.pathname === '/api/review/chat') {
+    if (!requireAuth(req, res, db)) return;
+    const { cardId, pergunta } = JSON.parse(await readBody(req) || '{}');
+    if (!pergunta) return json(res, 400, { error: 'Pergunta obrigatória' });
+    // Buscar o cadastro e seus lançamentos vinculados
+    const item = db.reviewRegistry.find((r) => r.id === cardId);
+    const nomeNorm = item ? normalizeName(item.nomeOficial) : null;
+    const lancamentos = nomeNorm
+      ? db.entries.filter((e) =>
+          normalizeName(e.cliente) === nomeNorm ||
+          normalizeName(e.projeto) === nomeNorm ||
+          normalizeName(e.parceiro) === nomeNorm
+        )
+      : [];
+    // Resumo dos lançamentos deste cadastro
+    const resumoLanc = lancamentos.slice(0, 30).map((e) =>
+      `${e.dataISO||e.data||'-'} | ${e.descricao||'-'} | R$ ${Number(e.valor||0).toFixed(2)} | ${e.natureza||'-'} | CC: ${e.centroCusto||'-'} | Cliente: ${e.cliente||'-'} | Projeto: ${e.projeto||'-'} | Status: ${e.status||'-'}`
+    ).join('\n');
+    // Contexto geral da planilha: lançamentos similares já classificados
+    const palavrasChave = pergunta.toLowerCase().split(/\s+/).filter((w) => w.length > 3);
+    const similares = db.entries
+      .filter((e) => {
+        const desc = (e.descricao || '').toLowerCase();
+        return palavrasChave.some((p) => desc.includes(p)) && e.natureza && e.natureza !== 'Pendente';
+      })
+      .slice(0, 20)
+      .map((e) => `${e.dataISO||e.data||'-'} | ${e.descricao||'-'} | R$ ${Number(e.valor||0).toFixed(2)} | ${e.natureza||'-'} | CC: ${e.centroCusto||'-'} | Cliente: ${e.cliente||'-'} | Projeto: ${e.projeto||'-'}`);
+    const prompt = `Você é um assistente financeiro da empresa CKM Consultoria. Responda APENAS com base nos dados da planilha fornecidos abaixo. Não invente informações. Se não encontrar nos dados, diga claramente que não há registros suficientes.
+
+Cadastro em análise: "${item?.nomeOficial || cardId}"
+Tipo atual: ${item?.tipoFinal || 'Pendente de Classificação'}
+
+Lançamentos vinculados a este cadastro (${lancamentos.length} total):
+${resumoLanc || '(nenhum lançamento vinculado encontrado)'}
+
+Lançamentos similares já classificados na planilha (baseado nas palavras da pergunta):
+${similares.length > 0 ? similares.join('\n') : '(nenhum lançamento similar encontrado)'}
+
+Pergunta do usuário: ${pergunta}
+
+Responda em português, de forma objetiva e direta, citando os dados específicos encontrados na planilha.`;
+    try {
+      const { OpenAI } = require('openai');
+      const openai = new OpenAI();
+      const completion = await openai.chat.completions.create({
+        model: 'gpt-4.1-mini',
+        messages: [{ role: 'user', content: prompt }],
+        temperature: 0.1,
+        max_tokens: 600
+      });
+      const resposta = completion.choices[0]?.message?.content?.trim() || 'Sem resposta.';
+      return json(res, 200, { resposta });
+    } catch (err) {
+      console.error('[chat IA]', err.message);
+      return json(res, 500, { error: 'Erro ao consultar IA: ' + err.message });
+    }
+  }
+
   if (req.method === 'PATCH' && url.pathname.startsWith('/api/entries/')) {
     const id = url.pathname.split('/').pop();
     const entry = db.entries.find((e) => e.id === id);
     if (!entry) return json(res, 404, { error: 'Lançamento não encontrado' });
     const changes = JSON.parse(await readBody(req) || '{}');
-    const editable = ['cliente', 'projeto', 'natureza', 'centroCusto', 'parceiro', 'categoria', 'detalhe', 'conta', 'formaPagamento', 'status'];
+    const editable = ['cliente', 'projeto', 'natureza', 'centroCusto', 'parceiro', 'categoria', 'detalhe', 'conta', 'formaPagamento', 'status', 'data', 'dataISO', 'descricao', 'valor', 'dc'];
     editable.forEach((k) => { if (changes[k] !== undefined) entry[k] = changes[k]; });
     db.manualAdjustments = db.manualAdjustments || [];
     db.manualAdjustments.push({
