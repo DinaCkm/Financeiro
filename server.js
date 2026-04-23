@@ -30,15 +30,25 @@ const ALIAS_RULES = {
 const FORBIDDEN_AS_CLIENT = ['ESCRITÓRIO', 'SALÁRIOS', 'JURÍDICO', 'CONTÁBIL', 'TEF', 'MÚTUO', 'PRONAMPE', 'SALDO ATUAL'];
 
 const COLUMN_ALIASES = {
-  data: ['data', 'dt', 'date', 'data_movimento', 'data movimento', 'vencimento'],
-  descricao: ['descricao', 'descrição', 'historico', 'histórico', 'description'],
+  data: ['data', 'dt', 'date', 'data_movimento', 'data movimento', 'vencimento',
+         'data pagamento', 'data_recebimento', 'data recebimento', 'data_emissão', 'data emissão'],
+  descricao: ['descricao', 'descrição', 'historico', 'histórico', 'description',
+              'obs', 'observacao', 'observação'],
   cliente: ['cliente', 'client', 'contratante'],
   projeto: ['projeto', 'project', 'contrato', 'frente'],
-  parceiro: ['parceiro', 'prestador', 'fornecedor', 'beneficiario', 'beneficiário'],
+  parceiro: ['parceiro', 'prestador', 'fornecedor', 'beneficiario', 'beneficiário',
+             'fornecedor/parceiro'],
   conta: ['conta', 'cartao', 'cartão', 'conta_cartao', 'conta/cartão'],
   detalhe: ['detalhe', 'categoria', 'detalhamento', 'observacao', 'observação'],
-  valor: ['valor', 'amount', 'vlr', 'valor_total', 'valor total'],
-  centroCusto: ['centro_custo', 'centro custo', 'cc', 'centrodecusto'],
+  valor: ['valor', 'amount', 'vlr', 'valor_total', 'valor total', 'valor unitário', 'valor unitario'],
+  centroCusto: ['centro_custo', 'centro custo', 'cc', 'centrodecusto', 'c_custo', 'c custo', 'c.custo'],
+  tipo: ['tipo', 'receita/despesa', 'tipo_lancamento', 'tipo lancamento', 'tp-despesa', 'tp despesa'],
+  dc: ['d/c', 'dc', 'debito/credito', 'débito/crédito'],
+  status: ['status'],
+  movto: ['movto', 'movimento', 'movimentacao', 'movimentação'],
+  pr: ['pr'],
+  detDespesa: ['det-despesa', 'det despesa', 'detalhe despesa', 'det_despesa', 'det.despesa'],
+  notaFiscal: ['nota_fiscal', 'nota fiscal', 'nf', 'nr.nf', 'nº nf'],
   formaPagamento: ['forma_pagamento', 'forma pagamento', 'pagamento']
 };
 
@@ -92,6 +102,13 @@ function parseDateValue(value) {
   const raw = String(value || '').trim();
   if (!raw) return null;
 
+  // ISO yyyy-mm-dd (já processado pelo parser Python — serial Excel convertido)
+  const isoMatch = raw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (isoMatch) {
+    return new Date(Date.UTC(Number(isoMatch[1]), Number(isoMatch[2]) - 1, Number(isoMatch[3])));
+  }
+
+  // Formato BR dd/mm/aaaa ou dd/mm/aa
   const br = raw.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/);
   if (br) {
     const dd = Number(br[1]);
@@ -100,6 +117,7 @@ function parseDateValue(value) {
     return new Date(Date.UTC(yy, mm - 1, dd));
   }
 
+  // Fallback: tentar parse genérico
   const iso = new Date(raw);
   if (!Number.isNaN(iso.getTime())) {
     return new Date(Date.UTC(iso.getUTCFullYear(), iso.getUTCMonth(), iso.getUTCDate()));
@@ -111,20 +129,86 @@ function parseDateValue(value) {
 function inferType(name) {
   const n = normalizeName(name);
   if (!n) return 'Pendente de Classificação';
+
+  // Estrutura interna (lista explícita + padrões CKM)
   if (FORBIDDEN_AS_CLIENT.includes(n)) return 'Estrutura Interna';
-  if (n.includes('MÚTUO') || n.includes('MUTUO') || n.includes('PRONAMPE')) return 'Financeiro / Não Operacional';
-  if (n.includes('CARTÃO') || n.includes('CARTAO') || n.includes('CARD')) return 'Conta / Cartão';
-  if (OFFICIAL_PROJECTS.includes(n) || n.includes('CICLO') || n.includes('ETAPA') || n.includes('CONTRATO')) return 'Projeto';
+  const estruturaPatterns = ['ESCRITÓRIO', 'SALÁRIOS', 'SALARIO', 'JURÍDICO', 'JURIDICO',
+    'CONTÁBIL', 'CONTABIL', 'TEF', 'SALDO', 'PRONAMPE', 'ADTO', 'ADIANTAMENTO',
+    'F.FIXO', 'FIXO', 'CX RSV', 'RESERVA', 'CONVÊNIO', 'CONVENIO',
+    'PRÓ-LABORE', 'PRO-LABORE', 'PROLABORE'];
+  if (estruturaPatterns.some((p) => n.includes(p))) return 'Estrutura Interna';
+
+  // Financeiro / Não Operacional
+  const finPatterns = ['MÚTUO', 'MUTUO', 'TEF ENTRE', 'TRANSFERÊNCIA', 'TRANSFERENCIA',
+    'APLICAÇÃO', 'APLICACAO', 'APLIC ', 'RESGATE', 'IOF', 'IMPOSTO', 'TRIBUTO',
+    'RET_', 'RETENÇÃO', 'RETENCAO', 'DASN', 'SIMPLES NACIONAL', 'IRRF', 'CSLL',
+    'PIS', 'COFINS', 'ISS', 'INSS'];
+  if (finPatterns.some((p) => n.includes(p))) return 'Financeiro / Não Operacional';
+
+  // Conta / Cartão
+  if (n.includes('CARTÃO') || n.includes('CARTAO') || n.includes('CARD') ||
+      n.includes('BB') || n.includes('ITAÚ') || n.includes('ITAU') ||
+      n.includes('BRB') || n.includes('BRD') || n.includes('STD') ||
+      n.includes('CEF') || n.includes('BANRISUL') || n.includes('BRADESCO')) return 'Conta / Cartão';
+
+  // Projeto (padrões CKM)
+  if (OFFICIAL_PROJECTS.includes(n)) return 'Projeto';
+  if (n.includes('CICLO') || n.includes('ETAPA') || n.includes('PDL') ||
+      n.includes('PROCESSO') || n.includes('CONTRATO') || n.includes('LOTE') ||
+      n.includes('EDITAL') || n.includes('PS ') || n.includes('CARTA-CONTRATO')) return 'Projeto';
+
+  // Cliente (lista oficial)
   if (OFFICIAL_CLIENTS.includes(n)) return 'Cliente';
+
   return 'Pendente de Classificação';
 }
 
 function inferNature(entry) {
   const desc = normalizeName(entry.descricao || '');
-  if (desc.includes('MÚTUO') || desc.includes('MUTUO')) return 'Movimentação Financeira Não Operacional';
-  if (entry.tipo === 'entrada') return 'Receita Operacional';
-  if (entry.tipo === 'saida' && entry.projeto) return 'Custo Direto do Projeto';
-  if (entry.tipo === 'saida') return 'Despesa Indireta';
+  const cc = normalizeName(entry.centroCusto || '');
+  const tipoOriginal = normalizeName(entry.tipoOriginal || '');
+  const dc = String(entry.dc || '').toUpperCase().trim();
+
+  // Mútuo / Financeiro não operacional
+  if (desc.includes('MÚTUO') || desc.includes('MUTUO') || cc === 'MÚTUO' || cc === 'MUTUO') {
+    return 'Movimentação Financeira Não Operacional';
+  }
+
+  // TEF (transferência entre contas)
+  if (cc === 'TEF' || tipoOriginal.includes('TEF') || desc.includes('TEF=>') || desc.includes('TEF ')) {
+    return 'Movimentação Financeira Não Operacional';
+  }
+
+  // Pró-labore / Estrutura
+  if (cc === 'PRÓ-LABORE' || cc === 'PRO-LABORE' || cc === 'PROLABORE' ||
+      tipoOriginal.includes('PRÓ-LABORE') || tipoOriginal.includes('PRO-LABORE')) {
+    return 'Despesa Indireta';
+  }
+
+  // Usar D/C da planilha CKM: C = crédito (entrada), D = débito (saída)
+  const isEntrada = dc === 'C' || (dc !== 'D' && entry.valor > 0);
+  const isSaida = dc === 'D' || (dc !== 'C' && entry.valor < 0);
+
+  if (isEntrada) {
+    // Receita: faturamento, NF, serviços
+    if (tipoOriginal === 'FATURAMENTO' || desc.includes('NF ') || desc.includes('NOTA FISCAL') ||
+        desc.includes('FATURAMENTO') || desc.includes('EMISSÃO')) {
+      return 'Receita Operacional';
+    }
+    return 'Receita Operacional';
+  }
+
+  if (isSaida) {
+    // Custo direto: tem projeto ou CC de projeto
+    if (entry.projeto) return 'Custo Direto do Projeto';
+    // Impostos / retenções
+    if (tipoOriginal.includes('TRIBUTO') || tipoOriginal.includes('IMPOSTO') ||
+        cc.startsWith('RET_') || desc.includes('SIMPLES') || desc.includes('DASN')) {
+      return 'Despesa Indireta';
+    }
+    return 'Despesa Indireta';
+  }
+
   return 'Pendente de Classificação';
 }
 
@@ -191,33 +275,64 @@ function parseRowsWithPython(fileName, buffer) {
 }
 
 function parseEntries(rows, uploadId, db) {
-  return rows.map((raw) => {
-    const r = normalizeRowHeaders(raw);
-    const valor = normalizeMoney(r.valor);
-    const parsedDate = parseDateValue(r.data);
-    const entry = {
-      id: crypto.randomUUID(),
-      uploadId,
-      data: r.data || '',
-      dataISO: parsedDate ? parsedDate.toISOString().slice(0, 10) : '',
-      descricao: r.descricao || '',
-      cliente: normalizeName(r.cliente || ''),
-      projeto: normalizeName(r.projeto || ''),
-      parceiro: normalizeName(r.parceiro || ''),
-      conta: r.conta || '',
-      detalhe: r.detalhe || '',
-      formaPagamento: r.formaPagamento || '',
-      centroCusto: r.centroCusto || '',
-      tipo: valor >= 0 ? 'entrada' : 'saida',
-      valor,
-      natureza: 'Pendente de Classificação',
-      categoria: '',
-      status: 'importado'
-    };
-    applySavedRulesToEntry(entry, db);
-    entry.natureza = inferNature(entry);
-    return entry;
-  });
+  return rows
+    .filter((raw) => {
+      // Filtrar linhas completamente vazias ou de controle (SALDO, TOTAL)
+      const dataVal = String(raw.data || raw.dataISO || '').trim().toUpperCase();
+      if (!dataVal || ['SALDO', 'TOTAL', 'SUBTOTAL', 'STOP'].includes(dataVal)) return false;
+      return true;
+    })
+    .map((raw) => {
+      // O parser Python já normaliza os headers; mas normalizamos novamente para segurança
+      const r = normalizeRowHeaders(raw);
+
+      // Data: preferir dataISO já convertida pelo parser Python
+      const dataRaw = r.dataiso || r.data || '';
+      const parsedDate = parseDateValue(dataRaw);
+
+      // Valor: o parser Python já aplica sinal via D/C; usar diretamente se for número
+      let valor = typeof raw.valor === 'number' ? raw.valor : normalizeMoney(r.valor);
+
+      // D/C da planilha CKM: C = crédito (positivo), D = débito (negativo)
+      const dc = String(r.dc || '').toUpperCase().trim();
+      if (dc === 'D' && valor > 0) valor = -valor;
+      if (dc === 'C' && valor < 0) valor = -valor;
+
+      // Status da planilha: PG=pago, RE=realizado, ZZ=zerado/cancelado, TF=transferência
+      const statusPlanilha = String(r.status || '').toUpperCase().trim();
+      const statusImport = statusPlanilha || 'importado';
+
+      // Tipo original da planilha (coluna 'Tipo' ou 'RECEITA/DESPESA')
+      const tipoOriginal = String(r.tipo || r['receita/despesa'] || '').trim();
+
+      const entry = {
+        id: crypto.randomUUID(),
+        uploadId,
+        data: dataRaw,
+        dataISO: parsedDate ? parsedDate.toISOString().slice(0, 10) : '',
+        descricao: r.descricao || '',
+        cliente: normalizeName(r.cliente || ''),
+        projeto: normalizeName(r.projeto || ''),
+        parceiro: normalizeName(r.parceiro || ''),
+        conta: r.conta || '',
+        detalhe: r.detalhe || r.detdespesa || '',
+        formaPagamento: r.formapagamento || '',
+        centroCusto: r.centrocusto || '',
+        dc,
+        tipoOriginal,
+        statusPlanilha,
+        notaFiscal: r.notafiscal || '',
+        tipo: valor >= 0 ? 'entrada' : 'saida',
+        valor,
+        natureza: 'Pendente de Classificação',
+        categoria: '',
+        status: statusImport
+      };
+
+      applySavedRulesToEntry(entry, db);
+      entry.natureza = inferNature(entry);
+      return entry;
+    });
 }
 
 function buildIssues(entries, db) {
@@ -229,19 +344,73 @@ function buildIssues(entries, db) {
     const desc = normalizeName(e.descricao);
     const client = normalizeName(e.cliente);
     const project = normalizeName(e.projeto);
+    const cc = normalizeName(e.centroCusto || '');
+    const statusPlanilha = String(e.statusPlanilha || '').toUpperCase();
 
-    if (e.natureza === 'Custo Direto do Projeto' && !project) issues.push({ entryId: e.id, level: 'erro', code: 'DESPESA_SEM_PROJETO', message: 'Despesa direta sem projeto.', blocking: true });
-    if (client && inferType(client) === 'Estrutura Interna') issues.push({ entryId: e.id, level: 'erro', code: 'ESTRUTURA_COMO_CLIENTE', message: 'Estrutura interna lançada como cliente.', blocking: true });
-    if (client && client.includes('MÚTUO')) issues.push({ entryId: e.id, level: 'erro', code: 'MUTUO_COMO_CLIENTE', message: 'Mútuo lançado como cliente.', blocking: true });
-    if (desc.includes('MÚTUO') && e.natureza !== 'Movimentação Financeira Não Operacional') issues.push({ entryId: e.id, level: 'erro', code: 'MUTUO_CLASSIFICACAO', message: 'Mútuo classificado incorretamente.', blocking: true });
-    if (!e.dataISO) issues.push({ entryId: e.id, level: 'erro', code: 'DATA_INVALIDA', message: 'Data inválida.', blocking: true });
-    if (!Number.isFinite(e.valor)) issues.push({ entryId: e.id, level: 'erro', code: 'VALOR_INVALIDO', message: 'Valor inválido.', blocking: true });
+    // --- ERROS BLOQUEANTES ---
 
-    if (client && inferType(client) === 'Pendente de Classificação') issues.push({ entryId: e.id, level: 'alerta', code: 'NOME_FORA_PADRAO', message: 'Cliente/projeto fora do padrão conhecido.', blocking: false });
-    if (e.conta && normalizeName(e.conta).includes('CARTAO') && !e.detalhe) issues.push({ entryId: e.id, level: 'alerta', code: 'CARTAO_SEM_DETALHE', message: 'Cartão sem detalhamento completo.', blocking: false });
+    // Data inválida
+    if (!e.dataISO) {
+      issues.push({ entryId: e.id, level: 'erro', code: 'DATA_INVALIDA',
+        message: `Data inválida: '${e.data}'.`, blocking: true });
+    }
 
+    // Valor inválido
+    if (!Number.isFinite(e.valor)) {
+      issues.push({ entryId: e.id, level: 'erro', code: 'VALOR_INVALIDO',
+        message: 'Valor não numérico.', blocking: true });
+    }
+
+    // Estrutura interna lançada como cliente
+    if (client && inferType(client) === 'Estrutura Interna') {
+      issues.push({ entryId: e.id, level: 'erro', code: 'ESTRUTURA_COMO_CLIENTE',
+        message: `Estrutura interna lançada como cliente: '${client}'.`, blocking: true });
+    }
+
+    // Mútuo lançado como cliente
+    if (client && (client.includes('MÚTUO') || client.includes('MUTUO'))) {
+      issues.push({ entryId: e.id, level: 'erro', code: 'MUTUO_COMO_CLIENTE',
+        message: `Mútuo lançado como cliente: '${client}'.`, blocking: true });
+    }
+
+    // Mútuo classificado incorretamente (não como Movimentação Financeira)
+    if ((desc.includes('MÚTUO') || desc.includes('MUTUO') || cc === 'MÚTUO') &&
+        e.natureza !== 'Movimentação Financeira Não Operacional') {
+      issues.push({ entryId: e.id, level: 'erro', code: 'MUTUO_CLASSIFICACAO',
+        message: 'Mútuo classificado incorretamente.', blocking: true });
+    }
+
+    // Despesa direta sem projeto
+    if (e.natureza === 'Custo Direto do Projeto' && !project) {
+      issues.push({ entryId: e.id, level: 'erro', code: 'DESPESA_SEM_PROJETO',
+        message: 'Despesa direta sem projeto vinculado.', blocking: true });
+    }
+
+    // --- ALERTAS NÃO BLOQUEANTES ---
+
+    // Entrada sem cliente identificado (faturamento sem cliente)
+    if (e.tipo === 'entrada' && e.natureza === 'Receita Operacional' && !client && !e.parceiro) {
+      issues.push({ entryId: e.id, level: 'alerta', code: 'RECEITA_SEM_CLIENTE',
+        message: 'Receita sem cliente identificado.', blocking: false });
+    }
+
+    // Cartão sem detalhamento
+    if (e.conta && normalizeName(e.conta).includes('CARTAO') && !e.detalhe) {
+      issues.push({ entryId: e.id, level: 'alerta', code: 'CARTAO_SEM_DETALHE',
+        message: 'Cartão sem detalhamento completo.', blocking: false });
+    }
+
+    // Lançamento cancelado com valor não zero
+    if ((statusPlanilha === 'ZZ' || desc.includes('CANCELAD')) && Math.abs(e.valor) > 0) {
+      issues.push({ entryId: e.id, level: 'alerta', code: 'LANCAMENTO_CANCELADO',
+        message: `Lançamento cancelado com valor R$ ${Math.abs(e.valor).toFixed(2)}.`, blocking: false });
+    }
+
+    // Novos cadastros: nomes não presentes no registro revisado
     [client, project, normalizeName(e.parceiro)].forEach((name) => {
-      if (name && !knownNames.has(name)) newNames.add(name);
+      if (name && !knownNames.has(name) && inferType(name) === 'Pendente de Classificação') {
+        newNames.add(name);
+      }
     });
   }
 
@@ -344,6 +513,8 @@ function buildPreAnalysisSummary(db) {
     mutuoIncorreto: count('MUTUO_COMO_CLIENTE') + count('MUTUO_CLASSIFICACAO'),
     novosCadastros: count('NOVO_CADASTRO'),
     conflitosAlias: count('CONFLITO_ALIAS'),
+    receitaSemCliente: count('RECEITA_SEM_CLIENTE'),
+    cancelados: count('LANCAMENTO_CANCELADO'),
     bloqueantes: openIssues.filter((i) => i.blocking || BLOCKING_ISSUES.includes(i.code)).length
   };
 }
@@ -510,7 +681,11 @@ async function enviarArquivo(){
       { title: 'Mútuos classificados incorretamente', code: 'MUTUO_CLASSIFICACAO' },
       { title: 'Mútuos lançados como cliente', code: 'MUTUO_COMO_CLIENTE' },
       { title: 'Novos cadastros', code: 'NOVO_CADASTRO' },
-      { title: 'Conflitos de alias', code: 'CONFLITO_ALIAS' }
+      { title: 'Conflitos de alias', code: 'CONFLITO_ALIAS' },
+      { title: 'Receitas sem cliente', code: 'RECEITA_SEM_CLIENTE' },
+      { title: 'Lançamentos cancelados com valor', code: 'LANCAMENTO_CANCELADO' },
+      { title: 'Data inválida', code: 'DATA_INVALIDA' },
+      { title: 'Valor inválido', code: 'VALOR_INVALIDO' }
     ];
 
     const html = page('Pré-análise', `<section><h2>Pré-análise operacional</h2>
@@ -521,6 +696,8 @@ async function enviarArquivo(){
 <div class='card'><strong>Mútuo incorreto</strong><span>${summary.mutuoIncorreto}</span></div>
 <div class='card'><strong>Novos cadastros</strong><span>${summary.novosCadastros}</span></div>
 <div class='card'><strong>Conflito de alias</strong><span>${summary.conflitosAlias}</span></div>
+<div class='card'><strong>Receita sem cliente</strong><span>${summary.receitaSemCliente}</span></div>
+<div class='card'><strong>Cancelados c/ valor</strong><span>${summary.cancelados}</span></div>
 </div>
 ${groups.map((g) => `<h3>${g.title}</h3><ul>${openIssues.filter((i) => i.code === g.code).map((e) => `<li>${e.message}${e.blocking ? ' (bloqueante)' : ''}</li>`).join('') || '<li>Sem itens</li>'}</ul>`).join('')}
 <h3>Outras pendências</h3>
