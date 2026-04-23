@@ -1198,6 +1198,38 @@ async function revisarEmLote(){const ids=[...document.querySelectorAll('#review-
   res.end('Not found');
 });
 
-server.listen(PORT, () => {
-  console.log(`CKM MVP running at http://localhost:${PORT}`);
+// Boot: se DATABASE_URL estiver configurado, carregar dados do PostgreSQL
+// e sincronizar o db.json local antes de aceitar requisições
+async function boot() {
+  if (process.env.DATABASE_URL) {
+    try {
+      console.log('[boot] DATABASE_URL detectado — inicializando schema PostgreSQL...');
+      await storage.init();
+      console.log('[boot] Carregando dados do PostgreSQL...');
+      const pgDb = await storage.loadDb();
+      // Sincronizar db.json local com os dados do PostgreSQL
+      fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
+      fs.writeFileSync(DB_PATH, JSON.stringify(pgDb, null, 2));
+      console.log(`[boot] Sincronizado: ${pgDb.entries.length} lançamentos, ${pgDb.reviewRegistry.length} cadastros, ${pgDb.savedRules.length} regras`);
+    } catch (err) {
+      console.error('[boot] Erro ao carregar PostgreSQL:', err.message);
+      console.error('[boot] Continuando com db.json local (pode estar vazio).');
+    }
+  } else {
+    // Modo local: garantir que o db.json existe
+    if (!fs.existsSync(DB_PATH)) {
+      fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
+      const emptyDb = { users: [{ id: 'owner-ckm', email: 'owner@ckm.local', password: '123456', role: 'owner' }], uploads: [], entries: [], issues: [], reviewRegistry: [], savedRules: [], manualAdjustments: [] };
+      fs.writeFileSync(DB_PATH, JSON.stringify(emptyDb, null, 2));
+      console.log('[boot] db.json criado com usuário padrão.');
+    }
+  }
+  server.listen(PORT, () => {
+    console.log(`CKM MVP running at http://localhost:${PORT}`);
+  });
+}
+
+boot().catch((err) => {
+  console.error('[boot] Falha crítica:', err);
+  process.exit(1);
 });
