@@ -1274,12 +1274,28 @@ function atualizarGuia(id,tipo){
   if(badge) badge.textContent=tipo;
 }
 async function marcarRevisado(id){
-  await fetch('/api/review/'+id,{method:'PATCH',headers:{'content-type':'application/json'},body:JSON.stringify({statusRevisao:'revisado'})});
-  const card=document.querySelector('[data-id="'+id+'"]');
-  if(card){
-    const b=document.getElementById('badge-status-'+id);
-    if(b){b.className='badge badge-green';b.textContent='Revisado';}
-    card.dataset.status='revisado';
+  // Lê o tipo selecionado no dropdown para salvar junto
+  const sel=document.getElementById('tipo-select-'+id);
+  const tipoFinal=sel?sel.value:undefined;
+  const clienteVinculado=document.getElementById('cliente-input-'+id)?document.getElementById('cliente-input-'+id).value:undefined;
+  const projetoVinculado=document.getElementById('projeto-input-'+id)?document.getElementById('projeto-input-'+id).value:undefined;
+  const body={statusRevisao:'revisado'};
+  if(tipoFinal&&tipoFinal!=='Pendente de Classificação') body.tipoFinal=tipoFinal;
+  if(clienteVinculado) body.clienteVinculado=clienteVinculado;
+  if(projetoVinculado) body.projetoVinculado=projetoVinculado;
+  const resp=await fetch('/api/review/'+id,{method:'PATCH',headers:{'content-type':'application/json'},body:JSON.stringify(body)});
+  if(resp.ok){
+    const card=document.querySelector('[data-id="'+id+'"]');
+    if(card){
+      const b=document.getElementById('badge-status-'+id);
+      if(b){b.className='badge badge-green';b.textContent='Revisado';}
+      card.dataset.status='revisado';
+      // Colapsa o card após confirmar
+      const body=card.querySelector('.review-card-body');
+      if(body) body.style.display='none';
+    }
+  } else {
+    alert('Erro ao salvar. Tente novamente.');
   }
 }
 async function marcarPendente(id){
