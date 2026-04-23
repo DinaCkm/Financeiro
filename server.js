@@ -858,7 +858,8 @@ function reviewCards(list, allEntries) {
                   var parceiroNorm = (e.parceiro||'').toUpperCase();
                   var projetoNorm = (e.projeto||'').toUpperCase();
                   var clienteEMotivo = isPendente && (clienteNorm === nomeCard || parceiroNorm === nomeCard);
-                  var projetoEMotivo = isPendente && projetoNorm === nomeCard;
+                  // Projeto só é motivo se o nome do card for exatamente o projeto deste lançamento
+                  var projetoEMotivo = isPendente && projetoNorm && projetoNorm === nomeCard;
                   var fv = function(v){ return (!v||v==='-'||v==='0.00') ? 'border:2px solid #ef4444;background:#fff5f5' : ''; };
                   var fvMotivo = function(v, isMotivo){ return isMotivo ? 'border:2px solid #ef4444;background:#fff5f5' : fv(v); };
                   var lv = function(v){ return (!v||v==='-'||v==='0.00') ? 'color:#dc2626;font-weight:700' : 'color:#64748b'; };
@@ -903,8 +904,8 @@ function reviewCards(list, allEntries) {
                     + "<input id='ef-cliente-"+eId+"' list='dl-clientes' value='"+clienteVal+"' placeholder='Selecione ou digite...' style='font-size:.8rem;padding:.3rem .5rem;"+fvMotivo(clienteVal,clienteEMotivo)+"'/>"
                     + "</div>"
                     + "<div>"
-                    + "<label style='font-size:.72rem;font-weight:700;"+lvMotivo(projVal,projetoEMotivo)+";text-transform:uppercase'>"+(projetoEMotivo?'\u26a0 \u2190 PENDENTE DE CLASSIFICA\u00c7\u00c3O ':'')+"Projeto</label>"
-                    + "<input id='ef-proj-"+eId+"' list='dl-projetos' value='"+projVal+"' placeholder='Selecione ou digite...' style='font-size:.8rem;padding:.3rem .5rem;"+fvMotivo(projVal,projetoEMotivo)+"'/>"
+                    + "<label style='font-size:.72rem;font-weight:700;"+lvMotivo(projVal,projetoEMotivo)+";text-transform:uppercase'>"+(projetoEMotivo?'\u26a0 \u2190 PENDENTE DE CLASSIFICA\u00c7\u00c3O ':'')+'Projeto <span style=\'font-weight:400;font-size:.7rem\'>(opcional)</span></label>'
+                    + "<input id='ef-proj-"+eId+"' list='dl-projetos' value='"+projVal+"' placeholder='Selecione ou digite...' style='font-size:.8rem;padding:.3rem .5rem;"+(projetoEMotivo?'border:2px solid #ef4444;background:#fff5f5':'')+"'/>"
                     + "</div>"
                     + "<div>"
                     + "<label style='font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase'>Status</label>"
@@ -1475,10 +1476,19 @@ ${groups.map((g) => `<h3>${g.title}</h3><ul>${openIssues.filter((i) => i.code ==
   ${(()=>{
     // Extrair valores únicos dos entries para os datalists
     const refs = db.referencias || {};
-    const ccSet = new Set([...CC_PADRAO, ...(refs.centrosCusto||[]), ...db.entries.map(e=>e.centroCusto||'').filter(Boolean)]);
-    const clienteSet = new Set([...(refs.clientes||[]), ...db.entries.map(e=>e.cliente||e.parceiro||'').filter(v=>v&&v!=='-')]);
-    const projetoSet = new Set([...(refs.projetos||[]), ...db.entries.map(e=>e.projeto||'').filter(v=>v&&v!=='-')]);
-    const contaSet = new Set([...(refs.contas||[]), ...db.entries.map(e=>e.conta||'').filter(v=>v&&v!=='-')]);
+    // Filtro de lixo: remove valores puramente numéricos, vazios, só pontos/traços
+    const isValido = v => {
+      if (!v || v === '-' || v === '--' || v === '.') return false;
+      const s = String(v).trim();
+      if (!s) return false;
+      if (/^\d+(\.\d+)*$/.test(s)) return false; // puramente numérico ou decimal
+      if (/^\d+$/.test(s)) return false;
+      return true;
+    };
+    const ccSet = new Set([...CC_PADRAO, ...(refs.centrosCusto||[]), ...db.entries.map(e=>e.centroCusto||'').filter(isValido)]);
+    const clienteSet = new Set([...(refs.clientes||[]), ...db.entries.map(e=>e.cliente||e.parceiro||'').filter(isValido)]);
+    const projetoSet = new Set([...(refs.projetos||[]), ...db.entries.map(e=>e.projeto||'').filter(isValido)]);
+    const contaSet = new Set([...(refs.contas||[]), ...db.entries.map(e=>e.conta||'').filter(isValido)]);
     const toOpts = arr => [...arr].sort().map(v=>`<option value='${v.replace(/'/g,"&#39;")}'>`).join('');
     return `<datalist id='dl-cc'>${toOpts(ccSet)}</datalist>
 <datalist id='dl-clientes'>${toOpts(clienteSet)}</datalist>
