@@ -109,17 +109,27 @@ def parse_date(value):
         dd, mm, yy = int(br.group(1)), int(br.group(2)), int(br.group(3))
         if len(br.group(3)) == 2:
             yy += 2000
+        try:
+            date(yy, mm, dd)
+        except ValueError:
+            return None, f'invalido:{raw[:20]}'
         return f"{yy:04d}-{mm:02d}-{dd:02d}", 'br'
 
     # Formato ISO
     iso = re.match(r'^(\d{4})-(\d{2})-(\d{2})$', raw)
     if iso:
+        try:
+            date(int(iso.group(1)), int(iso.group(2)), int(iso.group(3)))
+        except ValueError:
+            return None, f'invalido:{raw[:20]}'
         return raw, 'iso'
 
     # Formato mm/aaaa (mês/ano apenas — ex: "01/2022")
     my = re.match(r'^(\d{1,2})/(\d{4})$', raw)
     if my:
         mm, yy = int(my.group(1)), int(my.group(2))
+        if mm < 1 or mm > 12:
+            return None, f'invalido:{raw[:20]}'
         return f"{yy:04d}-{mm:02d}-01", 'mes_ano'
 
     return None, f'invalido:{raw[:20]}'
@@ -234,8 +244,10 @@ def normalize_rows(raw_rows):
     normalized = []
     skipped = 0
     skipped_invalid_value = 0
+    skipped_invalid_date = 0
+    rejected_rows = []
 
-    for raw in raw_rows:
+    for idx, raw in enumerate(raw_rows, start=1):
         entry = {}
 
         # Mapear colunas
@@ -254,8 +266,17 @@ def normalize_rows(raw_rows):
         iso_date, date_type = parse_date(raw_date)
 
         # Pular linhas de controle (SALDO, TOTAL, etc.)
-        if date_type.startswith('controle:') or date_type.startswith('invalido:'):
+        if date_type.startswith('controle:'):
             skipped += 1
+            continue
+        if date_type.startswith('invalido:'):
+            skipped += 1
+            skipped_invalid_date += 1
+            rejected_rows.append({
+                'row': idx,
+                'reason': 'DATA_INVALIDA',
+                'rawData': raw_date
+            })
             continue
 
         entry['data'] = iso_date or raw_date
@@ -268,6 +289,11 @@ def normalize_rows(raw_rows):
         if parsed_valor is None:
             skipped += 1
             skipped_invalid_value += 1
+            rejected_rows.append({
+                'row': idx,
+                'reason': 'VALOR_INVALIDO',
+                'rawValue': raw_valor
+            })
             continue
         entry['valor'] = parsed_valor
         entry['valorOriginal'] = raw_valor
@@ -281,7 +307,12 @@ def normalize_rows(raw_rows):
 
         normalized.append(entry)
 
-    return normalized, {'skipped': skipped, 'skippedInvalidValue': skipped_invalid_value}
+    return normalized, {
+        'skipped': skipped,
+        'skippedInvalidValue': skipped_invalid_value,
+        'skippedInvalidDate': skipped_invalid_date,
+        'rejectedRows': rejected_rows[:200]
+    }
 
 
 def parse_xlsx(path, sheet_name=None):
@@ -319,7 +350,14 @@ def parse_xlsx(path, sheet_name=None):
         raw_rows = parse_xlsx_sheet(zf, target, shared)
 
         if len(raw_rows) < 2:
-            return [], {'sheet': selected['name'], 'skipped': 0, 'skippedInvalidValue': 0, 'total_raw': 0}
+            return [], {
+                'sheet': selected['name'],
+                'skipped': 0,
+                'skippedInvalidValue': 0,
+                'skippedInvalidDate': 0,
+                'rejectedRows': [],
+                'total_raw': 0
+            }
 
         header_idx = find_header_row(raw_rows)
         dicts = rows_to_dicts(raw_rows, header_idx)
@@ -330,6 +368,8 @@ def parse_xlsx(path, sheet_name=None):
             'total_raw': len(dicts),
             'skipped': stats['skipped'],
             'skippedInvalidValue': stats['skippedInvalidValue'],
+            'skippedInvalidDate': stats['skippedInvalidDate'],
+            'rejectedRows': stats['rejectedRows'],
             'imported': len(normalized),
         }
         return normalized, meta
@@ -354,6 +394,8 @@ def parse_csv(path):
         'total_raw': len(raw_rows),
         'skipped': stats['skipped'],
         'skippedInvalidValue': stats['skippedInvalidValue'],
+        'skippedInvalidDate': stats['skippedInvalidDate'],
+        'rejectedRows': stats['rejectedRows'],
         'imported': len(normalized),
     }
     return normalized, meta
