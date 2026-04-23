@@ -29,7 +29,7 @@
 - [ ] Indicador de risco de caixa com cenários.
 
 ## Épico 5 - Estabilização Sprint 4
-- [x] Conectar persistência opcional com PostgreSQL via `DATABASE_URL`.
-- [ ] Migrar dados legados de `data/db.json` para Postgres com script automatizado.
+- [x] Conectar persistência oficial com PostgreSQL via `DATABASE_URL`.
+- [x] Migrar dados legados de `data/db.json` para Postgres com script automatizado.
 - [ ] Criar auditoria de ajustes manuais e trilha de revisão.
 - [ ] Adicionar filtros operacionais para revisão diária.

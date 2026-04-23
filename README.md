@@ -13,9 +13,8 @@ Usuário de teste:
 - senha: `123456`
 
 ## Sprint 4 (estabilização em andamento)
-- Persistência com adapter de storage:
-  - sem `DATABASE_URL`: JSON local (`data/db.json`);
-  - com `DATABASE_URL`: PostgreSQL (uso contínuo).
+- Persistência **obrigatória** em PostgreSQL para uso contínuo (`DATABASE_URL`).
+- Persistência operacional coberta: importações, lançamentos, cadastro revisável, aliases/regras, vínculo projeto->cliente e ajustes manuais.
 - Escopo da Sprint 4 orientado a operação real: estabilidade de dados, revisão diária e dashboard gerencial.
 
 ## Sprint 3 (entrega anterior)
@@ -73,20 +72,26 @@ Sinônimos aceitos (exemplos):
 8. Valide no resumo da pré-análise os alertas CKM específicos: `RECEITA_SEM_CLIENTE` e `CANCELADO_COM_VALOR`.
 
 ## PostgreSQL (Sprint 4)
-Defina a variável de ambiente para ativar persistência no Postgres:
+Defina a variável de ambiente para executar em modo oficial:
 
 ```bash
 export DATABASE_URL='postgresql://usuario:senha@host:5432/banco'
 npm run dev
 ```
 
-Sem `DATABASE_URL`, o sistema permanece no modo JSON local.
+Sem `DATABASE_URL`, o servidor não inicia.
+
+Migração do legado JSON para Postgres:
+```bash
+export DATABASE_URL='postgresql://usuario:senha@host:5432/banco'
+npm run migrate:json-to-pg
+```
 
 ## Limitações conhecidas
 - Parser XLSX/XLSM lê a **primeira aba** apenas.
 - Fórmulas complexas, células muito mescladas e múltiplos layouts na mesma aba podem exigir ajustes.
 - Não há importação via `multipart/form-data` nesta fase (envio em base64 pelo frontend).
-- Persistência permanece em `data/db.json` (migração SQL já mapeada em `docs/modelo-dados-inicial.sql`).
+- Persistência local em JSON é apenas fonte de migração (`scripts/migrate_json_to_pg.js`) e não modo oficial de runtime.
 - Colunas bancárias de saldo por linha (ex.: `BB`, `ITAÚ`, `BRB`) ainda não são pivotadas para lançamentos individuais.
 
 ## Documento de estabilização Sprint 4

@@ -33,8 +33,8 @@ Referência SQL detalhada: `docs/modelo-dados-inicial.sql`.
    - Conferir contagem por entidade.
    - Conferir login, upload, pré-análise, cadastros e dashboard.
 
-6. **Fallback operacional**
-   - Sem `DATABASE_URL`, sistema continua em JSON (modo local/dev).
+6. **Cutover definitivo**
+   - Após migração validada, operação diária roda apenas com `DATABASE_URL`.
 
 ## 3) Impacto nas rotas e telas existentes
 
@@ -53,9 +53,9 @@ Referência SQL detalhada: `docs/modelo-dados-inicial.sql`.
 ## 4) Backlog técnico Sprint 4
 
 ### Núcleo de dados
-- [x] Introduzir adapter de storage com modo Postgres/JSON.
+- [x] Introduzir storage oficial PostgreSQL com schema/seed no startup.
 - [x] Inicialização de schema/seed no startup.
-- [ ] Backfill automatizado de `data/db.json` para Postgres via script dedicado.
+- [x] Backfill automatizado de `data/db.json` para Postgres via script dedicado (`scripts/migrate_json_to_pg.js`).
 - [ ] Índices e constraints adicionais para performance e integridade.
 
 ### Fluxo operacional diário

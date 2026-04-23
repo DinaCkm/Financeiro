@@ -7,10 +7,9 @@ const { spawnSync } = require('child_process');
 const { createStorage } = require('./storage');
 
 const PORT = process.env.PORT || 3000;
-const DB_PATH = path.join(__dirname, 'data', 'db.json');
 const PARSER_PATH = path.join(__dirname, 'scripts', 'parse_spreadsheet.py');
 const sessions = new Map();
-const storage = createStorage({ dbPath: DB_PATH, databaseUrl: process.env.DATABASE_URL });
+const storage = createStorage({ databaseUrl: process.env.DATABASE_URL });
 
 const TYPE_OPTIONS = ['Cliente', 'Projeto', 'Prestador de Serviço', 'Fornecedor', 'Estrutura Interna', 'Financeiro / Não Operacional', 'Conta / Cartão', 'Pendente de Classificação'];
 const BLOCKING_ISSUES = ['DESPESA_SEM_PROJETO', 'ESTRUTURA_COMO_CLIENTE', 'MUTUO_COMO_CLIENTE', 'MUTUO_CLASSIFICACAO', 'VALOR_INVALIDO', 'DATA_INVALIDA'];
@@ -350,7 +349,7 @@ function page(title, body, user) {
 }
 
 function reviewTableRows(list) {
-  return list.map((r) => `<tr>
+  return list.map((r) => `<tr data-id='${r.id}'>
 <td>${r.nomeOriginal}</td><td>${r.nomeOficial}</td><td>${r.tipoSugerido}</td>
 <td><select onchange="alterarTipo('${r.id}', this.value)">${TYPE_OPTIONS.map((t) => `<option ${t === r.tipoFinal ? 'selected' : ''}>${t}</option>`).join('')}</select></td>
 <td><input value='${r.clienteVinculado || ''}' onchange="vincularCliente('${r.id}', this.value)"/></td>
@@ -393,6 +392,8 @@ function calculateDashboard(db) {
   const proj30 = sortedEntries.filter((e) => e.dataISO <= d30).reduce((acc, e) => acc + e.valor, 0);
   const contasPagar = sortedEntries.filter((e) => e.dataISO > today && e.valor < 0).reduce((acc, e) => acc + Math.abs(e.valor), 0);
   const contasReceber = sortedEntries.filter((e) => e.dataISO > today && e.valor > 0).reduce((acc, e) => acc + e.valor, 0);
+  const upcoming7 = sortedEntries.filter((e) => e.dataISO > today && e.dataISO <= d7);
+  const riscoCaixa = proj7 < 0 ? 'alto' : proj30 < 0 ? 'moderado' : 'controlado';
 
   const byClient = {};
   const byProject = {};
@@ -403,7 +404,7 @@ function calculateDashboard(db) {
     byProject[p] = (byProject[p] || 0) + e.valor;
   });
 
-  return { saldoHoje, proj7, proj30, contasPagar, contasReceber, byClient, byProject, rolling };
+  return { saldoHoje, proj7, proj30, contasPagar, contasReceber, byClient, byProject, rolling, upcoming7, riscoCaixa };
 }
 
 const server = http.createServer(async (req, res) => {
@@ -561,10 +562,25 @@ ${groups.map((g) => `<h3>${g.title}</h3><ul>${openIssues.filter((i) => i.code ==
   }
 
   if (req.method === 'GET' && url.pathname === '/cadastros') {
-    const pending = db.reviewRegistry.filter((item) => item.statusRevisao !== 'revisado');
-    const reviewed = db.reviewRegistry.length - pending.length;
+    const statusFilter = (url.searchParams.get('status') || 'pendente').trim();
+    const typeFilter = (url.searchParams.get('tipo') || '').trim();
+    const textFilter = normalizeName(url.searchParams.get('q') || '');
+    const filtered = db.reviewRegistry.filter((item) => {
+      if (statusFilter && statusFilter !== 'todos' && item.statusRevisao !== statusFilter) return false;
+      if (typeFilter && item.tipoFinal !== typeFilter) return false;
+      if (textFilter && !normalizeName(`${item.nomeOriginal} ${item.nomeOficial}`).includes(textFilter)) return false;
+      return true;
+    });
+    const reviewed = db.reviewRegistry.filter((item) => item.statusRevisao === 'revisado').length;
     const html = page('Cadastro Revisável', `<section><h2>Cadastro Revisável (fluxo diário)</h2>
-<p>Pendentes: ${pending.length} | Revisados: ${reviewed}</p>
+<p>Total filtrado: ${filtered.length} | Revisados: ${reviewed}</p>
+<form method='get' action='/cadastros' class='grid2'>
+  <label>Status<select name='status'><option value='pendente' ${statusFilter === 'pendente' ? 'selected' : ''}>pendente</option><option value='revisado' ${statusFilter === 'revisado' ? 'selected' : ''}>revisado</option><option value='todos' ${statusFilter === 'todos' ? 'selected' : ''}>todos</option></select></label>
+  <label>Tipo<select name='tipo'><option value=''>todos</option>${TYPE_OPTIONS.map((t) => `<option ${typeFilter === t ? 'selected' : ''}>${t}</option>`).join('')}</select></label>
+  <label>Busca <input name='q' value='${url.searchParams.get('q') || ''}' placeholder='nome original/oficial'/></label>
+  <button type='submit'>Filtrar</button>
+</form>
+<button onclick='revisarEmLote()'>Marcar filtrados como revisado</button>
 <div class='grid2'>
 <div><h3>Consolidar aliases</h3><input id='aliasFrom' placeholder='Nome origem'/><input id='aliasTo' placeholder='Nome oficial'/><label><input id='keepAlias' type='checkbox' checked/> manter alias</label><button onclick='consolidarAlias()'>Consolidar + regra</button></div>
 <div><h3>Vincular projeto a cliente</h3><input id='projectName' placeholder='Projeto'/><input id='clientName' placeholder='Cliente'/><button onclick='vincularProjetoCliente()'>Vincular + regra</button></div>
@@ -573,7 +589,7 @@ ${groups.map((g) => `<h3>${g.title}</h3><ul>${openIssues.filter((i) => i.code ==
 <div><h3>Reclassificar para Estrutura</h3><input id='toEstrutura' placeholder='Nome oficial'/><button onclick='reclassificar("Estrutura Interna")'>Aplicar</button></div>
 <div><h3>Reclassificar para Financeiro</h3><input id='toFinanceiro' placeholder='Nome oficial'/><button onclick='reclassificar("Financeiro / Não Operacional")'>Aplicar</button></div>
 </div>
-<table><thead><tr><th>Original</th><th>Oficial</th><th>Sugerido</th><th>Tipo Final</th><th>Cliente</th><th>Projeto</th><th>Status</th></tr></thead><tbody>${reviewTableRows(pending)}</tbody></table>
+<table><thead><tr><th>Original</th><th>Oficial</th><th>Sugerido</th><th>Tipo Final</th><th>Cliente</th><th>Projeto</th><th>Status</th></tr></thead><tbody>${reviewTableRows(filtered)}</tbody></table>
 </section>
 <script>
 async function alterarTipo(id,tipoFinal){await fetch('/api/review/'+id,{method:'PATCH',headers:{'content-type':'application/json'},body:JSON.stringify({tipoFinal,statusRevisao:'revisado'})});}
@@ -583,6 +599,7 @@ async function marcarRevisao(id,statusRevisao){await fetch('/api/review/'+id,{me
 async function consolidarAlias(){const sourceName=document.getElementById('aliasFrom').value;const targetName=document.getElementById('aliasTo').value;const keepAlias=document.getElementById('keepAlias').checked;await fetch('/api/review/consolidate',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({sourceName,targetName,keepAlias,applyRule:true})});location.reload();}
 async function vincularProjetoCliente(){const projectName=document.getElementById('projectName').value;const clientName=document.getElementById('clientName').value;await fetch('/api/review/link-project',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({projectName,clientName,applyRule:true})});location.reload();}
 async function reclassificar(tipo){const idField=tipo.includes('Estrutura')?'toEstrutura':'toFinanceiro';const nome=document.getElementById(idField).value;await fetch('/api/review/reclassify',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({nome,tipoFinal:tipo,applyRule:true})});location.reload();}
+async function revisarEmLote(){const ids=[...document.querySelectorAll('tr[data-id]')].map(r=>r.getAttribute('data-id'));await fetch('/api/review/bulk-review',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({ids,statusRevisao:'revisado'})});location.reload();}
 </script>`, user);
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
     res.end(html);
@@ -664,6 +681,18 @@ async function reclassificar(tipo){const idField=tipo.includes('Estrutura')?'toE
     return json(res, 200, { ok: true });
   }
 
+  if (req.method === 'POST' && url.pathname === '/api/review/bulk-review') {
+    const { ids, statusRevisao, tipoFinal } = JSON.parse(await readBody(req) || '{}');
+    const set = new Set(ids || []);
+    db.reviewRegistry.forEach((item) => {
+      if (!set.has(item.id)) return;
+      if (statusRevisao) item.statusRevisao = statusRevisao;
+      if (tipoFinal) item.tipoFinal = tipoFinal;
+    });
+    await storage.saveDb(db);
+    return json(res, 200, { ok: true, updated: set.size });
+  }
+
   if (req.method === 'POST' && url.pathname === '/api/review/save-rule') {
     const body = JSON.parse(await readBody(req) || '{}');
     db.savedRules.push({ id: crypto.randomUUID(), type: 'entry_update', active: true, ...body });
@@ -678,6 +707,13 @@ async function reclassificar(tipo){const idField=tipo.includes('Estrutura')?'toE
     const changes = JSON.parse(await readBody(req) || '{}');
     const editable = ['cliente', 'projeto', 'natureza', 'centroCusto', 'parceiro', 'categoria', 'detalhe', 'conta', 'formaPagamento', 'status'];
     editable.forEach((k) => { if (changes[k] !== undefined) entry[k] = changes[k]; });
+    db.manualAdjustments = db.manualAdjustments || [];
+    db.manualAdjustments.push({
+      id: crypto.randomUUID(),
+      entryId: entry.id,
+      changedAt: new Date().toISOString(),
+      changes
+    });
     await storage.saveDb(db);
     return json(res, 200, entry);
   }
@@ -692,7 +728,9 @@ async function reclassificar(tipo){const idField=tipo.includes('Estrutura')?'toE
 <div class='card'><strong>Projeção 30 dias</strong><span>R$ ${metrics.proj30.toFixed(2)}</span></div>
 <div class='card'><strong>Contas a pagar</strong><span>R$ ${metrics.contasPagar.toFixed(2)}</span></div>
 <div class='card'><strong>Contas a receber</strong><span>R$ ${metrics.contasReceber.toFixed(2)}</span></div>
+<div class='card'><strong>Risco de caixa</strong><span>${metrics.riscoCaixa}</span></div>
 </div>
+<h3>Próximos 7 dias (agenda financeira)</h3><ul>${metrics.upcoming7.slice(0, 15).map((e) => `<li>${e.dataISO} | ${e.descricao || '-'} | R$ ${e.valor.toFixed(2)}</li>`).join('') || '<li>Sem lançamentos previstos.</li>'}</ul>
 <h3>Resultado por cliente</h3><ul>${topItems(metrics.byClient).map(([k, v]) => `<li>${k}: R$ ${v.toFixed(2)}</li>`).join('')}</ul>
 <h3>Resultado por projeto</h3><ul>${topItems(metrics.byProject).map(([k, v]) => `<li>${k}: R$ ${v.toFixed(2)}</li>`).join('')}</ul>
 </section>`, user);
