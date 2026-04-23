@@ -11,6 +11,7 @@ const PORT = process.env.PORT || 3000;
 const DB_PATH = path.join(__dirname, 'data', 'db.json');
 const PARSER_PATH = path.join(__dirname, 'scripts', 'parse_spreadsheet.py');
 const sessions = new Map();
+const SESSION_TTL_MS = 12 * 60 * 60 * 1000; // 12h
 
 const TYPE_OPTIONS = ['Cliente', 'Projeto', 'Prestador de Serviço', 'Fornecedor', 'Estrutura Interna', 'Financeiro / Não Operacional', 'Conta / Cartão', 'Pendente de Classificação'];
 const BLOCKING_ISSUES = ['DESPESA_SEM_PROJETO', 'ESTRUTURA_COMO_CLIENTE', 'MUTUO_COMO_CLIENTE', 'MUTUO_CLASSIFICACAO', 'VALOR_INVALIDO', 'DATA_INVALIDA'];
@@ -153,10 +154,29 @@ function parseCookies(req) {
   }));
 }
 
+function buildSessionCookie(sid, req) {
+  const attrs = ['Path=/', 'HttpOnly', `Max-Age=${Math.floor(SESSION_TTL_MS / 1000)}`, 'SameSite=Lax'];
+  const forwardedProto = (req.headers['x-forwarded-proto'] || '').toString().toLowerCase();
+  if (process.env.NODE_ENV === 'production' || forwardedProto === 'https') attrs.push('Secure');
+  return `sid=${sid}; ${attrs.join('; ')}`;
+}
+
 function currentUser(req, db) {
   const sid = parseCookies(req).sid;
   if (!sid) return null;
-  const userId = sessions.get(sid);
+  const session = sessions.get(sid);
+  if (!session) return null;
+  // Compatibilidade com sessões antigas salvas como string
+  if (typeof session === 'string') {
+    sessions.set(sid, { userId: session, expiresAt: Date.now() + SESSION_TTL_MS });
+    return db.users.find((u) => u.id === session) || null;
+  }
+  if (Date.now() > session.expiresAt) {
+    sessions.delete(sid);
+    return null;
+  }
+  session.expiresAt = Date.now() + SESSION_TTL_MS; // sliding session
+  const userId = session.userId;
   return db.users.find((u) => u.id === userId) || null;
 }
 
@@ -1187,15 +1207,18 @@ const server = http.createServer(async (req, res) => {
       saveDb(db);
     }
     const sid = crypto.randomUUID();
-    sessions.set(sid, user.id);
-    res.writeHead(302, { 'Set-Cookie': `sid=${sid}; Path=/; HttpOnly`, Location: '/' });
+    sessions.set(sid, { userId: user.id, expiresAt: Date.now() + SESSION_TTL_MS });
+    res.writeHead(302, { 'Set-Cookie': buildSessionCookie(sid, req), Location: '/' });
     res.end();
     return;
   }
 
   if (req.method === 'GET' && url.pathname === '/logout') {
     sessions.delete(parseCookies(req).sid);
-    res.writeHead(302, { 'Set-Cookie': 'sid=; Path=/; Max-Age=0', Location: '/login' });
+    const forwardedProto = (req.headers['x-forwarded-proto'] || '').toString().toLowerCase();
+    const clearAttrs = ['Path=/', 'HttpOnly', 'Max-Age=0', 'SameSite=Lax'];
+    if (process.env.NODE_ENV === 'production' || forwardedProto === 'https') clearAttrs.push('Secure');
+    res.writeHead(302, { 'Set-Cookie': `sid=; ${clearAttrs.join('; ')}`, Location: '/login' });
     res.end();
     return;
   }
