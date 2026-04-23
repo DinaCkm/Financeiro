@@ -522,7 +522,7 @@ function serveStatic(req, res) {
 
 function page(title, body, user) {
   return `<!doctype html><html lang='pt-BR'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>${title} — CKM Financeiro</title><link rel='preconnect' href='https://fonts.googleapis.com'><link rel='stylesheet' href='https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap'><link rel='stylesheet' href='/public/style.css'></head><body>
-<header><h1>Painel <em>CKM</em> Financeiro</h1>${user ? `<nav><a href='/'>Home</a><a href='/upload'>Upload</a><a href='/pendencias'>Pré-análise</a><a href='/cadastros'>Cadastro Revisável</a><a href='/fatura'>Fatura Cartão</a><a href='/dashboard'>Dashboard</a><a href='/logout' class='sair'>Sair</a></nav>` : ''}</header>
+<header><h1>Painel <em>CKM</em> Financeiro</h1>${user ? `<nav><a href='/'>Home</a><a href='/upload'>Upload</a><a href='/pendencias'>Pré-análise</a><a href='/cadastros'>Cadastro Revisável</a><a href='/fatura'>Fatura Cartão</a><a href='/referencias'>Referências</a><a href='/dashboard'>Dashboard</a><a href='/logout' class='sair'>Sair</a></nav>` : ''}</header>
 <main>${body}</main></body></html>`;
 }
 
@@ -681,19 +681,19 @@ function reviewCards(list, allEntries) {
                     + "</div>"
                     + "<div>"
                     + "<label style='font-size:.72rem;font-weight:700;"+lv(ccVal)+";text-transform:uppercase'>"+warn(ccVal)+"Centro de Custo</label>"
-                    + "<input id='ef-cc-"+eId+"' value='"+ccVal+"' placeholder='Ex: ESCRITÓRIO, MK' style='font-size:.8rem;padding:.3rem .5rem;"+fv(ccVal)+"'/>"
+                    + "<input id='ef-cc-"+eId+"' list='dl-cc' value='"+ccVal+"' placeholder='Selecione ou digite...' style='font-size:.8rem;padding:.3rem .5rem;"+fv(ccVal)+"'/>"
                     + "</div>"
                     + "<div>"
                     + "<label style='font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase'>Conta / Banco</label>"
-                    + "<input id='ef-conta-"+eId+"' value='"+contaVal+"' placeholder='Ex: Itaú PJ, Nubank' style='font-size:.8rem;padding:.3rem .5rem'/>"
+                    + "<input id='ef-conta-"+eId+"' list='dl-contas' value='"+contaVal+"' placeholder='Selecione ou digite...' style='font-size:.8rem;padding:.3rem .5rem'/>"
                     + "</div>"
                     + "<div>"
                     + "<label style='font-size:.72rem;font-weight:700;"+lv(clienteVal)+";text-transform:uppercase'>"+warn(clienteVal)+"Cliente / Parceiro</label>"
-                    + "<input id='ef-cliente-"+eId+"' value='"+clienteVal+"' placeholder='Nome do cliente' style='font-size:.8rem;padding:.3rem .5rem;"+fv(clienteVal)+"'/>"
+                    + "<input id='ef-cliente-"+eId+"' list='dl-clientes' value='"+clienteVal+"' placeholder='Selecione ou digite...' style='font-size:.8rem;padding:.3rem .5rem;"+fv(clienteVal)+"'/>"
                     + "</div>"
                     + "<div>"
                     + "<label style='font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase'>Projeto</label>"
-                    + "<input id='ef-proj-"+eId+"' value='"+projVal+"' placeholder='Ex: BRB-PDL' style='font-size:.8rem;padding:.3rem .5rem'/>"
+                    + "<input id='ef-proj-"+eId+"' list='dl-projetos' value='"+projVal+"' placeholder='Selecione ou digite...' style='font-size:.8rem;padding:.3rem .5rem'/>"
                     + "</div>"
                     + "<div>"
                     + "<label style='font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase'>Status</label>"
@@ -1197,8 +1197,20 @@ ${groups.map((g) => `<h3>${g.title}</h3><ul>${openIssues.filter((i) => i.code ==
     <button type='submit'>&#128269;&nbsp; Filtrar</button>
   </form>
 
-  <p style='font-size:.83rem;color:var(--gray-400);margin-bottom:.75rem'>Exibindo <strong>${filtered.length}</strong> cadastros. Clique em um item para ver os lançamentos vinculados e fazer ajustes.</p>
-
+   <p style='font-size:.83rem;color:var(--gray-400);margin-bottom:.75rem'>Exibindo <strong>${filtered.length}</strong> cadastros. Clique em um item para ver os lançamentos vinculados e fazer ajustes. <a href='/referencias' style='font-size:.8rem;color:var(--blue)'>&#9998; Gerenciar clientes, projetos e centros de custo</a></p>
+  ${(()=>{
+    // Extrair valores únicos dos entries para os datalists
+    const refs = db.referencias || {};
+    const ccSet = new Set([...(refs.centrosCusto||[]), ...db.entries.map(e=>e.centroCusto||'').filter(Boolean)]);
+    const clienteSet = new Set([...(refs.clientes||[]), ...db.entries.map(e=>e.cliente||e.parceiro||'').filter(v=>v&&v!=='-')]);
+    const projetoSet = new Set([...(refs.projetos||[]), ...db.entries.map(e=>e.projeto||'').filter(v=>v&&v!=='-')]);
+    const contaSet = new Set([...(refs.contas||[]), ...db.entries.map(e=>e.conta||'').filter(v=>v&&v!=='-')]);
+    const toOpts = arr => [...arr].sort().map(v=>`<option value='${v.replace(/'/g,"&#39;")}'>`).join('');
+    return `<datalist id='dl-cc'>${toOpts(ccSet)}</datalist>
+<datalist id='dl-clientes'>${toOpts(clienteSet)}</datalist>
+<datalist id='dl-projetos'>${toOpts(projetoSet)}</datalist>
+<datalist id='dl-contas'>${toOpts(contaSet)}</datalist>`;
+  })()}
   <div id='review-list'>
     ${reviewCards(filtered, db.entries)}
   </div>
@@ -1975,6 +1987,110 @@ Regras:
     return json(res, 200, { ok: true, inseridos: novosLancamentos.length, removido: entryId });
   }
 
+  // ===== REFERÊNCIAS: Clientes, Projetos, Centros de Custo =====
+  if (req.method === 'GET' && url.pathname === '/referencias') {
+    if (!checkAuth(req, res)) return;
+    const db = loadDb();
+    const refs = db.referencias || { clientes: [], projetos: [], centrosCusto: [], contas: [] };
+    // Enriquecer com valores já usados nos entries
+    const usedCC = [...new Set(db.entries.map(e=>e.centroCusto||'').filter(v=>v&&v!=='-'))].sort();
+    const usedClientes = [...new Set(db.entries.map(e=>e.cliente||e.parceiro||'').filter(v=>v&&v!=='-'))].sort();
+    const usedProjetos = [...new Set(db.entries.map(e=>e.projeto||'').filter(v=>v&&v!=='-'))].sort();
+    const usedContas = [...new Set(db.entries.map(e=>e.conta||'').filter(v=>v&&v!=='-'))].sort();
+    const allCC = [...new Set([...refs.centrosCusto, ...usedCC])].sort();
+    const allClientes = [...new Set([...refs.clientes, ...usedClientes])].sort();
+    const allProjetos = [...new Set([...refs.projetos, ...usedProjetos])].sort();
+    const allContas = [...new Set([...refs.contas, ...usedContas])].sort();
+    const section = (titulo, lista, tipo, cor) => `
+      <div style='background:#fff;border:1px solid var(--gray-200);border-radius:10px;padding:1.25rem'>
+        <div style='display:flex;align-items:center;justify-content:space-between;margin-bottom:1rem'>
+          <h3 style='margin:0;font-size:1rem;color:${cor}'>${titulo}</h3>
+          <button onclick="adicionarRef('${tipo}')" style='font-size:.8rem;padding:.35rem .75rem;background:${cor}'>+ Novo</button>
+        </div>
+        <div id='list-${tipo}' style='display:flex;flex-direction:column;gap:.4rem'>
+          ${lista.map(v=>`
+            <div style='display:flex;align-items:center;gap:.5rem;padding:.4rem .6rem;background:var(--gray-50);border-radius:6px;border:1px solid var(--gray-200)'>
+              <span style='flex:1;font-size:.85rem'>${v}</span>
+              <button onclick="editarRef('${tipo}','${v.replace(/'/g,"\\'")}')"
+                style='font-size:.72rem;padding:.2rem .5rem;background:#f1f5f9;color:#475569;box-shadow:none;border:1px solid #cbd5e1'>&#9998;</button>
+              <button onclick="excluirRef('${tipo}','${v.replace(/'/g,"\\'")}')"
+                style='font-size:.72rem;padding:.2rem .5rem;background:#fee2e2;color:#dc2626;box-shadow:none;border:1px solid #fca5a5'>&#10005;</button>
+            </div>`).join('')}
+        </div>
+      </div>`;
+    const html = page('Refer\u00eancias', `
+<section>
+  <div style='display:flex;align-items:center;gap:1rem;margin-bottom:1.5rem'>
+    <h2 style='margin:0'>Refer\u00eancias do Sistema</h2>
+    <a href='/cadastros' style='font-size:.82rem;color:var(--blue)'>&#8592; Voltar para Cadastros</a>
+  </div>
+  <p style='font-size:.85rem;color:var(--gray-400);margin-bottom:1.5rem'>Gerencie os valores controlados usados nos campos de edi\u00e7\u00e3o. Ao editar um lan\u00e7amento, apenas estes valores aparecer\u00e3o como op\u00e7\u00f5es.</p>
+  <div style='display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:1.25rem'>
+    ${section('&#128100; Clientes / Parceiros', allClientes, 'clientes', '#1d4ed8')}
+    ${section('&#128196; Projetos', allProjetos, 'projetos', '#7c3aed')}
+    ${section('&#127970; Centros de Custo', allCC, 'centrosCusto', '#059669')}
+    ${section('&#127981; Contas / Bancos', allContas, 'contas', '#d97706')}
+  </div>
+</section>
+<script>
+async function adicionarRef(tipo){
+  const nome=prompt('Nome do novo item:');
+  if(!nome||!nome.trim()) return;
+  await fetch('/api/referencias',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({tipo,nome:nome.trim()})});
+  location.reload();
+}
+async function editarRef(tipo,nomeAtual){
+  const novo=prompt('Novo nome:',nomeAtual);
+  if(!novo||!novo.trim()||novo===nomeAtual) return;
+  await fetch('/api/referencias',{method:'PUT',headers:{'content-type':'application/json'},body:JSON.stringify({tipo,nomeAtual,nomeNovo:novo.trim()})});
+  location.reload();
+}
+async function excluirRef(tipo,nome){
+  if(!confirm('Remover "'+nome+'" da lista de refer\u00eancias?')) return;
+  await fetch('/api/referencias',{method:'DELETE',headers:{'content-type':'application/json'},body:JSON.stringify({tipo,nome})});
+  location.reload();
+}
+<\/script>`);
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+    return res.end(html);
+  }
+  if (req.method === 'POST' && url.pathname === '/api/referencias') {
+    if (!checkAuth(req, res)) return;
+    const db = loadDb();
+    const { tipo, nome } = JSON.parse(await readBody(req) || '{}');
+    if (!tipo || !nome) return json(res, 400, { error: 'tipo e nome s\u00e3o obrigat\u00f3rios' });
+    if (!db.referencias) db.referencias = { clientes: [], projetos: [], centrosCusto: [], contas: [] };
+    if (!db.referencias[tipo]) db.referencias[tipo] = [];
+    if (!db.referencias[tipo].includes(nome)) db.referencias[tipo].push(nome);
+    saveDb(db);
+    return json(res, 200, { ok: true });
+  }
+  if (req.method === 'PUT' && url.pathname === '/api/referencias') {
+    if (!checkAuth(req, res)) return;
+    const db = loadDb();
+    const { tipo, nomeAtual, nomeNovo } = JSON.parse(await readBody(req) || '{}');
+    if (!db.referencias || !db.referencias[tipo]) return json(res, 404, { error: 'N\u00e3o encontrado' });
+    const idx = db.referencias[tipo].indexOf(nomeAtual);
+    if (idx !== -1) db.referencias[tipo][idx] = nomeNovo;
+    // Atualizar entries que usam o nome antigo
+    db.entries.forEach(e => {
+      if (tipo === 'clientes') { if (e.cliente === nomeAtual) e.cliente = nomeNovo; if (e.parceiro === nomeAtual) e.parceiro = nomeNovo; }
+      if (tipo === 'projetos' && e.projeto === nomeAtual) e.projeto = nomeNovo;
+      if (tipo === 'centrosCusto' && e.centroCusto === nomeAtual) e.centroCusto = nomeNovo;
+      if (tipo === 'contas' && e.conta === nomeAtual) e.conta = nomeNovo;
+    });
+    saveDb(db);
+    return json(res, 200, { ok: true });
+  }
+  if (req.method === 'DELETE' && url.pathname === '/api/referencias') {
+    if (!checkAuth(req, res)) return;
+    const db = loadDb();
+    const { tipo, nome } = JSON.parse(await readBody(req) || '{}');
+    if (!db.referencias || !db.referencias[tipo]) return json(res, 404, { error: 'N\u00e3o encontrado' });
+    db.referencias[tipo] = db.referencias[tipo].filter(v => v !== nome);
+    saveDb(db);
+    return json(res, 200, { ok: true });
+  }
   res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
   res.end('Not found');
 });
