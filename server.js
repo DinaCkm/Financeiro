@@ -514,7 +514,7 @@ function serveStatic(req, res) {
 
 function page(title, body, user) {
   return `<!doctype html><html lang='pt-BR'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>${title} — CKM Financeiro</title><link rel='preconnect' href='https://fonts.googleapis.com'><link rel='stylesheet' href='https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap'><link rel='stylesheet' href='/public/style.css'></head><body>
-<header><h1>Painel <em>CKM</em> Financeiro</h1>${user ? `<nav><a href='/'>Home</a><a href='/upload'>Upload</a><a href='/pendencias'>Pré-análise</a><a href='/cadastros'>Cadastro Revisável</a><a href='/dashboard'>Dashboard</a><a href='/logout' class='sair'>Sair</a></nav>` : ''}</header>
+<header><h1>Painel <em>CKM</em> Financeiro</h1>${user ? `<nav><a href='/'>Home</a><a href='/upload'>Upload</a><a href='/pendencias'>Pré-análise</a><a href='/cadastros'>Cadastro Revisável</a><a href='/fatura'>Fatura Cartão</a><a href='/dashboard'>Dashboard</a><a href='/logout' class='sair'>Sair</a></nav>` : ''}</header>
 <main>${body}</main></body></html>`;
 }
 
@@ -1388,6 +1388,258 @@ async function analisarIA(id){
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
     res.end(html);
     return;
+  }
+
+  // ─── MÓDULO FATURA DE CARTÃO ────────────────────────────────────────────────
+  if (req.method === 'GET' && url.pathname === '/fatura') {
+    const user = requireAuth(req, res, db);
+    if (!user) return;
+    // Lançamentos que parecem ser de cartão (para o usuário selecionar qual substituir)
+    const cartaoEntries = db.entries
+      .filter((e) => {
+        const desc = (e.descricao || '').toUpperCase();
+        return desc.includes('FATURA') || desc.includes('CARTAO') || desc.includes('CARTÃO') || desc.includes('CREDITO') || desc.includes('CRÉDITO') || (e.natureza || '').toUpperCase().includes('CARTÃO');
+      })
+      .sort((a, b) => (b.dataISO || '').localeCompare(a.dataISO || ''))
+      .slice(0, 50);
+    const optionsHtml = cartaoEntries.map((e) =>
+      `<option value='${e.id}'>${e.dataISO || e.data} | ${e.descricao || '-'} | R$ ${Number(e.valor||0).toFixed(2)}</option>`
+    ).join('');
+    const html = page('Fatura de Cartão', `
+<section>
+  <h2>&#128179; Detalhar Fatura de Cartão</h2>
+  <p style='color:var(--gray-600);margin-bottom:1.5rem'>Faça upload do PDF da fatura do cartão. A IA extrai os itens, classifica com base em históricos anteriores e você revisa antes de substituir o lançamento original.</p>
+  <div style='background:var(--white);border:1px solid var(--gray-200);border-radius:10px;padding:1.5rem;max-width:700px'>
+    <form id='fatura-form'>
+      <div style='margin-bottom:1rem'>
+        <label style='font-size:.85rem;font-weight:700;color:var(--gray-600);text-transform:uppercase;letter-spacing:.04em'>1. Selecione o lançamento de cartão a substituir</label>
+        <select id='entry-id' name='entryId' style='margin-top:.4rem'>
+          <option value=''>-- Selecione o lançamento --</option>
+          ${optionsHtml}
+        </select>
+        <p style='font-size:.76rem;color:var(--gray-400);margin:.3rem 0 0'>Não encontrou? O lançamento pode estar com outra descrição. Use a busca abaixo.</p>
+        <input id='busca-entry' placeholder='Buscar por descrição...' style='margin-top:.4rem' oninput='filtrarEntries(this.value)'/>
+      </div>
+      <div style='margin-bottom:1rem'>
+        <label style='font-size:.85rem;font-weight:700;color:var(--gray-600);text-transform:uppercase;letter-spacing:.04em'>2. Faça upload do PDF da fatura</label>
+        <input type='file' id='fatura-pdf' accept='.pdf' style='margin-top:.4rem;padding:.4rem;border:2px dashed var(--gray-300);border-radius:6px;width:100%;cursor:pointer'/>
+      </div>
+      <div style='margin-bottom:1rem'>
+        <label style='font-size:.85rem;font-weight:700;color:var(--gray-600);text-transform:uppercase;letter-spacing:.04em'>3. Cartão / Conta</label>
+        <input id='cartao-nome' placeholder='Ex: Itaú Visa, Nubank, XP Visa...' style='margin-top:.4rem'/>
+      </div>
+      <button type='button' onclick='processarFatura()' style='width:100%;background:#1d4ed8'>&#128269; Extrair e Classificar com IA</button>
+    </form>
+    <div id='fatura-loading' style='display:none;text-align:center;padding:2rem'>
+      <p style='color:#1d4ed8;font-weight:600'>&#9203; Processando PDF e classificando itens com IA...</p>
+      <p style='font-size:.82rem;color:var(--gray-400)'>Isso pode levar alguns segundos dependendo do tamanho da fatura.</p>
+    </div>
+    <div id='fatura-resultado' style='display:none;margin-top:1.5rem'></div>
+  </div>
+</section>
+<script>
+const allEntries = ${JSON.stringify(cartaoEntries.map((e) => ({ id: e.id, desc: e.descricao || '', data: e.dataISO || e.data || '', valor: e.valor })))};
+function filtrarEntries(q) {
+  const sel = document.getElementById('entry-id');
+  const opts = allEntries.filter((e) => e.desc.toLowerCase().includes(q.toLowerCase()));
+  sel.innerHTML = '<option value="">-- Selecione o lançamento --</option>' +
+    opts.map((e) => '<option value="' + e.id + '">' + e.data + ' | ' + e.desc + ' | R$ ' + Number(e.valor||0).toFixed(2) + '</option>').join('');
+}
+async function processarFatura() {
+  const entryId = document.getElementById('entry-id').value;
+  const file = document.getElementById('fatura-pdf').files[0];
+  const cartao = document.getElementById('cartao-nome').value;
+  if (!entryId) { alert('Selecione o lançamento de cartão a substituir.'); return; }
+  if (!file) { alert('Selecione o PDF da fatura.'); return; }
+  document.getElementById('fatura-loading').style.display = 'block';
+  document.getElementById('fatura-resultado').style.display = 'none';
+  const fd = new FormData();
+  fd.append('pdf', file);
+  fd.append('entryId', entryId);
+  fd.append('cartao', cartao);
+  try {
+    const resp = await fetch('/api/fatura/processar', { method: 'POST', body: fd });
+    const data = await resp.json();
+    document.getElementById('fatura-loading').style.display = 'none';
+    if (data.error) { alert('Erro: ' + data.error); return; }
+    renderResultado(data);
+  } catch(e) {
+    document.getElementById('fatura-loading').style.display = 'none';
+    alert('Erro ao processar: ' + e.message);
+  }
+}
+function renderResultado(data) {
+  const div = document.getElementById('fatura-resultado');
+  div.style.display = 'block';
+  const rows = data.itens.map((item, i) => {
+    const pendente = !item.natureza || item.natureza === 'Pendente';
+    const rowBg = pendente ? 'background:#fffbeb' : '';
+    return '<tr style="' + rowBg + '" id="row-' + i + '">' +
+      '<td style="white-space:nowrap;font-size:.8rem">' + (item.data || '-') + '</td>' +
+      '<td style="font-size:.8rem">' + (item.descricao || '-') + '</td>' +
+      '<td style="font-size:.8rem;white-space:nowrap;color:#991b1b;font-weight:600">R$ ' + Number(item.valor||0).toFixed(2) + '</td>' +
+      '<td><select id="nat-' + i + '" style="font-size:.76rem;padding:.2rem .4rem">' +
+        ['Receita Operacional','Despesa Direta','Despesa Indireta','Despesa Administrativa','Despesa Financeira','Transferência','Pendente'].map((n) =>
+          '<option ' + (n === (item.natureza||'Pendente') ? 'selected' : '') + '>' + n + '</option>'
+        ).join('') +
+      '</select></td>' +
+      '<td><input id="cc-' + i + '" value="' + (item.centroCusto||'') + '" placeholder="CC" style="font-size:.76rem;padding:.2rem .4rem;width:90px"/></td>' +
+      '<td><input id="proj-' + i + '" value="' + (item.projeto||'') + '" placeholder="Projeto" style="font-size:.76rem;padding:.2rem .4rem;width:100px"/></td>' +
+      '<td style="font-size:.76rem;color:var(--gray-400);font-style:italic;max-width:160px">' + (item.explicacaoIA || '') + '</td>' +
+    '</tr>';
+  }).join('');
+  div.innerHTML = '<h3 style="margin-bottom:.75rem">Itens extraídos da fatura (' + data.itens.length + ')</h3>' +
+    '<p style="font-size:.82rem;color:var(--gray-600);margin-bottom:.75rem">Itens em amarelo foram deixados como <strong>Pendente</strong> pela IA. Revise e ajuste antes de confirmar.</p>' +
+    '<div style="overflow-x:auto;margin-bottom:1rem"><table style="min-width:800px"><thead><tr>' +
+    '<th>Data</th><th>Descrição</th><th>Valor</th><th>Natureza</th><th>Centro Custo</th><th>Projeto</th><th>Obs. IA</th>' +
+    '</tr></thead><tbody>' + rows + '</tbody></table></div>' +
+    '<div style="background:#fef2f2;border:1px solid #fecaca;border-radius:8px;padding:.75rem 1rem;margin-bottom:1rem">' +
+    '<strong style="font-size:.85rem;color:#991b1b">⚠ Atenção:</strong> <span style="font-size:.82rem;color:#7f1d1d">Ao confirmar, o lançamento original de R$ ' + Number(data.valorOriginal||0).toFixed(2) + ' será <strong>removido</strong> e substituído pelos ' + data.itens.length + ' itens acima. Esta ação não pode ser desfeita.</span>' +
+    '</div>' +
+    '<button onclick="confirmarFatura(' + JSON.stringify(data.entryId) + ', ' + data.itens.length + ')" style="background:#059669;width:100%">&#10003; Confirmar e substituir lançamento original</button>';
+  window._faturaData = data;
+}
+async function confirmarFatura(entryId, count) {
+  if (!confirm('Confirmar substituição do lançamento original por ' + count + ' itens detalhados?')) return;
+  const itens = window._faturaData.itens.map((item, i) => ({
+    ...item,
+    natureza: document.getElementById('nat-' + i)?.value || item.natureza,
+    centroCusto: document.getElementById('cc-' + i)?.value || item.centroCusto,
+    projeto: document.getElementById('proj-' + i)?.value || item.projeto
+  }));
+  const resp = await fetch('/api/fatura/confirmar', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ entryId, itens })
+  });
+  const data = await resp.json();
+  if (data.ok) {
+    alert('Substituição realizada! ' + data.inseridos + ' lançamentos inseridos.');
+    location.href = '/cadastros';
+  } else {
+    alert('Erro: ' + (data.error || 'desconhecido'));
+  }
+}
+</script>`, user);
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+    res.end(html);
+    return;
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/fatura/processar') {
+    if (!requireAuth(req, res, db)) return;
+    // Usar multer para receber o PDF
+    const multer = require('multer');
+    const upload = multer({ dest: os.tmpdir() });
+    await new Promise((resolve, reject) => {
+      upload.single('pdf')(req, res, (err) => { if (err) reject(err); else resolve(); });
+    });
+    const pdfPath = req.file?.path;
+    const entryId = req.body?.entryId;
+    const cartao = req.body?.cartao || 'Cartão';
+    if (!pdfPath || !entryId) return json(res, 400, { error: 'PDF e entryId são obrigatórios' });
+    const entry = db.entries.find((e) => e.id === entryId);
+    if (!entry) return json(res, 404, { error: 'Lançamento não encontrado' });
+    // Extrair texto do PDF
+    let pdfText = '';
+    try {
+      const { execSync } = require('child_process');
+      pdfText = execSync(`pdftotext -layout "${pdfPath}" -`, { maxBuffer: 5 * 1024 * 1024 }).toString();
+    } catch (err) {
+      return json(res, 500, { error: 'Erro ao ler PDF: ' + err.message });
+    } finally {
+      try { fs.unlinkSync(pdfPath); } catch (_) {}
+    }
+    // Contexto de históricos já classificados para a IA usar como referência
+    const historicos = db.entries
+      .filter((e) => e.natureza && e.natureza !== 'Pendente' && e.descricao)
+      .slice(-200)
+      .map((e) => `${e.descricao} → ${e.natureza}${e.centroCusto ? ' / ' + e.centroCusto : ''}${e.projeto ? ' / ' + e.projeto : ''}`)
+      .join('\n');
+    const prompt = `Você é um assistente financeiro da empresa CKM Consultoria. Analise o texto abaixo extraído de uma fatura do cartão "${cartao}" e extraia todos os lançamentos individuais.
+
+Para cada lançamento, classifique com base nos históricos de lançamentos já classificados da empresa (fornecidos abaixo como referência).
+
+Históricos de referência (descrição → natureza/CC/projeto):
+${historicos.slice(0, 3000)}
+
+Texto da fatura:
+${pdfText.slice(0, 6000)}
+
+Retorne um JSON com o seguinte formato (apenas o JSON, sem texto adicional):
+{
+  "itens": [
+    {
+      "data": "YYYY-MM-DD",
+      "descricao": "descrição do item",
+      "valor": 99.90,
+      "natureza": "Despesa Direta|Despesa Indireta|Despesa Administrativa|Despesa Financeira|Receita Operacional|Transferência|Pendente",
+      "centroCusto": "nome do CC ou vazio",
+      "projeto": "nome do projeto ou vazio",
+      "explicacaoIA": "breve justificativa em português"
+    }
+  ]
+}
+
+Regras:
+- Se não souber classificar, use natureza: "Pendente" e explicacaoIA: "Não foi possível classificar automaticamente"
+- Valores devem ser positivos (são débitos do cartão)
+- Se a data não estiver clara, use a data de vencimento da fatura
+- Ignore linhas de total, subtotal, pagamento anterior e saldo`;
+    try {
+      const { OpenAI } = require('openai');
+      const openai = new OpenAI();
+      const completion = await openai.chat.completions.create({
+        model: 'gpt-4.1-mini',
+        messages: [{ role: 'user', content: prompt }],
+        temperature: 0.1,
+        max_tokens: 4000
+      });
+      const raw = (completion.choices[0]?.message?.content || '').trim();
+      const jsonMatch = raw.match(/\{[\s\S]*\}/);
+      if (!jsonMatch) return json(res, 500, { error: 'IA não retornou JSON válido' });
+      const parsed = JSON.parse(jsonMatch[0]);
+      return json(res, 200, {
+        entryId,
+        valorOriginal: entry.valor,
+        cartao,
+        itens: parsed.itens || []
+      });
+    } catch (err) {
+      console.error('[fatura IA]', err.message);
+      return json(res, 500, { error: 'Erro ao processar com IA: ' + err.message });
+    }
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/fatura/confirmar') {
+    if (!requireAuth(req, res, db)) return;
+    const { entryId, itens } = JSON.parse(await readBody(req) || '{}');
+    if (!entryId || !Array.isArray(itens) || itens.length === 0) {
+      return json(res, 400, { error: 'entryId e itens são obrigatórios' });
+    }
+    const entryIdx = db.entries.findIndex((e) => e.id === entryId);
+    if (entryIdx === -1) return json(res, 404, { error: 'Lançamento não encontrado' });
+    const original = db.entries[entryIdx];
+    // Criar novos lançamentos detalhados no lugar do original
+    const novosLancamentos = itens.map((item) => ({
+      id: crypto.randomUUID(),
+      data: item.data || original.data,
+      dataISO: item.data || original.dataISO,
+      descricao: item.descricao || '-',
+      valor: -Math.abs(Number(item.valor || 0)), // débitos do cartão são negativos
+      natureza: item.natureza || 'Pendente',
+      centroCusto: item.centroCusto || original.centroCusto || '',
+      projeto: item.projeto || '',
+      conta: original.conta || '',
+      status: item.natureza === 'Pendente' ? 'pendente' : 'ok',
+      origem: 'fatura_cartao',
+      cartao: original.descricao || 'Cartão',
+      entryOriginalId: entryId
+    }));
+    // Remover o lançamento original e inserir os detalhados
+    db.entries.splice(entryIdx, 1, ...novosLancamentos);
+    saveDb(db);
+    return json(res, 200, { ok: true, inseridos: novosLancamentos.length, removido: entryId });
   }
 
   res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
