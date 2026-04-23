@@ -36,6 +36,12 @@ const ALIAS_RULES = {
 
 const FORBIDDEN_AS_CLIENT = ['ESCRITÓRIO', 'SALÁRIOS', 'JURÍDICO', 'CONTÁBIL', 'TEF', 'MÚTUO', 'PRONAMPE', 'SALDO ATUAL'];
 
+// Centros de custo padrão CKM — sempre disponíveis no datalist de edição
+const CC_PADRAO = [
+  'ADMINISTRATIVO', 'COMERCIAL', 'ESCRITÓRIO', 'FINANCEIRO', 'FISCAL',
+  'JURÍDICO', 'MÚTUO', 'OPERACIONAL', 'PRÓ-LABORE', 'RH', 'TEF', 'TI'
+];
+
 const COLUMN_ALIASES = {
   data: ['data', 'dt', 'date', 'data_movimento', 'data movimento', 'vencimento',
          'data pagamento', 'data_recebimento', 'data recebimento', 'data_emissão', 'data emissão'],
@@ -1440,7 +1446,7 @@ ${groups.map((g) => `<h3>${g.title}</h3><ul>${openIssues.filter((i) => i.code ==
   ${(()=>{
     // Extrair valores únicos dos entries para os datalists
     const refs = db.referencias || {};
-    const ccSet = new Set([...(refs.centrosCusto||[]), ...db.entries.map(e=>e.centroCusto||'').filter(Boolean)]);
+    const ccSet = new Set([...CC_PADRAO, ...(refs.centrosCusto||[]), ...db.entries.map(e=>e.centroCusto||'').filter(Boolean)]);
     const clienteSet = new Set([...(refs.clientes||[]), ...db.entries.map(e=>e.cliente||e.parceiro||'').filter(v=>v&&v!=='-')]);
     const projetoSet = new Set([...(refs.projetos||[]), ...db.entries.map(e=>e.projeto||'').filter(v=>v&&v!=='-')]);
     const contaSet = new Set([...(refs.contas||[]), ...db.entries.map(e=>e.conta||'').filter(v=>v&&v!=='-')]);
@@ -2379,10 +2385,33 @@ async function excluirRef(tipo,nome){
     return json(res, 200, log);
   }
 
-  // GET /historico — página global de auditoria
+  // GET /historico — página global de auditoria (com paginação para evitar crash de memória)
   if (req.method === 'GET' && url.pathname === '/historico') {
     if (!checkAuth(req, res)) return;
-    const log = (db.auditLog || []).slice().sort((a, b) => b.ts.localeCompare(a.ts));
+    const PAGE_SIZE = 100;
+    const page_num = Math.max(1, parseInt(url.searchParams.get('p') || '1', 10));
+    const qFilter = (url.searchParams.get('q') || '').toLowerCase().trim();
+
+    // Construir mapa de entries para lookup rápido
+    const entryMap = new Map(db.entries.map(e => [e.id, e]));
+
+    // Ordenar e filtrar sem gerar HTML de todas as linhas de uma vez
+    let log = (db.auditLog || []).slice().sort((a, b) => b.ts.localeCompare(a.ts));
+
+    // Filtro server-side por texto (registro, campo, usuário)
+    if (qFilter) {
+      log = log.filter(r => {
+        const entry = r.entryId ? entryMap.get(r.entryId) : null;
+        const descricao = entry ? (entry.descricao || '') : (r.nomeOficial || r.registroId || '');
+        return (descricao + r.campo + (r.de || '') + (r.para || '') + (r.usuario || '')).toLowerCase().includes(qFilter);
+      });
+    }
+
+    const totalLog = log.length;
+    const totalPages = Math.max(1, Math.ceil(totalLog / PAGE_SIZE));
+    const currentPage = Math.min(page_num, totalPages);
+    const pageLog = log.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE);
+
     const LABELS = {
       cliente: 'Cliente', projeto: 'Projeto', parceiro: 'Parceiro', centroCusto: 'Centro de Custo',
       natureza: 'Natureza', categoria: 'Categoria', detalhe: 'Detalhe', conta: 'Conta',
@@ -2395,8 +2424,8 @@ async function excluirRef(tipo,nome){
       const d = new Date(ts);
       return d.toLocaleDateString('pt-BR') + ' ' + d.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
     };
-    const rows = log.map(r => {
-      const entry = r.entryId ? db.entries.find(e => e.id === r.entryId) : null;
+    const rows = pageLog.map(r => {
+      const entry = r.entryId ? entryMap.get(r.entryId) : null;
       const descricao = entry ? (entry.descricao || entry.id.slice(0, 8)) : (r.nomeOficial || r.registroId || '-');
       const tipoLog = r.tipo === 'revisao' ? '<span style="font-size:.72rem;background:#ede9fe;color:#7c3aed;padding:.15rem .45rem;border-radius:4px">Revisão</span>' : '<span style="font-size:.72rem;background:#dbeafe;color:#1d4ed8;padding:.15rem .45rem;border-radius:4px">Lançamento</span>';
       return `<tr>
@@ -2409,14 +2438,32 @@ async function excluirRef(tipo,nome){
         <td style='font-size:.78rem;color:var(--gray-500)'>${r.usuario || '-'}</td>
       </tr>`;
     }).join('');
+
+    // Paginação
+    const buildPageUrl = (p) => '/historico?p=' + p + (qFilter ? '&q=' + encodeURIComponent(qFilter) : '');
+    const pagination = totalPages <= 1 ? '' : `
+    <div style='display:flex;gap:.5rem;align-items:center;flex-wrap:wrap;margin-top:1rem'>
+      ${currentPage > 1 ? `<a href='${buildPageUrl(1)}' style='padding:.3rem .7rem;border:1px solid var(--gray-200);border-radius:6px;font-size:.82rem;text-decoration:none;color:var(--gray-700)'>&laquo; Primeira</a>` : ''}
+      ${currentPage > 1 ? `<a href='${buildPageUrl(currentPage-1)}' style='padding:.3rem .7rem;border:1px solid var(--gray-200);border-radius:6px;font-size:.82rem;text-decoration:none;color:var(--gray-700)'>&lsaquo; Anterior</a>` : ''}
+      <span style='font-size:.82rem;color:var(--gray-500)'>Página ${currentPage} de ${totalPages} (${totalLog} registros)</span>
+      ${currentPage < totalPages ? `<a href='${buildPageUrl(currentPage+1)}' style='padding:.3rem .7rem;border:1px solid var(--gray-200);border-radius:6px;font-size:.82rem;text-decoration:none;color:var(--gray-700)'>Próxima &rsaquo;</a>` : ''}
+      ${currentPage < totalPages ? `<a href='${buildPageUrl(totalPages)}' style='padding:.3rem .7rem;border:1px solid var(--gray-200);border-radius:6px;font-size:.82rem;text-decoration:none;color:var(--gray-700)'>Última &raquo;</a>` : ''}
+    </div>`;
+
     const html = page('Histórico de Alterações', `
 <section>
-  <div style='display:flex;align-items:center;gap:1rem;margin-bottom:1.5rem'>
+  <div style='display:flex;align-items:center;gap:1rem;margin-bottom:1rem;flex-wrap:wrap'>
     <h2 style='margin:0'>Histórico de Alterações</h2>
-    <span style='font-size:.82rem;color:var(--gray-400)'>${log.length} registro(s)</span>
+    <span style='font-size:.82rem;color:var(--gray-400)'>${totalLog} registro(s)${qFilter ? ' filtrados' : ''}</span>
   </div>
-  <p style='font-size:.85rem;color:var(--gray-400);margin-bottom:1.25rem'>Trilha completa de auditoria: toda alteração manual em lançamentos e revisões de cadastro é registrada aqui com o valor anterior e o novo valor.</p>
-  <div style='overflow-x:auto'>
+  <p style='font-size:.85rem;color:var(--gray-400);margin-bottom:1rem'>Trilha completa de auditoria: toda alteração manual em lançamentos e revisões de cadastro é registrada aqui.</p>
+  <form method='get' action='/historico' style='display:flex;gap:.5rem;margin-bottom:1rem'>
+    <input name='q' value='${qFilter.replace(/"/g,'&quot;')}' placeholder='Buscar por registro, campo ou usuário...' style='flex:1;padding:.5rem .8rem;border:1px solid var(--gray-200);border-radius:8px;font-size:.88rem'/>
+    <button type='submit' style='padding:.5rem 1rem;font-size:.88rem'>Buscar</button>
+    ${qFilter ? `<a href='/historico' style='padding:.5rem .8rem;border:1px solid var(--gray-200);border-radius:8px;font-size:.88rem;text-decoration:none;color:var(--gray-600)'>Limpar</a>` : ''}
+  </form>
+  ${pagination}
+  <div style='overflow-x:auto;margin-top:.75rem'>
   <table style='width:100%;border-collapse:collapse;font-size:.85rem'>
     <thead><tr style='background:var(--gray-50);border-bottom:2px solid var(--gray-200)'>
       <th style='padding:.6rem .75rem;text-align:left;white-space:nowrap'>Data/Hora</th>
@@ -2427,23 +2474,11 @@ async function excluirRef(tipo,nome){
       <th style='padding:.6rem .75rem;text-align:left'>Depois</th>
       <th style='padding:.6rem .75rem;text-align:left'>Usuário</th>
     </tr></thead>
-    <tbody id='audit-body'>${rows || '<tr><td colspan="7" style="text-align:center;padding:2rem;color:var(--gray-400)">Nenhuma alteração registrada ainda.</td></tr>'}</tbody>
+    <tbody>${rows || '<tr><td colspan="7" style="text-align:center;padding:2rem;color:var(--gray-400)">Nenhuma alteração registrada ainda.</td></tr>'}</tbody>
   </table>
   </div>
-</section>
-<script>
-const rows = document.querySelectorAll('#audit-body tr');
-document.addEventListener('DOMContentLoaded', () => {
-  const inp = document.createElement('input');
-  inp.placeholder = 'Filtrar por registro, campo ou usuário...';
-  inp.style.cssText = 'width:100%;padding:.6rem .9rem;border:1px solid var(--gray-200);border-radius:8px;font-size:.9rem;margin-bottom:1rem';
-  inp.oninput = () => {
-    const q = inp.value.toLowerCase();
-    rows.forEach(r => { r.style.display = r.textContent.toLowerCase().includes(q) ? '' : 'none'; });
-  };
-  document.querySelector('section').insertBefore(inp, document.querySelector('table').parentElement);
-});
-<\/script>`, user);
+  ${pagination}
+</section>`, user);
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
     return res.end(html);
   }
