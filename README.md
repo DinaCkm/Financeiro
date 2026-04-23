@@ -51,6 +51,10 @@ Sinônimos aceitos (exemplos):
 - `conta` -> cartão, conta/cartão
 - `valor` -> amount, vlr, valor total
 - `centroCusto` -> centro_custo, cc
+- `dc` -> D/C, débito/crédito
+- `tipoOriginal` -> tipo, tp-despesa
+- `detDespesa` -> det-despesa
+- `statusPlanilha` -> status
 
 ## Como testar com a planilha real da CKM
 1. Entre em `/login` e autentique.
@@ -60,9 +64,11 @@ Sinônimos aceitos (exemplos):
 5. Acesse `/pendencias` para revisar os blocos prioritários de pré-análise.
 6. Acesse `/cadastros` para consolidar aliases, vincular projeto->cliente e reclassificar rapidamente.
 7. Faça novo upload da mesma base (ou base incremental) e confirme se regras anteriores foram reaplicadas.
+8. Valide no resumo da pré-análise os alertas CKM específicos: `RECEITA_SEM_CLIENTE` e `CANCELADO_COM_VALOR`.
 
 ## Limitações conhecidas
 - Parser XLSX/XLSM lê a **primeira aba** apenas.
 - Fórmulas complexas, células muito mescladas e múltiplos layouts na mesma aba podem exigir ajustes.
 - Não há importação via `multipart/form-data` nesta fase (envio em base64 pelo frontend).
 - Persistência permanece em `data/db.json` (migração SQL já mapeada em `docs/modelo-dados-inicial.sql`).
+- Colunas bancárias de saldo por linha (ex.: `BB`, `ITAÚ`, `BRB`) ainda não são pivotadas para lançamentos individuais.

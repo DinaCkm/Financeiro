@@ -39,7 +39,11 @@ const COLUMN_ALIASES = {
   detalhe: ['detalhe', 'categoria', 'detalhamento', 'observacao', 'observação'],
   valor: ['valor', 'amount', 'vlr', 'valor_total', 'valor total'],
   centroCusto: ['centro_custo', 'centro custo', 'cc', 'centrodecusto'],
-  formaPagamento: ['forma_pagamento', 'forma pagamento', 'pagamento']
+  formaPagamento: ['forma_pagamento', 'forma pagamento', 'pagamento'],
+  dc: ['d/c', 'dc', 'd-c', 'debito_credito', 'debito/credito', 'débito/crédito'],
+  tipoOriginal: ['tipo', 'tp-despesa', 'tp despesa', 'tipo_despesa'],
+  detDespesa: ['det-despesa', 'det despesa', 'detalhe despesa', 'det_despesa'],
+  statusPlanilha: ['status', 'status_planilha']
 };
 
 function loadDb() {
@@ -91,6 +95,17 @@ function normalizeName(name) {
 function parseDateValue(value) {
   const raw = String(value || '').trim();
   if (!raw) return null;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) {
+    return new Date(`${raw}T00:00:00Z`);
+  }
+  if (/^\d{5}(\.\d+)?$/.test(raw)) {
+    const excelSerial = Number(raw);
+    if (Number.isFinite(excelSerial)) {
+      const epoch = new Date(Date.UTC(1899, 11, 30));
+      epoch.setUTCDate(epoch.getUTCDate() + Math.floor(excelSerial));
+      return epoch;
+    }
+  }
 
   const br = raw.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/);
   if (br) {
@@ -114,15 +129,18 @@ function inferType(name) {
   if (FORBIDDEN_AS_CLIENT.includes(n)) return 'Estrutura Interna';
   if (n.includes('MÚTUO') || n.includes('MUTUO') || n.includes('PRONAMPE')) return 'Financeiro / Não Operacional';
   if (n.includes('CARTÃO') || n.includes('CARTAO') || n.includes('CARD')) return 'Conta / Cartão';
-  if (OFFICIAL_PROJECTS.includes(n) || n.includes('CICLO') || n.includes('ETAPA') || n.includes('CONTRATO')) return 'Projeto';
+  if (OFFICIAL_PROJECTS.includes(n) || n.includes('CICLO') || n.includes('ETAPA') || n.includes('CONTRATO') || n.includes('CARTA-CONTRATO') || n.includes('PDL')) return 'Projeto';
   if (OFFICIAL_CLIENTS.includes(n)) return 'Cliente';
   return 'Pendente de Classificação';
 }
 
 function inferNature(entry) {
   const desc = normalizeName(entry.descricao || '');
-  if (desc.includes('MÚTUO') || desc.includes('MUTUO')) return 'Movimentação Financeira Não Operacional';
+  const centro = normalizeName(entry.centroCusto || '');
+  const tipoOriginal = normalizeName(entry.tipoOriginal || '');
+  if (desc.includes('MÚTUO') || desc.includes('MUTUO') || tipoOriginal.includes('MÚTUO') || tipoOriginal.includes('MUTUO')) return 'Movimentação Financeira Não Operacional';
   if (entry.tipo === 'entrada') return 'Receita Operacional';
+  if (centro.includes('FINANC') || tipoOriginal.includes('JUROS') || tipoOriginal.includes('TARIFA')) return 'Despesa Financeira';
   if (entry.tipo === 'saida' && entry.projeto) return 'Custo Direto do Projeto';
   if (entry.tipo === 'saida') return 'Despesa Indireta';
   return 'Pendente de Classificação';
@@ -147,7 +165,8 @@ function normalizeRowHeaders(row) {
 function normalizeMoney(value) {
   const raw = String(value || '0').trim();
   if (!raw) return 0;
-  const normalized = raw.includes(',') ? raw.replace(/\./g, '').replace(',', '.') : raw;
+  const cleaned = raw.replace(/[R$\s]/g, '');
+  const normalized = cleaned.includes(',') ? cleaned.replace(/\./g, '').replace(',', '.') : cleaned;
   return Number(normalized);
 }
 
@@ -193,7 +212,11 @@ function parseRowsWithPython(fileName, buffer) {
 function parseEntries(rows, uploadId, db) {
   return rows.map((raw) => {
     const r = normalizeRowHeaders(raw);
-    const valor = normalizeMoney(r.valor);
+    if (/^(SALDO|TOTAL)/i.test(r.descricao || '')) return null;
+    let valor = normalizeMoney(r.valor);
+    const dc = normalizeName(r.dc || '');
+    if (dc === 'D' && valor > 0) valor *= -1;
+    if (dc === 'C' && valor < 0) valor *= -1;
     const parsedDate = parseDateValue(r.data);
     const entry = {
       id: crypto.randomUUID(),
@@ -208,6 +231,10 @@ function parseEntries(rows, uploadId, db) {
       detalhe: r.detalhe || '',
       formaPagamento: r.formaPagamento || '',
       centroCusto: r.centroCusto || '',
+      dc,
+      tipoOriginal: r.tipoOriginal || '',
+      detDespesa: r.detDespesa || '',
+      statusPlanilha: normalizeName(r.statusPlanilha || ''),
       tipo: valor >= 0 ? 'entrada' : 'saida',
       valor,
       natureza: 'Pendente de Classificação',
@@ -217,7 +244,7 @@ function parseEntries(rows, uploadId, db) {
     applySavedRulesToEntry(entry, db);
     entry.natureza = inferNature(entry);
     return entry;
-  });
+  }).filter(Boolean);
 }
 
 function buildIssues(entries, db) {
@@ -237,6 +264,8 @@ function buildIssues(entries, db) {
     if (!e.dataISO) issues.push({ entryId: e.id, level: 'erro', code: 'DATA_INVALIDA', message: 'Data inválida.', blocking: true });
     if (!Number.isFinite(e.valor)) issues.push({ entryId: e.id, level: 'erro', code: 'VALOR_INVALIDO', message: 'Valor inválido.', blocking: true });
 
+    if (e.tipo === 'entrada' && !client && !normalizeName(e.parceiro)) issues.push({ entryId: e.id, level: 'alerta', code: 'RECEITA_SEM_CLIENTE', message: 'Receita sem cliente/parceiro identificado.', blocking: false });
+    if (e.statusPlanilha === 'ZZ' && Math.abs(e.valor) > 0) issues.push({ entryId: e.id, level: 'alerta', code: 'CANCELADO_COM_VALOR', message: 'Lançamento cancelado (ZZ) com valor informado.', blocking: false });
     if (client && inferType(client) === 'Pendente de Classificação') issues.push({ entryId: e.id, level: 'alerta', code: 'NOME_FORA_PADRAO', message: 'Cliente/projeto fora do padrão conhecido.', blocking: false });
     if (e.conta && normalizeName(e.conta).includes('CARTAO') && !e.detalhe) issues.push({ entryId: e.id, level: 'alerta', code: 'CARTAO_SEM_DETALHE', message: 'Cartão sem detalhamento completo.', blocking: false });
 
@@ -344,6 +373,8 @@ function buildPreAnalysisSummary(db) {
     mutuoIncorreto: count('MUTUO_COMO_CLIENTE') + count('MUTUO_CLASSIFICACAO'),
     novosCadastros: count('NOVO_CADASTRO'),
     conflitosAlias: count('CONFLITO_ALIAS'),
+    receitaSemCliente: count('RECEITA_SEM_CLIENTE'),
+    canceladoComValor: count('CANCELADO_COM_VALOR'),
     bloqueantes: openIssues.filter((i) => i.blocking || BLOCKING_ISSUES.includes(i.code)).length
   };
 }
@@ -510,7 +541,9 @@ async function enviarArquivo(){
       { title: 'Mútuos classificados incorretamente', code: 'MUTUO_CLASSIFICACAO' },
       { title: 'Mútuos lançados como cliente', code: 'MUTUO_COMO_CLIENTE' },
       { title: 'Novos cadastros', code: 'NOVO_CADASTRO' },
-      { title: 'Conflitos de alias', code: 'CONFLITO_ALIAS' }
+      { title: 'Conflitos de alias', code: 'CONFLITO_ALIAS' },
+      { title: 'Receita sem cliente/parceiro', code: 'RECEITA_SEM_CLIENTE' },
+      { title: 'Cancelado (ZZ) com valor', code: 'CANCELADO_COM_VALOR' }
     ];
 
     const html = page('Pré-análise', `<section><h2>Pré-análise operacional</h2>
@@ -521,6 +554,8 @@ async function enviarArquivo(){
 <div class='card'><strong>Mútuo incorreto</strong><span>${summary.mutuoIncorreto}</span></div>
 <div class='card'><strong>Novos cadastros</strong><span>${summary.novosCadastros}</span></div>
 <div class='card'><strong>Conflito de alias</strong><span>${summary.conflitosAlias}</span></div>
+<div class='card'><strong>Receita sem cliente</strong><span>${summary.receitaSemCliente}</span></div>
+<div class='card'><strong>ZZ com valor</strong><span>${summary.canceladoComValor}</span></div>
 </div>
 ${groups.map((g) => `<h3>${g.title}</h3><ul>${openIssues.filter((i) => i.code === g.code).map((e) => `<li>${e.message}${e.blocking ? ' (bloqueante)' : ''}</li>`).join('') || '<li>Sem itens</li>'}</ul>`).join('')}
 <h3>Outras pendências</h3>
