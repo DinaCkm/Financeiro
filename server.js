@@ -152,6 +152,68 @@ function normalizeName(name) {
   return ALIAS_RULES[n] || n;
 }
 
+// Extrai apenas o nome do beneficiário, removendo dados bancários colados na mesma célula
+// Ex: "ADRIANA PEREIRA - 033 - 1554 - CPF: 93383" => "ADRIANA PEREIRA"
+function normalizeParceiro(raw) {
+  if (!raw) return '';
+  let s = String(raw).trim();
+  // Padrões que indicam início de dados bancários: código de banco (3 dígitos), AG:, C/C:, CPF:, CNPJ:, PIX:, BANCO:
+  const bancPatterns = [
+    / - \d{3} - /,          // " - 001 - " (código banco)
+    / - \d{3}$/,            // " - 341" no final
+    / - \d{3} AG:/i,
+    / - AG:/i,
+    / - C\/C:/i,
+    / - CPF:/i,
+    / - CNPJ:/i,
+    / - PIX:/i,
+    / - BANCO:/i,
+    / \d{3}-\d{4}-/,       // "341-0411-"
+    / \d{3} AG:\d/,
+    /\s+BB\s+\d{4}/i,       // " BB 1889-9"
+    / - ITAU/i,
+    / - BRADESCO/i,
+    / - SANTANDER/i,
+    / - INTER/i,
+    / - NUBANK/i,
+    / - CAIXA/i,
+    / - SICOOB/i,
+    / - SICREDI/i,
+    / - BRD/i,
+    / - BRB/i,
+    / - STD/i,
+    / - CEF/i,
+    / - BANRISUL/i,
+    / - DL - /i,
+  ];
+  for (const pat of bancPatterns) {
+    const m = s.search(pat);
+    if (m > 0) { s = s.slice(0, m).trim(); break; }
+  }
+  // Remover sufixos de NF/cupom fiscal que ficam no nome
+  s = s.replace(/ - NF:.*$/i, '').replace(/ NF:.*$/i, '').replace(/ - RPS.*$/i, '').trim();
+  // Remover datas soltas no final (ex: "BANRISUL - EMISSÃO 04/07/2019")
+  s = s.replace(/\s*-?\s*EMISSÃO\s+\d{2}\/\d{2}\/\d{4}$/i, '').trim();
+  // Limitar a 80 caracteres
+  if (s.length > 80) s = s.slice(0, 80).trim();
+  return normalizeName(s);
+}
+
+// Detecta valores que são claramente lixo no campo cliente (números decimais, índices de linha)
+function isValorLixo(val) {
+  if (!val) return true;
+  const s = String(val).trim();
+  // Apenas número decimal (ex: "1.0", "2.3", "4.10", "10.5")
+  if (/^\d+\.\d+$/.test(s)) return true;
+  // Apenas número inteiro
+  if (/^\d+$/.test(s)) return true;
+  // Vazio, traço ou ponto isolado
+  if (s === '' || s === '-' || s === '--' || s === '.') return true;
+  // Padrão de índice hierárquico: "4.1", "4.10", "1.2.3" etc.
+  if (/^\d+(\.\d+)+$/.test(s)) return true;
+  return false;
+}
+
 function parseDateValue(value) {
   const raw = String(value || '').trim();
   if (!raw) return null;
@@ -378,9 +440,9 @@ function parseEntries(rows, uploadId, db) {
         data: dataRaw,
         dataISO: parsedDate ? parsedDate.toISOString().slice(0, 10) : '',
         descricao: r.descricao || '',
-        cliente: normalizeName(r.cliente || ''),
+        cliente: isValorLixo(r.cliente) ? '' : normalizeName(r.cliente || ''),
         projeto: normalizeName(r.projeto || ''),
-        parceiro: normalizeName(r.parceiro || ''),
+        parceiro: normalizeParceiro(r.parceiro || ''),
         conta: r.conta || '',
         detalhe: r.detalhe || r.detdespesa || '',
         formaPagamento: r.formapagamento || '',
