@@ -2501,6 +2501,21 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     db.reviewRegistry = [...revisados, ...novosPendentes];
+
+    // 3. Limpar issues NOVO_CADASTRO obsoletos (gerados com nomes com ruído)
+    //    Manter apenas os que correspondem a nomes que ainda estão no reviewRegistry
+    const nomesValidos = new Set(db.reviewRegistry.map(r => (r.nomeOficial || '').toUpperCase()));
+    const issuesAntes = (db.issues || []).length;
+    db.issues = (db.issues || []).filter(i => {
+      if (i.code !== 'NOVO_CADASTRO') return true; // manter outros tipos de issue
+      // extrair o nome do message: "Novo cadastro identificado: NOME."
+      const match = (i.message || '').match(/Novo cadastro identificado: (.+)\./);
+      if (!match) return false;
+      const nome = match[1].trim().toUpperCase();
+      return nomesValidos.has(nome);
+    });
+    const issuesRemovidos = issuesAntes - db.issues.length;
+
     saveDb(db);
 
     json(res, 200, {
@@ -2508,7 +2523,8 @@ document.addEventListener('DOMContentLoaded', () => {
       entriesCorrigidos,
       revisadosPreservados: revisados.length,
       novosPendentes: novosPendentes.length,
-      totalRegistry: db.reviewRegistry.length
+      totalRegistry: db.reviewRegistry.length,
+      issuesNovoCadastroRemovidos: issuesRemovidos
     });
     return;
   }
