@@ -419,12 +419,16 @@ function buildIssues(entries, db) {
         message: 'Cartão sem detalhamento completo.', blocking: false });
     }
 
-    // Lançamento cancelado com valor não zero
-    if ((statusPlanilha === 'ZZ' || desc.includes('CANCELAD')) && Math.abs(e.valor) > 0) {
-      issues.push({ entryId: e.id, level: 'alerta', code: 'LANCAMENTO_CANCELADO',
-        message: `Lançamento cancelado com valor R$ ${Math.abs(e.valor).toFixed(2)}.`, blocking: false });
+    // Lançamento cancelado (ZZ) com valor não zero
+    if (e.statusPlanilha === 'ZZ' && Math.abs(e.valor) > 0) {
+      issues.push({ entryId: e.id, level: 'alerta', code: 'CANCELADO_COM_VALOR',
+        message: `Lançamento cancelado (ZZ) com valor informado.`, blocking: false });
     }
-
+    // Nome fora do padrão conhecido
+    if (client && inferType(client) === 'Pendente de Classificação') {
+      issues.push({ entryId: e.id, level: 'alerta', code: 'NOME_FORA_PADRAO',
+        message: 'Cliente/projeto fora do padrão conhecido.', blocking: false });
+    }
     // Novos cadastros: nomes não presentes no registro revisado
     [client, project, normalizeName(e.parceiro)].forEach((name) => {
       if (name && !knownNames.has(name) && inferType(name) === 'Pendente de Classificação') {
@@ -515,7 +519,7 @@ function page(title, body, user) {
 }
 
 function reviewTableRows(list) {
-  return list.map((r) => `<tr>
+  return list.map((r) => `<tr data-id='${r.id}'>
 <td>${r.nomeOriginal}</td><td>${r.nomeOficial}</td><td>${r.tipoSugerido}</td>
 <td><select onchange="alterarTipo('${r.id}', this.value)">${TYPE_OPTIONS.map((t) => `<option ${t === r.tipoFinal ? 'selected' : ''}>${t}</option>`).join('')}</select></td>
 <td><input value='${r.clienteVinculado || ''}' onchange="vincularCliente('${r.id}', this.value)"/></td>
@@ -533,7 +537,7 @@ function buildPreAnalysisSummary(db) {
     novosCadastros: count('NOVO_CADASTRO'),
     conflitosAlias: count('CONFLITO_ALIAS'),
     receitaSemCliente: count('RECEITA_SEM_CLIENTE'),
-    cancelados: count('LANCAMENTO_CANCELADO'),
+    canceladoComValor: count('CANCELADO_COM_VALOR'),
     bloqueantes: openIssues.filter((i) => i.blocking || BLOCKING_ISSUES.includes(i.code)).length
   };
 }
@@ -558,6 +562,10 @@ function calculateDashboard(db) {
   const proj30 = sortedEntries.filter((e) => e.dataISO <= d30).reduce((acc, e) => acc + e.valor, 0);
   const contasPagar = sortedEntries.filter((e) => e.dataISO > today && e.valor < 0).reduce((acc, e) => acc + Math.abs(e.valor), 0);
   const contasReceber = sortedEntries.filter((e) => e.dataISO > today && e.valor > 0).reduce((acc, e) => acc + e.valor, 0);
+  const upcoming7 = sortedEntries.filter((e) => e.dataISO > today && e.dataISO <= d7);
+  const riscoCaixa = proj7 < 0 ? 'alto' : proj30 < 0 ? 'moderado' : 'controlado';
+  const mutuoEntries = sortedEntries.filter((e) => normalizeName(`${e.descricao} ${e.tipoOriginal} ${e.natureza}`).includes('MUTUO') || normalizeName(`${e.descricao} ${e.tipoOriginal} ${e.natureza}`).includes('MÚTUO'));
+  const saldoMutuo = mutuoEntries.reduce((acc, e) => acc + e.valor, 0);
 
   const byClient = {};
   const byProject = {};
@@ -568,7 +576,29 @@ function calculateDashboard(db) {
     byProject[p] = (byProject[p] || 0) + e.valor;
   });
 
-  return { saldoHoje, proj7, proj30, contasPagar, contasReceber, byClient, byProject, rolling };
+  return { saldoHoje, proj7, proj30, contasPagar, contasReceber, byClient, byProject, rolling, upcoming7, riscoCaixa, saldoMutuo };
+}
+
+function sortEntries(entries, mode = 'date_desc') {
+  const list = [...entries];
+  if (mode === 'abs_desc') {
+    return list.sort((a, b) => Math.abs(b.valor) - Math.abs(a.valor));
+  }
+  return list.sort((a, b) => (b.dataISO || '').localeCompare(a.dataISO || ''));
+}
+
+function entriesTable(entries) {
+  const rows = sortEntries(entries).map((e) => `<tr>
+    <td>${e.dataISO || e.data || '-'}</td>
+    <td>${e.descricao || '-'}</td>
+    <td>R$ ${Number(e.valor || 0).toFixed(2)}</td>
+    <td>${e.cliente || '-'}</td>
+    <td>${e.projeto || '-'}</td>
+    <td>${e.parceiro || '-'}</td>
+    <td>${e.natureza || '-'}</td>
+    <td>${e.status || '-'}</td>
+  </tr>`).join('');
+  return `<table><thead><tr><th>Data</th><th>Descrição</th><th>Valor</th><th>Cliente</th><th>Projeto</th><th>Parceiro</th><th>Natureza</th><th>Status</th></tr></thead><tbody>${rows || '<tr><td colspan="8">Sem lançamentos no recorte.</td></tr>'}</tbody></table>`;
 }
 
 const server = http.createServer(async (req, res) => {
@@ -757,12 +787,11 @@ async function enviarArquivo(){
       { title: 'Mútuos lançados como cliente', code: 'MUTUO_COMO_CLIENTE' },
       { title: 'Novos cadastros', code: 'NOVO_CADASTRO' },
       { title: 'Conflitos de alias', code: 'CONFLITO_ALIAS' },
-      { title: 'Receitas sem cliente', code: 'RECEITA_SEM_CLIENTE' },
-      { title: 'Lançamentos cancelados com valor', code: 'LANCAMENTO_CANCELADO' },
+      { title: 'Receita sem cliente/parceiro', code: 'RECEITA_SEM_CLIENTE' },
+      { title: 'Cancelado (ZZ) com valor', code: 'CANCELADO_COM_VALOR' },
       { title: 'Data inválida', code: 'DATA_INVALIDA' },
       { title: 'Valor inválido', code: 'VALOR_INVALIDO' }
     ];
-
     const html = page('Pré-análise', `<section><h2>Pré-análise operacional</h2>
 <div class='cards'>
 <div class='card'><strong>Bloqueantes</strong><span>${summary.bloqueantes}</span></div>
@@ -772,7 +801,7 @@ async function enviarArquivo(){
 <div class='card'><strong>Novos cadastros</strong><span>${summary.novosCadastros}</span></div>
 <div class='card'><strong>Conflito de alias</strong><span>${summary.conflitosAlias}</span></div>
 <div class='card'><strong>Receita sem cliente</strong><span>${summary.receitaSemCliente}</span></div>
-<div class='card'><strong>Cancelados c/ valor</strong><span>${summary.cancelados}</span></div>
+<div class='card'><strong>ZZ com valor</strong><span>${summary.canceladoComValor}</span></div>
 </div>
 ${groups.map((g) => `<h3>${g.title}</h3><ul>${openIssues.filter((i) => i.code === g.code).map((e) => `<li>${e.message}${e.blocking ? ' (bloqueante)' : ''}</li>`).join('') || '<li>Sem itens</li>'}</ul>`).join('')}
 <h3>Outras pendências</h3>
@@ -784,10 +813,25 @@ ${groups.map((g) => `<h3>${g.title}</h3><ul>${openIssues.filter((i) => i.code ==
   }
 
   if (req.method === 'GET' && url.pathname === '/cadastros') {
-    const pending = db.reviewRegistry.filter((item) => item.statusRevisao !== 'revisado');
-    const reviewed = db.reviewRegistry.length - pending.length;
+    const statusFilter = (url.searchParams.get('status') || 'pendente').trim();
+    const typeFilter = (url.searchParams.get('tipo') || '').trim();
+    const textFilter = normalizeName(url.searchParams.get('q') || '');
+    const filtered = db.reviewRegistry.filter((item) => {
+      if (statusFilter && statusFilter !== 'todos' && item.statusRevisao !== statusFilter) return false;
+      if (typeFilter && item.tipoFinal !== typeFilter) return false;
+      if (textFilter && !normalizeName(`${item.nomeOriginal} ${item.nomeOficial}`).includes(textFilter)) return false;
+      return true;
+    });
+    const reviewed = db.reviewRegistry.filter((item) => item.statusRevisao === 'revisado').length;
     const html = page('Cadastro Revisável', `<section><h2>Cadastro Revisável (fluxo diário)</h2>
-<p>Pendentes: ${pending.length} | Revisados: ${reviewed}</p>
+<p>Total filtrado: ${filtered.length} | Revisados: ${reviewed}</p>
+<form method='get' action='/cadastros' class='grid2'>
+  <label>Status<select name='status'><option value='pendente' ${statusFilter === 'pendente' ? 'selected' : ''}>pendente</option><option value='revisado' ${statusFilter === 'revisado' ? 'selected' : ''}>revisado</option><option value='todos' ${statusFilter === 'todos' ? 'selected' : ''}>todos</option></select></label>
+  <label>Tipo<select name='tipo'><option value=''>todos</option>${TYPE_OPTIONS.map((t) => `<option ${typeFilter === t ? 'selected' : ''}>${t}</option>`).join('')}</select></label>
+  <label>Busca <input name='q' value='${url.searchParams.get('q') || ''}' placeholder='nome original/oficial'/></label>
+  <button type='submit'>Filtrar</button>
+</form>
+<button onclick='revisarEmLote()'>Marcar filtrados como revisado</button>
 <div class='grid2'>
 <div><h3>Consolidar aliases</h3><input id='aliasFrom' placeholder='Nome origem'/><input id='aliasTo' placeholder='Nome oficial'/><label><input id='keepAlias' type='checkbox' checked/> manter alias</label><button onclick='consolidarAlias()'>Consolidar + regra</button></div>
 <div><h3>Vincular projeto a cliente</h3><input id='projectName' placeholder='Projeto'/><input id='clientName' placeholder='Cliente'/><button onclick='vincularProjetoCliente()'>Vincular + regra</button></div>
@@ -796,7 +840,7 @@ ${groups.map((g) => `<h3>${g.title}</h3><ul>${openIssues.filter((i) => i.code ==
 <div><h3>Reclassificar para Estrutura</h3><input id='toEstrutura' placeholder='Nome oficial'/><button onclick='reclassificar("Estrutura Interna")'>Aplicar</button></div>
 <div><h3>Reclassificar para Financeiro</h3><input id='toFinanceiro' placeholder='Nome oficial'/><button onclick='reclassificar("Financeiro / Não Operacional")'>Aplicar</button></div>
 </div>
-<table><thead><tr><th>Original</th><th>Oficial</th><th>Sugerido</th><th>Tipo Final</th><th>Cliente</th><th>Projeto</th><th>Status</th></tr></thead><tbody>${reviewTableRows(pending)}</tbody></table>
+<table><thead><tr><th>Original</th><th>Oficial</th><th>Sugerido</th><th>Tipo Final</th><th>Cliente</th><th>Projeto</th><th>Status</th></tr></thead><tbody>${reviewTableRows(filtered)}</tbody></table>
 </section>
 <script>
 async function alterarTipo(id,tipoFinal){await fetch('/api/review/'+id,{method:'PATCH',headers:{'content-type':'application/json'},body:JSON.stringify({tipoFinal,statusRevisao:'revisado'})});}
@@ -806,6 +850,7 @@ async function marcarRevisao(id,statusRevisao){await fetch('/api/review/'+id,{me
 async function consolidarAlias(){const sourceName=document.getElementById('aliasFrom').value;const targetName=document.getElementById('aliasTo').value;const keepAlias=document.getElementById('keepAlias').checked;await fetch('/api/review/consolidate',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({sourceName,targetName,keepAlias,applyRule:true})});location.reload();}
 async function vincularProjetoCliente(){const projectName=document.getElementById('projectName').value;const clientName=document.getElementById('clientName').value;await fetch('/api/review/link-project',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({projectName,clientName,applyRule:true})});location.reload();}
 async function reclassificar(tipo){const idField=tipo.includes('Estrutura')?'toEstrutura':'toFinanceiro';const nome=document.getElementById(idField).value;await fetch('/api/review/reclassify',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({nome,tipoFinal:tipo,applyRule:true})});location.reload();}
+async function revisarEmLote(){const ids=[...document.querySelectorAll('tr[data-id]')].map(r=>r.getAttribute('data-id'));await fetch('/api/review/bulk-review',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({ids,statusRevisao:'revisado'})});location.reload();}
 </script>`, user);
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
     res.end(html);
@@ -887,6 +932,18 @@ async function reclassificar(tipo){const idField=tipo.includes('Estrutura')?'toE
     return json(res, 200, { ok: true });
   }
 
+  if (req.method === 'POST' && url.pathname === '/api/review/bulk-review') {
+    const { ids, statusRevisao, tipoFinal } = JSON.parse(await readBody(req) || '{}');
+    const set = new Set(ids || []);
+    db.reviewRegistry.forEach((item) => {
+      if (!set.has(item.id)) return;
+      if (statusRevisao) item.statusRevisao = statusRevisao;
+      if (tipoFinal) item.tipoFinal = tipoFinal;
+    });
+    saveDb(db);
+    return json(res, 200, { ok: true, updated: set.size });
+  }
+
   if (req.method === 'POST' && url.pathname === '/api/review/save-rule') {
     const body = JSON.parse(await readBody(req) || '{}');
     db.savedRules.push({ id: crypto.randomUUID(), type: 'entry_update', active: true, ...body });
@@ -901,6 +958,13 @@ async function reclassificar(tipo){const idField=tipo.includes('Estrutura')?'toE
     const changes = JSON.parse(await readBody(req) || '{}');
     const editable = ['cliente', 'projeto', 'natureza', 'centroCusto', 'parceiro', 'categoria', 'detalhe', 'conta', 'formaPagamento', 'status'];
     editable.forEach((k) => { if (changes[k] !== undefined) entry[k] = changes[k]; });
+    db.manualAdjustments = db.manualAdjustments || [];
+    db.manualAdjustments.push({
+      id: crypto.randomUUID(),
+      entryId: entry.id,
+      changedAt: new Date().toISOString(),
+      changes
+    });
     saveDb(db);
     return json(res, 200, entry);
   }
@@ -910,15 +974,66 @@ async function reclassificar(tipo){const idField=tipo.includes('Estrutura')?'toE
     const topItems = (obj) => Object.entries(obj).sort((a, b) => Math.abs(b[1]) - Math.abs(a[1])).slice(0, 10);
     const html = page('Dashboard', `<section><h2>Dashboard gerencial</h2>
 <div class='cards'>
-<div class='card'><strong>Saldo de hoje</strong><span>R$ ${metrics.saldoHoje.toFixed(2)}</span></div>
-<div class='card'><strong>Projeção 7 dias</strong><span>R$ ${metrics.proj7.toFixed(2)}</span></div>
-<div class='card'><strong>Projeção 30 dias</strong><span>R$ ${metrics.proj30.toFixed(2)}</span></div>
-<div class='card'><strong>Contas a pagar</strong><span>R$ ${metrics.contasPagar.toFixed(2)}</span></div>
-<div class='card'><strong>Contas a receber</strong><span>R$ ${metrics.contasReceber.toFixed(2)}</span></div>
+<a class='card' href='/dashboard/detalhe?view=saldo_hoje'><strong>Saldo de hoje</strong><span>R$ ${metrics.saldoHoje.toFixed(2)}</span></a>
+<a class='card' href='/dashboard/detalhe?view=proj_7'><strong>Projeção 7 dias</strong><span>R$ ${metrics.proj7.toFixed(2)}</span></a>
+<a class='card' href='/dashboard/detalhe?view=proj_30'><strong>Projeção 30 dias</strong><span>R$ ${metrics.proj30.toFixed(2)}</span></a>
+<a class='card' href='/dashboard/detalhe?view=a_pagar'><strong>A pagar</strong><span>R$ ${metrics.contasPagar.toFixed(2)}</span></a>
+<a class='card' href='/dashboard/detalhe?view=a_receber'><strong>A receber</strong><span>R$ ${metrics.contasReceber.toFixed(2)}</span></a>
+<a class='card' href='/dashboard/detalhe?view=saldo_mutuo'><strong>Saldo de mútuo</strong><span>R$ ${metrics.saldoMutuo.toFixed(2)}</span></a>
+<a class='card' href='/dashboard/detalhe?view=risco_caixa'><strong>Risco de caixa</strong><span>${metrics.riscoCaixa}</span></a>
 </div>
-<h3>Resultado por cliente</h3><ul>${topItems(metrics.byClient).map(([k, v]) => `<li>${k}: R$ ${v.toFixed(2)}</li>`).join('')}</ul>
-<h3>Resultado por projeto</h3><ul>${topItems(metrics.byProject).map(([k, v]) => `<li>${k}: R$ ${v.toFixed(2)}</li>`).join('')}</ul>
+<h3>Próximos 7 dias (agenda financeira)</h3><ul>${metrics.upcoming7.slice(0, 15).map((e) => `<li>${e.dataISO} | ${e.descricao || '-'} | R$ ${e.valor.toFixed(2)}</li>`).join('') || '<li>Sem lançamentos previstos.</li>'}</ul>
+<h3>Resultado por cliente</h3><ul>${topItems(metrics.byClient).map(([k, v]) => `<li><a href='/dashboard/detalhe?view=cliente&chave=${encodeURIComponent(k)}'>${k}: R$ ${v.toFixed(2)}</a></li>`).join('')}</ul>
+<h3>Resultado por projeto</h3><ul>${topItems(metrics.byProject).map(([k, v]) => `<li><a href='/dashboard/detalhe?view=projeto&chave=${encodeURIComponent(k)}'>${k}: R$ ${v.toFixed(2)}</a></li>`).join('')}</ul>
 </section>`, user);
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+    res.end(html);
+    return;
+  }
+
+  if (req.method === 'GET' && url.pathname === '/dashboard/detalhe') {
+    const view = url.searchParams.get('view') || '';
+    const chave = url.searchParams.get('chave') || '';
+    const today = new Date().toISOString().slice(0, 10);
+    const plusDays = (days) => {
+      const d = new Date(`${today}T00:00:00Z`);
+      d.setUTCDate(d.getUTCDate() + days);
+      return d.toISOString().slice(0, 10);
+    };
+    const d7 = plusDays(7);
+    const d30 = plusDays(30);
+    let title = 'Detalhamento';
+    let list = [];
+    if (view === 'a_pagar') {
+      title = 'A pagar';
+      list = db.entries.filter((e) => e.dataISO > today && e.valor < 0);
+    } else if (view === 'a_receber') {
+      title = 'A receber';
+      list = db.entries.filter((e) => e.dataISO > today && e.valor > 0);
+    } else if (view === 'proj_7') {
+      title = 'Projeção 7 dias';
+      list = db.entries.filter((e) => e.dataISO <= d7);
+    } else if (view === 'proj_30') {
+      title = 'Projeção 30 dias';
+      list = db.entries.filter((e) => e.dataISO <= d30);
+    } else if (view === 'saldo_hoje') {
+      title = 'Saldo de hoje';
+      list = db.entries.filter((e) => e.dataISO <= today);
+    } else if (view === 'saldo_mutuo') {
+      title = 'Saldo de mútuo';
+      list = db.entries.filter((e) => normalizeName(`${e.descricao} ${e.tipoOriginal} ${e.natureza}`).includes('MUTUO') || normalizeName(`${e.descricao} ${e.tipoOriginal} ${e.natureza}`).includes('MÚTUO'));
+    } else if (view === 'cliente') {
+      title = `Resultado por cliente: ${chave}`;
+      list = db.entries.filter((e) => (e.cliente || 'SEM CLIENTE') === chave);
+    } else if (view === 'projeto') {
+      title = `Resultado por projeto: ${chave}`;
+      list = db.entries.filter((e) => (e.projeto || 'SEM PROJETO') === chave);
+    } else if (view === 'risco_caixa') {
+      title = 'Risco de caixa (projeções)';
+      list = db.entries.filter((e) => e.dataISO <= d30);
+    }
+    const total = list.reduce((acc, e) => acc + Number(e.valor || 0), 0);
+    const html = page('Detalhamento do dashboard', `<section><h2>${title}</h2><p>Total do recorte: <strong>R$ ${total.toFixed(2)}</strong></p><p><a href='/dashboard'>← Voltar ao dashboard</a></p>${entriesTable(list)}</section>`, user);
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
     res.end(html);
     return;
