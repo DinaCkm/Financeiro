@@ -71,6 +71,49 @@ function saveDb(db) {
   }
 }
 
+// ===== AUDITORIA: registra alterações campo a campo em cada lançamento =====
+// Estrutura de cada registro: { id, ts, usuario, campo, de, para }
+function registrarAuditoria(db, entryId, usuario, changes, entryAntes) {
+  if (!db.auditLog) db.auditLog = [];
+  const ts = new Date().toISOString();
+  const user = usuario || 'sistema';
+  for (const [campo, novoValor] of Object.entries(changes)) {
+    const valorAnterior = entryAntes ? entryAntes[campo] : undefined;
+    // Só registra se houve mudança real
+    if (String(valorAnterior ?? '') === String(novoValor ?? '')) continue;
+    db.auditLog.push({
+      id: crypto.randomUUID(),
+      ts,
+      entryId,
+      usuario: user,
+      campo,
+      de: valorAnterior ?? '',
+      para: novoValor ?? ''
+    });
+  }
+}
+
+function registrarAuditoriaRevisao(db, registroId, nomeOficial, usuario, changes, registroAntes) {
+  if (!db.auditLog) db.auditLog = [];
+  const ts = new Date().toISOString();
+  const user = usuario || 'sistema';
+  for (const [campo, novoValor] of Object.entries(changes)) {
+    const valorAnterior = registroAntes ? registroAntes[campo] : undefined;
+    if (String(valorAnterior ?? '') === String(novoValor ?? '')) continue;
+    db.auditLog.push({
+      id: crypto.randomUUID(),
+      ts,
+      registroId,
+      nomeOficial,
+      usuario: user,
+      campo,
+      de: valorAnterior ?? '',
+      para: novoValor ?? '',
+      tipo: 'revisao'
+    });
+  }
+}
+
 function parseCookies(req) {
   const pairs = (req.headers.cookie || '').split(';').map((c) => c.trim()).filter(Boolean);
   return Object.fromEntries(pairs.map((p) => {
@@ -522,7 +565,7 @@ function serveStatic(req, res) {
 
 function page(title, body, user) {
   return `<!doctype html><html lang='pt-BR'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>${title} — CKM Financeiro</title><link rel='preconnect' href='https://fonts.googleapis.com'><link rel='stylesheet' href='https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap'><link rel='stylesheet' href='/public/style.css'></head><body>
-<header><h1>Painel <em>CKM</em> Financeiro</h1>${user ? `<nav><a href='/'>Home</a><a href='/upload'>Upload</a><a href='/pendencias'>Pré-análise</a><a href='/cadastros'>Cadastro Revisável</a><a href='/fatura'>Fatura Cartão</a><a href='/referencias'>Referências</a><a href='/dashboard'>Dashboard</a><a href='/logout' class='sair'>Sair</a></nav>` : ''}</header>
+<header><h1>Painel <em>CKM</em> Financeiro</h1>${user ? `<nav><a href='/'>Home</a><a href='/upload'>Upload</a><a href='/pendencias'>Pré-análise</a><a href='/cadastros'>Cadastro Revisável</a><a href='/fatura'>Fatura Cartão</a><a href='/referencias'>Referências</a><a href='/historico'>Histórico</a><a href='/dashboard'>Dashboard</a><a href='/logout' class='sair'>Sair</a></nav>` : ''}</header>
 <main>${body}</main></body></html>`;
 }
 
@@ -705,6 +748,7 @@ function reviewCards(list, allEntries) {
               <div style='display:flex;gap:.5rem'>
                 <button onclick="salvarLancamento('${eId}')" style='background:#059669;font-size:.8rem;padding:.4rem .9rem'>&#10003; Salvar alterações</button>
                 <button onclick="toggleEntryEdit('${eId}')" style='background:#e2e8f0;color:#475569;font-size:.8rem;padding:.4rem .9rem;box-shadow:none'>Cancelar</button>
+                <button onclick="verHistoricoLancamento('${eId}')" style='background:#f1f5f9;color:#475569;font-size:.8rem;padding:.4rem .9rem;box-shadow:none;border:1px solid #cbd5e1' title='Ver histórico de alterações deste lançamento'>&#128336; Histórico</button>
               </div>`}
             </div>
           </td>
@@ -1394,6 +1438,32 @@ async function salvarLancamento(eId){
     }
   }catch(e){alert('Erro: '+e.message);}
 }
+async function verHistoricoLancamento(eId){
+  const modal=document.getElementById('hist-modal-'+eId);
+  if(modal){ modal.style.display=modal.style.display==='none'?'block':'none'; return; }
+  // Criar modal inline
+  const editRow=document.getElementById('edit-'+eId);
+  if(!editRow) return;
+  const div=document.createElement('tr');
+  div.id='hist-modal-'+eId;
+  div.innerHTML='<td colspan="20" style="padding:.75rem 1rem;background:#f8fafc;border-top:1px solid #e2e8f0"><div id="hist-content-'+eId+'" style="font-size:.8rem;color:#475569">&#9203; Carregando histórico...</div></td>';
+  editRow.insertAdjacentElement('afterend', div);
+  try{
+    const resp=await fetch('/api/entries/'+eId+'/historico');
+    const log=await resp.json();
+    const LABELS={cliente:'Cliente',projeto:'Projeto',parceiro:'Parceiro',centroCusto:'Centro de Custo',natureza:'Natureza',categoria:'Categoria',detalhe:'Detalhe',conta:'Conta',formaPagamento:'Forma Pgto',status:'Status',descricao:'Descrição',valor:'Valor',dc:'D/C',data:'Data'};
+    const formatTs=ts=>{const d=new Date(ts);return d.toLocaleDateString('pt-BR')+' '+d.toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'});};
+    const content=document.getElementById('hist-content-'+eId);
+    if(!log.length){ content.innerHTML='<em style="color:#94a3b8">Nenhuma alteração registrada para este lançamento.</em>'; return; }
+    content.innerHTML='<strong style="font-size:.78rem;color:#1e293b">Histórico de alterações</strong>'
+      +'<table style="width:100%;border-collapse:collapse;margin-top:.5rem">'
+      +'<thead><tr style="background:#f1f5f9"><th style="padding:.3rem .5rem;text-align:left;font-size:.72rem">Data/Hora</th><th style="padding:.3rem .5rem;text-align:left;font-size:.72rem">Campo</th><th style="padding:.3rem .5rem;text-align:left;font-size:.72rem;color:#dc2626">Antes</th><th style="padding:.3rem .5rem;text-align:left;font-size:.72rem;color:#059669">Depois</th><th style="padding:.3rem .5rem;text-align:left;font-size:.72rem">Usuário</th></tr></thead>'
+      +'<tbody>'+log.map(r=>'<tr style="border-bottom:1px solid #f1f5f9"><td style="padding:.25rem .5rem;font-size:.72rem;white-space:nowrap;color:#94a3b8">'+formatTs(r.ts)+'</td><td style="padding:.25rem .5rem;font-size:.76rem"><strong>'+(LABELS[r.campo]||r.campo)+'</strong></td><td style="padding:.25rem .5rem;font-size:.76rem;color:#dc2626;text-decoration:line-through">'+(r.de||'<em style="color:#cbd5e1">(vazio)</em>')+'</td><td style="padding:.25rem .5rem;font-size:.76rem;color:#059669">'+(r.para||'<em style="color:#cbd5e1">(vazio)</em>')+'</td><td style="padding:.25rem .5rem;font-size:.72rem;color:#94a3b8">'+(r.usuario||'-')+'</td></tr>').join('')+'</tbody></table>';
+  }catch(e){
+    const content=document.getElementById('hist-content-'+eId);
+    if(content) content.innerHTML='<em style="color:#dc2626">Erro ao carregar histórico.</em>';
+  }
+}
 async function perguntarIA(cardId){
   const input=document.getElementById('chat-input-'+cardId);
   const msgs=document.getElementById('chat-msgs-'+cardId);
@@ -1425,7 +1495,13 @@ async function perguntarIA(cardId){
     const id = url.pathname.split('/').pop();
     const item = db.reviewRegistry.find((r) => r.id === id);
     if (!item) return json(res, 404, { error: 'Registro não encontrado' });
-    Object.assign(item, JSON.parse(await readBody(req) || '{}'));
+    const changesRevisao = JSON.parse(await readBody(req) || '{}');
+    // Capturar estado anterior do cadastro
+    const registroAntes = { ...item };
+    Object.assign(item, changesRevisao);
+    // Registrar na trilha de auditoria
+    const userRevisao = currentUser(req, db);
+    registrarAuditoriaRevisao(db, item.id, item.nomeOficial, userRevisao ? userRevisao.email : 'sistema', changesRevisao, registroAntes);
     saveDb(db);
     return json(res, 200, item);
   }
@@ -1653,12 +1729,20 @@ Responda em português, de forma objetiva e direta, citando os dados específico
     if (!entry) return json(res, 404, { error: 'Lançamento não encontrado' });
     const changes = JSON.parse(await readBody(req) || '{}');
     const editable = ['cliente', 'projeto', 'natureza', 'centroCusto', 'parceiro', 'categoria', 'detalhe', 'conta', 'formaPagamento', 'status', 'data', 'dataISO', 'descricao', 'valor', 'dc'];
+    // Capturar estado anterior antes de aplicar as mudanças
+    const entryAntes = {};
+    editable.forEach((k) => { entryAntes[k] = entry[k]; });
     editable.forEach((k) => { if (changes[k] !== undefined) entry[k] = changes[k]; });
+    // Registrar na trilha de auditoria (campo a campo, antes vs. depois)
+    const userAtual = currentUser(req, db);
+    registrarAuditoria(db, entry.id, userAtual ? userAtual.email : 'sistema', changes, entryAntes);
+    // Manter manualAdjustments para compatibilidade
     db.manualAdjustments = db.manualAdjustments || [];
     db.manualAdjustments.push({
       id: crypto.randomUUID(),
       entryId: entry.id,
       changedAt: new Date().toISOString(),
+      usuario: userAtual ? userAtual.email : 'sistema',
       changes
     });
     saveDb(db);
@@ -2091,6 +2175,84 @@ async function excluirRef(tipo,nome){
     saveDb(db);
     return json(res, 200, { ok: true });
   }
+  // ===== HISTÓRICO DE ALTERAÇÕES =====
+  // GET /api/entries/:id/historico — retorna auditLog filtrado por entryId
+  if (req.method === 'GET' && url.pathname.match(/^\/api\/entries\/[^/]+\/historico$/)) {
+    if (!checkAuth(req, res)) return;
+    const entryId = url.pathname.split('/')[3];
+    const log = (db.auditLog || []).filter(r => r.entryId === entryId).sort((a, b) => b.ts.localeCompare(a.ts));
+    return json(res, 200, log);
+  }
+
+  // GET /historico — página global de auditoria
+  if (req.method === 'GET' && url.pathname === '/historico') {
+    if (!checkAuth(req, res)) return;
+    const log = (db.auditLog || []).slice().sort((a, b) => b.ts.localeCompare(a.ts));
+    const LABELS = {
+      cliente: 'Cliente', projeto: 'Projeto', parceiro: 'Parceiro', centroCusto: 'Centro de Custo',
+      natureza: 'Natureza', categoria: 'Categoria', detalhe: 'Detalhe', conta: 'Conta',
+      formaPagamento: 'Forma de Pagamento', status: 'Status', descricao: 'Descrição',
+      valor: 'Valor', dc: 'D/C', data: 'Data', dataISO: 'Data ISO',
+      tipoFinal: 'Tipo Final', statusRevisao: 'Status Revisão',
+      clienteVinculado: 'Cliente Vinculado', projetoVinculado: 'Projeto Vinculado', observacao: 'Observação'
+    };
+    const formatTs = ts => {
+      const d = new Date(ts);
+      return d.toLocaleDateString('pt-BR') + ' ' + d.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+    };
+    const rows = log.map(r => {
+      const entry = r.entryId ? db.entries.find(e => e.id === r.entryId) : null;
+      const descricao = entry ? (entry.descricao || entry.id.slice(0, 8)) : (r.nomeOficial || r.registroId || '-');
+      const tipoLog = r.tipo === 'revisao' ? '<span style="font-size:.72rem;background:#ede9fe;color:#7c3aed;padding:.15rem .45rem;border-radius:4px">Revisão</span>' : '<span style="font-size:.72rem;background:#dbeafe;color:#1d4ed8;padding:.15rem .45rem;border-radius:4px">Lançamento</span>';
+      return `<tr>
+        <td style='font-size:.78rem;color:var(--gray-500);white-space:nowrap'>${formatTs(r.ts)}</td>
+        <td>${tipoLog}</td>
+        <td style='font-size:.82rem;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap' title='${descricao}'>${descricao}</td>
+        <td style='font-size:.82rem'><strong>${LABELS[r.campo] || r.campo}</strong></td>
+        <td style='font-size:.82rem;color:var(--red);text-decoration:line-through;max-width:160px;overflow:hidden;text-overflow:ellipsis' title='${r.de}'>${r.de || '<em style="color:var(--gray-400)">(vazio)</em>'}</td>
+        <td style='font-size:.82rem;color:var(--green);max-width:160px;overflow:hidden;text-overflow:ellipsis' title='${r.para}'>${r.para || '<em style="color:var(--gray-400)">(vazio)</em>'}</td>
+        <td style='font-size:.78rem;color:var(--gray-500)'>${r.usuario || '-'}</td>
+      </tr>`;
+    }).join('');
+    const html = page('Histórico de Alterações', `
+<section>
+  <div style='display:flex;align-items:center;gap:1rem;margin-bottom:1.5rem'>
+    <h2 style='margin:0'>Histórico de Alterações</h2>
+    <span style='font-size:.82rem;color:var(--gray-400)'>${log.length} registro(s)</span>
+  </div>
+  <p style='font-size:.85rem;color:var(--gray-400);margin-bottom:1.25rem'>Trilha completa de auditoria: toda alteração manual em lançamentos e revisões de cadastro é registrada aqui com o valor anterior e o novo valor.</p>
+  <div style='overflow-x:auto'>
+  <table style='width:100%;border-collapse:collapse;font-size:.85rem'>
+    <thead><tr style='background:var(--gray-50);border-bottom:2px solid var(--gray-200)'>
+      <th style='padding:.6rem .75rem;text-align:left;white-space:nowrap'>Data/Hora</th>
+      <th style='padding:.6rem .75rem;text-align:left'>Tipo</th>
+      <th style='padding:.6rem .75rem;text-align:left'>Registro</th>
+      <th style='padding:.6rem .75rem;text-align:left'>Campo</th>
+      <th style='padding:.6rem .75rem;text-align:left'>Antes</th>
+      <th style='padding:.6rem .75rem;text-align:left'>Depois</th>
+      <th style='padding:.6rem .75rem;text-align:left'>Usuário</th>
+    </tr></thead>
+    <tbody id='audit-body'>${rows || '<tr><td colspan="7" style="text-align:center;padding:2rem;color:var(--gray-400)">Nenhuma alteração registrada ainda.</td></tr>'}</tbody>
+  </table>
+  </div>
+</section>
+<script>
+const rows = document.querySelectorAll('#audit-body tr');
+document.addEventListener('DOMContentLoaded', () => {
+  const inp = document.createElement('input');
+  inp.placeholder = 'Filtrar por registro, campo ou usuário...';
+  inp.style.cssText = 'width:100%;padding:.6rem .9rem;border:1px solid var(--gray-200);border-radius:8px;font-size:.9rem;margin-bottom:1rem';
+  inp.oninput = () => {
+    const q = inp.value.toLowerCase();
+    rows.forEach(r => { r.style.display = r.textContent.toLowerCase().includes(q) ? '' : 'none'; });
+  };
+  document.querySelector('section').insertBefore(inp, document.querySelector('table').parentElement);
+});
+<\/script>`, user);
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+    return res.end(html);
+  }
+
   res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
   res.end('Not found');
 });
