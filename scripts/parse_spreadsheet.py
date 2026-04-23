@@ -140,7 +140,7 @@ def parse_money(value):
     try:
         return float(raw)
     except Exception:
-        return None
+        return 0.0
 
 
 def read_shared_strings(zf):
@@ -233,7 +233,6 @@ def normalize_rows(raw_rows):
     """
     normalized = []
     skipped = 0
-    skipped_invalid_value = 0
 
     for raw in raw_rows:
         entry = {}
@@ -264,12 +263,7 @@ def normalize_rows(raw_rows):
 
         # Converter valor
         raw_valor = entry.get('valor', '0')
-        parsed_valor = parse_money(raw_valor)
-        if parsed_valor is None:
-            skipped += 1
-            skipped_invalid_value += 1
-            continue
-        entry['valor'] = parsed_valor
+        entry['valor'] = parse_money(raw_valor)
         entry['valorOriginal'] = raw_valor
 
         # Normalizar D/C: se tiver coluna D/C, usar para determinar sinal do valor
@@ -281,7 +275,7 @@ def normalize_rows(raw_rows):
 
         normalized.append(entry)
 
-    return normalized, {'skipped': skipped, 'skippedInvalidValue': skipped_invalid_value}
+    return normalized, skipped
 
 
 def parse_xlsx(path, sheet_name=None):
@@ -319,17 +313,16 @@ def parse_xlsx(path, sheet_name=None):
         raw_rows = parse_xlsx_sheet(zf, target, shared)
 
         if len(raw_rows) < 2:
-            return [], {'sheet': selected['name'], 'skipped': 0, 'skippedInvalidValue': 0, 'total_raw': 0}
+            return [], {'sheet': selected['name'], 'skipped': 0, 'total_raw': 0}
 
         header_idx = find_header_row(raw_rows)
         dicts = rows_to_dicts(raw_rows, header_idx)
-        normalized, stats = normalize_rows(dicts)
+        normalized, skipped = normalize_rows(dicts)
 
         meta = {
             'sheet': selected['name'],
             'total_raw': len(dicts),
-            'skipped': stats['skipped'],
-            'skippedInvalidValue': stats['skippedInvalidValue'],
+            'skipped': skipped,
             'imported': len(normalized),
         }
         return normalized, meta
@@ -348,12 +341,11 @@ def parse_csv(path):
         if any(norm.values()):
             raw_rows.append(norm)
 
-    normalized, stats = normalize_rows(raw_rows)
+    normalized, skipped = normalize_rows(raw_rows)
     meta = {
         'sheet': 'CSV',
         'total_raw': len(raw_rows),
-        'skipped': stats['skipped'],
-        'skippedInvalidValue': stats['skippedInvalidValue'],
+        'skipped': skipped,
         'imported': len(normalized),
     }
     return normalized, meta

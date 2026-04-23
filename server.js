@@ -11,7 +11,6 @@ const PORT = process.env.PORT || 3000;
 const DB_PATH = path.join(__dirname, 'data', 'db.json');
 const PARSER_PATH = path.join(__dirname, 'scripts', 'parse_spreadsheet.py');
 const sessions = new Map();
-const SESSION_TTL_MS = 12 * 60 * 60 * 1000; // 12h
 
 const TYPE_OPTIONS = ['Cliente', 'Projeto', 'Prestador de Serviço', 'Fornecedor', 'Estrutura Interna', 'Financeiro / Não Operacional', 'Conta / Cartão', 'Pendente de Classificação'];
 const BLOCKING_ISSUES = ['DESPESA_SEM_PROJETO', 'ESTRUTURA_COMO_CLIENTE', 'MUTUO_COMO_CLIENTE', 'MUTUO_CLASSIFICACAO', 'VALOR_INVALIDO', 'DATA_INVALIDA'];
@@ -154,40 +153,11 @@ function parseCookies(req) {
   }));
 }
 
-function buildSessionCookie(sid, req) {
-  const attrs = ['Path=/', 'HttpOnly', `Max-Age=${Math.floor(SESSION_TTL_MS / 1000)}`, 'SameSite=Lax'];
-  const forwardedProto = (req.headers['x-forwarded-proto'] || '').toString().toLowerCase();
-  if (process.env.NODE_ENV === 'production' || forwardedProto === 'https') attrs.push('Secure');
-  return `sid=${sid}; ${attrs.join('; ')}`;
-}
-
-function getSession(req) {
+function currentUser(req, db) {
   const sid = parseCookies(req).sid;
   if (!sid) return null;
-  const session = sessions.get(sid);
-  if (!session) return null;
-  if (typeof session === 'string') {
-    const upgraded = { userId: session, expiresAt: Date.now() + SESSION_TTL_MS, csrfToken: crypto.randomUUID() };
-    sessions.set(sid, upgraded);
-    return { sid, session: upgraded };
-  }
-  if (Date.now() > session.expiresAt) {
-    sessions.delete(sid);
-    return null;
-  }
-  if (!session.csrfToken) session.csrfToken = crypto.randomUUID();
-  return { sid, session };
-}
-
-function currentUser(req, db) {
-  const current = getSession(req);
-  if (!current) return null;
-  const { session } = current;
-  session.expiresAt = Date.now() + SESSION_TTL_MS; // sliding session
-  const userId = session.userId;
-  const user = db.users.find((u) => u.id === userId) || null;
-  if (!user) return null;
-  return { ...user, csrfToken: session.csrfToken };
+  const userId = sessions.get(sid);
+  return db.users.find((u) => u.id === userId) || null;
 }
 
 function readBody(req) {
@@ -461,7 +431,7 @@ function parseRowsWithPython(fileName, buffer) {
 
   const payload = JSON.parse(rawOutput);
   if (payload.error) throw new Error(payload.error);
-  return { rows: payload.rows || [], meta: payload.meta || {} };
+  return payload.rows || [];
 }
 
 function parseEntries(rows, uploadId, db) {
@@ -779,7 +749,7 @@ function serveStatic(req, res) {
 
 function page(title, body, user) {
   return `<!doctype html><html lang='pt-BR'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>${title} — CKM Financeiro</title><link rel='preconnect' href='https://fonts.googleapis.com'><link rel='stylesheet' href='https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap'><link rel='stylesheet' href='/public/style.css'></head><body>
-<header><h1>Painel <em>CKM</em> Financeiro</h1>${user ? `<nav><a href='/'>Home</a><a href='/upload'>Upload</a><a href='/pendencias'>Pré-análise</a><a href='/cadastros'>Cadastro Revisável</a><a href='/fatura'>Fatura Cartão</a><a href='/referencias'>Referências</a><a href='/historico'>Histórico</a><a href='/dashboard'>Dashboard</a><form method='post' action='/logout' style='display:inline'><input type='hidden' name='_csrf' value='${user.csrfToken || ''}'><button class='link-sair' type='submit'>Sair</button></form></nav>` : ''}</header>
+<header><h1>Painel <em>CKM</em> Financeiro</h1>${user ? `<nav><a href='/'>Home</a><a href='/upload'>Upload</a><a href='/pendencias'>Pré-análise</a><a href='/cadastros'>Cadastro Revisável</a><a href='/fatura'>Fatura Cartão</a><a href='/referencias'>Referências</a><a href='/historico'>Histórico</a><a href='/dashboard'>Dashboard</a><a href='/logout' class='sair'>Sair</a></nav>` : ''}</header>
 <main>${body}</main></body></html>`;
 }
 
@@ -1217,26 +1187,15 @@ const server = http.createServer(async (req, res) => {
       saveDb(db);
     }
     const sid = crypto.randomUUID();
-    const csrfToken = crypto.randomUUID();
-    sessions.set(sid, { userId: user.id, expiresAt: Date.now() + SESSION_TTL_MS, csrfToken });
-    res.writeHead(302, { 'Set-Cookie': buildSessionCookie(sid, req), Location: '/' });
+    sessions.set(sid, user.id);
+    res.writeHead(302, { 'Set-Cookie': `sid=${sid}; Path=/; HttpOnly`, Location: '/' });
     res.end();
     return;
   }
 
-  if (req.method === 'POST' && url.pathname === '/logout') {
-    const current = getSession(req);
-    const form = new URLSearchParams(await readBody(req));
-    if (!current || !current.session.csrfToken || form.get('_csrf') !== current.session.csrfToken) {
-      res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8' });
-      res.end('CSRF inválido');
-      return;
-    }
-    sessions.delete(current.sid);
-    const forwardedProto = (req.headers['x-forwarded-proto'] || '').toString().toLowerCase();
-    const clearAttrs = ['Path=/', 'HttpOnly', 'Max-Age=0', 'SameSite=Lax'];
-    if (process.env.NODE_ENV === 'production' || forwardedProto === 'https') clearAttrs.push('Secure');
-    res.writeHead(302, { 'Set-Cookie': `sid=; ${clearAttrs.join('; ')}`, Location: '/login' });
+  if (req.method === 'GET' && url.pathname === '/logout') {
+    sessions.delete(parseCookies(req).sid);
+    res.writeHead(302, { 'Set-Cookie': 'sid=; Path=/; Max-Age=0', Location: '/login' });
     res.end();
     return;
   }
@@ -1389,8 +1348,7 @@ async function enviarArquivo(){
       const body = JSON.parse(await readBody(req) || '{}');
       const fileName = body.fileName || 'upload.csv';
       const buffer = Buffer.from(body.fileBase64 || '', 'base64');
-      const parsed = parseRowsWithPython(fileName, buffer);
-      const rows = parsed.rows;
+      const rows = parseRowsWithPython(fileName, buffer);
       const upload = { id: crypto.randomUUID(), fileName, uploadedAt: new Date().toISOString(), rowCount: rows.length };
       const allNewEntries = parseEntries(rows, upload.id, db);
 
@@ -1439,7 +1397,6 @@ async function enviarArquivo(){
         uploadId: upload.id,
         fileName,
         importedRows: entries.length,
-        invalidValueRows: Number(parsed.meta?.skippedInvalidValue || 0),
         duplicatesIgnored,
         foundNames: registry.length,
         pendingErrors: issues.filter((i) => i.level === 'erro').length,
