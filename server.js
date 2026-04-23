@@ -851,9 +851,18 @@ function reviewCards(list, allEntries) {
                   var contaVal = (e.conta||'').replace(/'/g,"&#39;");
                   var clienteVal = (e.cliente||e.parceiro||'').replace(/'/g,"&#39;");
                   var projVal = (e.projeto||'').replace(/'/g,"&#39;");
-                  var isPendNat = !e.natureza || e.natureza==='Pendente';
+                  var isPendNat = !e.natureza || e.natureza==='Pendente' || e.natureza==='Pendente de Classificação';
+                  // Verificar se este lançamento é o motivo da revisão pendente
+                  var nomeCard = r.nomeOficial ? r.nomeOficial.toUpperCase() : '';
+                  var clienteNorm = (e.cliente||'').toUpperCase();
+                  var parceiroNorm = (e.parceiro||'').toUpperCase();
+                  var projetoNorm = (e.projeto||'').toUpperCase();
+                  var clienteEMotivo = isPendente && (clienteNorm === nomeCard || parceiroNorm === nomeCard);
+                  var projetoEMotivo = isPendente && projetoNorm === nomeCard;
                   var fv = function(v){ return (!v||v==='-'||v==='0.00') ? 'border:2px solid #ef4444;background:#fff5f5' : ''; };
+                  var fvMotivo = function(v, isMotivo){ return isMotivo ? 'border:2px solid #ef4444;background:#fff5f5' : fv(v); };
                   var lv = function(v){ return (!v||v==='-'||v==='0.00') ? 'color:#dc2626;font-weight:700' : 'color:#64748b'; };
+                  var lvMotivo = function(v, isMotivo){ return isMotivo ? 'color:#dc2626;font-weight:700' : lv(v); };
                   var warn = function(v){ return (!v||v==='-'||v==='0.00') ? '⚠ ' : ''; };
                   var natOpts2 = ['Receita Operacional','Despesa Direta','Despesa Indireta','Despesa Administrativa',
                     'Despesa Financeira','Movimentação Financeira Não Operacional','Transferência','Pendente']
@@ -890,12 +899,12 @@ function reviewCards(list, allEntries) {
                     + "<input id='ef-conta-"+eId+"' list='dl-contas' value='"+contaVal+"' placeholder='Selecione ou digite...' style='font-size:.8rem;padding:.3rem .5rem'/>"
                     + "</div>"
                     + "<div>"
-                    + "<label style='font-size:.72rem;font-weight:700;"+lv(clienteVal)+";text-transform:uppercase'>"+warn(clienteVal)+"Cliente / Parceiro</label>"
-                    + "<input id='ef-cliente-"+eId+"' list='dl-clientes' value='"+clienteVal+"' placeholder='Selecione ou digite...' style='font-size:.8rem;padding:.3rem .5rem;"+fv(clienteVal)+"'/>"
+                    + "<label style='font-size:.72rem;font-weight:700;"+lvMotivo(clienteVal,clienteEMotivo)+";text-transform:uppercase'>"+(clienteEMotivo?'\u26a0 \u2190 PENDENTE DE CLASSIFICA\u00c7\u00c3O ':warn(clienteVal))+"Cliente / Parceiro</label>"
+                    + "<input id='ef-cliente-"+eId+"' list='dl-clientes' value='"+clienteVal+"' placeholder='Selecione ou digite...' style='font-size:.8rem;padding:.3rem .5rem;"+fvMotivo(clienteVal,clienteEMotivo)+"'/>"
                     + "</div>"
                     + "<div>"
-                    + "<label style='font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase'>Projeto</label>"
-                    + "<input id='ef-proj-"+eId+"' list='dl-projetos' value='"+projVal+"' placeholder='Selecione ou digite...' style='font-size:.8rem;padding:.3rem .5rem'/>"
+                    + "<label style='font-size:.72rem;font-weight:700;"+lvMotivo(projVal,projetoEMotivo)+";text-transform:uppercase'>"+(projetoEMotivo?'\u26a0 \u2190 PENDENTE DE CLASSIFICA\u00c7\u00c3O ':'')+"Projeto</label>"
+                    + "<input id='ef-proj-"+eId+"' list='dl-projetos' value='"+projVal+"' placeholder='Selecione ou digite...' style='font-size:.8rem;padding:.3rem .5rem;"+fvMotivo(projVal,projetoEMotivo)+"'/>"
                     + "</div>"
                     + "<div>"
                     + "<label style='font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase'>Status</label>"
@@ -993,6 +1002,25 @@ function reviewCards(list, allEntries) {
         </div>
       </div>`;
 
+    // Banner explicativo: por que este cadastro está pendente?
+    const motivoBanner = isPendente
+      ? `<div style='background:#fef2f2;border:1px solid #fca5a5;border-radius:8px;padding:.6rem .9rem;margin-bottom:.75rem;display:flex;align-items:flex-start;gap:.5rem'>
+          <span style='font-size:1rem;flex-shrink:0'>&#9888;&#65039;</span>
+          <div>
+            <strong style='font-size:.8rem;color:#991b1b'>Por que este cadastro está pendente?</strong>
+            <p style='font-size:.78rem;color:#7f1d1d;margin:.2rem 0 0'>O nome <strong>${r.nomeOficial}</strong> aparece como <strong>parceiro, cliente ou projeto</strong> em ${linked.length} lançamento(s), mas ainda não foi classificado. Defina o <strong>Tipo</strong> abaixo e clique em <strong>Confirmar revisão</strong>.</p>
+          </div>
+        </div>`
+      : (r.statusRevisao !== 'revisado'
+          ? `<div style='background:#fff7ed;border:1px solid #fdba74;border-radius:8px;padding:.6rem .9rem;margin-bottom:.75rem;display:flex;align-items:flex-start;gap:.5rem'>
+              <span style='font-size:1rem;flex-shrink:0'>&#128161;</span>
+              <div>
+                <strong style='font-size:.8rem;color:#c2410c'>Tipo definido — aguardando confirmação</strong>
+                <p style='font-size:.78rem;color:#7c2d12;margin:.2rem 0 0'>O tipo <strong>${tipoAtual}</strong> foi sugerido automaticamente. Verifique os lançamentos e clique em <strong>Confirmar revisão</strong> para marcar como revisado.</p>
+              </div>
+            </div>`
+          : '');
+
     return `<div class='review-card' data-id='${r.id}' data-status='${r.statusRevisao}'>
   <div class='review-card-header' onclick="toggleCard('${r.id}')">
     <div class='review-card-title'>
@@ -1008,6 +1036,7 @@ function reviewCards(list, allEntries) {
     </div>
   </div>
   <div class='review-card-body' id='body-${r.id}' style='display:none'>
+    ${motivoBanner}
     <p style='font-size:.75rem;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--gray-400);margin-bottom:.4rem'>&#128196; Lançamentos vinculados (${linked.length})</p>
     ${lancTable}
     ${classifPanel}
