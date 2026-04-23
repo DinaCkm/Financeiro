@@ -2441,6 +2441,78 @@ document.addEventListener('DOMContentLoaded', () => {
     return res.end(html);
   }
 
+  // ===== ROTA DE MANUTENÇÃO: limpar cadastros com ruído no reviewRegistry e entries =====
+  if (req.method === 'POST' && url.pathname === '/api/admin/limpar-cadastros') {
+    const user = requireAuth(req, res, db);
+    if (!user) return;
+
+    // Função auxiliar local para verificar lixo
+    const isLixo = (val) => {
+      if (!val) return true;
+      const s = String(val).trim();
+      if (/^\d+(\.\d+)+$/.test(s)) return true;
+      if (/^\d+$/.test(s)) return true;
+      if (s === '' || s === '-' || s === '--' || s === '.') return true;
+      return false;
+    };
+
+    // 1. Corrigir entries: aplicar normalizeParceiro e limpar cliente lixo
+    let entriesCorrigidos = 0;
+    for (const e of db.entries) {
+      let changed = false;
+      const novoParceiro = normalizeParceiro(e.parceiro || '');
+      if (novoParceiro !== (e.parceiro || '')) { e.parceiro = novoParceiro; changed = true; }
+      if (isLixo(e.cliente)) { if (e.cliente) { e.cliente = ''; changed = true; } }
+      if (changed) entriesCorrigidos++;
+    }
+
+    // 2. Reconstruir reviewRegistry: preservar revisados, reconstruir pendentes
+    const CORTE = '2024-06-01';
+    const revisados = (db.reviewRegistry || []).filter(r => r.statusRevisao === 'revisado');
+    const revisadosKeys = new Set(revisados.map(r => (r.nomeOficial || '').toUpperCase()));
+
+    const novosNomes = new Map();
+    for (const e of db.entries) {
+      const dataISO = e.dataISO || e.data || '';
+      if (dataISO < CORTE) continue;
+      for (const campo of ['cliente', 'projeto', 'parceiro']) {
+        const val = (e[campo] || '').trim();
+        if (!val || val === '-' || isLixo(val)) continue;
+        const key = val.toUpperCase();
+        if (!novosNomes.has(key)) novosNomes.set(key, { nomeOriginal: val, nomeOficial: key });
+      }
+    }
+
+    const novosPendentes = [];
+    for (const [key, info] of novosNomes) {
+      if (revisadosKeys.has(key)) continue;
+      novosPendentes.push({
+        id: crypto.randomUUID(),
+        nomeOriginal: info.nomeOriginal,
+        nomeOficial: key,
+        tipoSugerido: 'Pendente de Classificação',
+        tipoFinal: 'Pendente de Classificação',
+        clienteVinculado: '',
+        projetoVinculado: '',
+        manterAlias: true,
+        observacao: '',
+        statusRevisao: 'pendente'
+      });
+    }
+
+    db.reviewRegistry = [...revisados, ...novosPendentes];
+    saveDb(db);
+
+    json(res, 200, {
+      ok: true,
+      entriesCorrigidos,
+      revisadosPreservados: revisados.length,
+      novosPendentes: novosPendentes.length,
+      totalRegistry: db.reviewRegistry.length
+    });
+    return;
+  }
+
   res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
   res.end('Not found');
 });
