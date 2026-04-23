@@ -353,26 +353,36 @@ def parse_csv(path):
 
 def main():
     if len(sys.argv) < 3:
-        print(json.dumps({'error': 'Uso: parse_spreadsheet.py <path> <ext> [sheet_name]'}))
+        print(json.dumps({'error': 'Uso: parse_spreadsheet.py <path> <ext> [out_file]'}))
         sys.exit(1)
 
     path = sys.argv[1]
     ext = sys.argv[2].lower()
-    sheet_name = sys.argv[3] if len(sys.argv) > 3 else None
+    # 3º argumento: arquivo de saída (evita ENOBUFS em planilhas grandes)
+    out_file = sys.argv[3] if len(sys.argv) > 3 else None
 
     try:
         if ext in ('xlsx', 'xlsm'):
-            rows, meta = parse_xlsx(path, sheet_name)
+            rows, meta = parse_xlsx(path, None)
         elif ext == 'csv':
             rows, meta = parse_csv(path)
         else:
             raise RuntimeError(f'Extensão não suportada: {ext}')
 
-        print(json.dumps({'rows': rows, 'meta': meta}, ensure_ascii=False))
+        result = json.dumps({'rows': rows, 'meta': meta}, ensure_ascii=False)
+        if out_file:
+            with open(out_file, 'w', encoding='utf-8') as f:
+                f.write(result)
+        else:
+            print(result)
     except Exception as e:
-        print(json.dumps({'error': str(e)}, ensure_ascii=False))
+        err = json.dumps({'error': str(e)}, ensure_ascii=False)
+        if out_file:
+            with open(out_file, 'w', encoding='utf-8') as f:
+                f.write(err)
+        else:
+            print(err)
         sys.exit(2)
-
 
 if __name__ == '__main__':
     main()

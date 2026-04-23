@@ -269,13 +269,26 @@ function parseRowsWithPython(fileName, buffer) {
   const tempPath = path.join(os.tmpdir(), `${crypto.randomUUID()}.${ext}`);
   fs.writeFileSync(tempPath, buffer);
 
-  const proc = spawnSync('python3', [PARSER_PATH, tempPath, ext], { encoding: 'utf8' });
+  const outPath = path.join(os.tmpdir(), `${crypto.randomUUID()}.json`);
+  const proc = spawnSync('python3', [PARSER_PATH, tempPath, ext, outPath], {
+    encoding: 'utf8',
+    maxBuffer: 64 * 1024 * 1024 // 64 MB
+  });
   fs.unlinkSync(tempPath);
 
   if (proc.error) throw proc.error;
   if (proc.status !== 0 && proc.status !== 2) throw new Error(proc.stderr || 'Falha ao executar parser de planilha.');
 
-  const payload = JSON.parse(proc.stdout || '{}');
+  // Ler saída do arquivo temporário se existir, senão usar stdout
+  let rawOutput;
+  if (fs.existsSync(outPath)) {
+    rawOutput = fs.readFileSync(outPath, 'utf8');
+    fs.unlinkSync(outPath);
+  } else {
+    rawOutput = proc.stdout || '{}';
+  }
+
+  const payload = JSON.parse(rawOutput);
   if (payload.error) throw new Error(payload.error);
   return payload.rows || [];
 }
