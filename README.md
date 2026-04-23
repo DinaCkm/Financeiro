@@ -16,6 +16,7 @@ Usuário de teste:
 - Persistência **obrigatória** em PostgreSQL para uso contínuo (`DATABASE_URL`).
 - Persistência operacional coberta: importações, lançamentos, cadastro revisável, aliases/regras, vínculo projeto->cliente e ajustes manuais.
 - Escopo da Sprint 4 orientado a operação real: estabilidade de dados, revisão diária e dashboard gerencial.
+- Cards principais do dashboard com drill-down para composição dos valores (lançamentos detalhados).
 
 ## Sprint 3 (entrega anterior)
 - Pré-análise refinada com destaque claro para:

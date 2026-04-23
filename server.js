@@ -394,6 +394,8 @@ function calculateDashboard(db) {
   const contasReceber = sortedEntries.filter((e) => e.dataISO > today && e.valor > 0).reduce((acc, e) => acc + e.valor, 0);
   const upcoming7 = sortedEntries.filter((e) => e.dataISO > today && e.dataISO <= d7);
   const riscoCaixa = proj7 < 0 ? 'alto' : proj30 < 0 ? 'moderado' : 'controlado';
+  const mutuoEntries = sortedEntries.filter((e) => normalizeName(`${e.descricao} ${e.tipoOriginal} ${e.natureza}`).includes('MUTUO') || normalizeName(`${e.descricao} ${e.tipoOriginal} ${e.natureza}`).includes('MÚTUO'));
+  const saldoMutuo = mutuoEntries.reduce((acc, e) => acc + e.valor, 0);
 
   const byClient = {};
   const byProject = {};
@@ -404,7 +406,29 @@ function calculateDashboard(db) {
     byProject[p] = (byProject[p] || 0) + e.valor;
   });
 
-  return { saldoHoje, proj7, proj30, contasPagar, contasReceber, byClient, byProject, rolling, upcoming7, riscoCaixa };
+  return { saldoHoje, proj7, proj30, contasPagar, contasReceber, byClient, byProject, rolling, upcoming7, riscoCaixa, saldoMutuo };
+}
+
+function sortEntries(entries, mode = 'date_desc') {
+  const list = [...entries];
+  if (mode === 'abs_desc') {
+    return list.sort((a, b) => Math.abs(b.valor) - Math.abs(a.valor));
+  }
+  return list.sort((a, b) => (b.dataISO || '').localeCompare(a.dataISO || ''));
+}
+
+function entriesTable(entries) {
+  const rows = sortEntries(entries).map((e) => `<tr>
+    <td>${e.dataISO || e.data || '-'}</td>
+    <td>${e.descricao || '-'}</td>
+    <td>R$ ${Number(e.valor || 0).toFixed(2)}</td>
+    <td>${e.cliente || '-'}</td>
+    <td>${e.projeto || '-'}</td>
+    <td>${e.parceiro || '-'}</td>
+    <td>${e.natureza || '-'}</td>
+    <td>${e.status || '-'}</td>
+  </tr>`).join('');
+  return `<table><thead><tr><th>Data</th><th>Descrição</th><th>Valor</th><th>Cliente</th><th>Projeto</th><th>Parceiro</th><th>Natureza</th><th>Status</th></tr></thead><tbody>${rows || '<tr><td colspan=\"8\">Sem lançamentos no recorte.</td></tr>'}</tbody></table>`;
 }
 
 const server = http.createServer(async (req, res) => {
@@ -723,17 +747,69 @@ async function revisarEmLote(){const ids=[...document.querySelectorAll('tr[data-
     const topItems = (obj) => Object.entries(obj).sort((a, b) => Math.abs(b[1]) - Math.abs(a[1])).slice(0, 10);
     const html = page('Dashboard', `<section><h2>Dashboard gerencial</h2>
 <div class='cards'>
-<div class='card'><strong>Saldo de hoje</strong><span>R$ ${metrics.saldoHoje.toFixed(2)}</span></div>
-<div class='card'><strong>Projeção 7 dias</strong><span>R$ ${metrics.proj7.toFixed(2)}</span></div>
-<div class='card'><strong>Projeção 30 dias</strong><span>R$ ${metrics.proj30.toFixed(2)}</span></div>
-<div class='card'><strong>Contas a pagar</strong><span>R$ ${metrics.contasPagar.toFixed(2)}</span></div>
-<div class='card'><strong>Contas a receber</strong><span>R$ ${metrics.contasReceber.toFixed(2)}</span></div>
-<div class='card'><strong>Risco de caixa</strong><span>${metrics.riscoCaixa}</span></div>
+<a class='card' href='/dashboard/detalhe?view=saldo_hoje'><strong>Saldo de hoje</strong><span>R$ ${metrics.saldoHoje.toFixed(2)}</span></a>
+<a class='card' href='/dashboard/detalhe?view=proj_7'><strong>Projeção 7 dias</strong><span>R$ ${metrics.proj7.toFixed(2)}</span></a>
+<a class='card' href='/dashboard/detalhe?view=proj_30'><strong>Projeção 30 dias</strong><span>R$ ${metrics.proj30.toFixed(2)}</span></a>
+<a class='card' href='/dashboard/detalhe?view=a_pagar'><strong>A pagar</strong><span>R$ ${metrics.contasPagar.toFixed(2)}</span></a>
+<a class='card' href='/dashboard/detalhe?view=a_receber'><strong>A receber</strong><span>R$ ${metrics.contasReceber.toFixed(2)}</span></a>
+<a class='card' href='/dashboard/detalhe?view=saldo_mutuo'><strong>Saldo de mútuo</strong><span>R$ ${metrics.saldoMutuo.toFixed(2)}</span></a>
+<a class='card' href='/dashboard/detalhe?view=risco_caixa'><strong>Risco de caixa</strong><span>${metrics.riscoCaixa}</span></a>
 </div>
 <h3>Próximos 7 dias (agenda financeira)</h3><ul>${metrics.upcoming7.slice(0, 15).map((e) => `<li>${e.dataISO} | ${e.descricao || '-'} | R$ ${e.valor.toFixed(2)}</li>`).join('') || '<li>Sem lançamentos previstos.</li>'}</ul>
-<h3>Resultado por cliente</h3><ul>${topItems(metrics.byClient).map(([k, v]) => `<li>${k}: R$ ${v.toFixed(2)}</li>`).join('')}</ul>
-<h3>Resultado por projeto</h3><ul>${topItems(metrics.byProject).map(([k, v]) => `<li>${k}: R$ ${v.toFixed(2)}</li>`).join('')}</ul>
+<h3>Resultado por cliente</h3><ul>${topItems(metrics.byClient).map(([k, v]) => `<li><a href='/dashboard/detalhe?view=cliente&chave=${encodeURIComponent(k)}'>${k}: R$ ${v.toFixed(2)}</a></li>`).join('')}</ul>
+<h3>Resultado por projeto</h3><ul>${topItems(metrics.byProject).map(([k, v]) => `<li><a href='/dashboard/detalhe?view=projeto&chave=${encodeURIComponent(k)}'>${k}: R$ ${v.toFixed(2)}</a></li>`).join('')}</ul>
 </section>`, user);
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+    res.end(html);
+    return;
+  }
+
+  if (req.method === 'GET' && url.pathname === '/dashboard/detalhe') {
+    const view = url.searchParams.get('view') || '';
+    const chave = url.searchParams.get('chave') || '';
+    const today = new Date().toISOString().slice(0, 10);
+    const plusDays = (days) => {
+      const d = new Date(`${today}T00:00:00Z`);
+      d.setUTCDate(d.getUTCDate() + days);
+      return d.toISOString().slice(0, 10);
+    };
+    const d7 = plusDays(7);
+    const d30 = plusDays(30);
+
+    let title = 'Detalhamento';
+    let list = [];
+
+    if (view === 'a_pagar') {
+      title = 'A pagar';
+      list = db.entries.filter((e) => e.dataISO > today && e.valor < 0);
+    } else if (view === 'a_receber') {
+      title = 'A receber';
+      list = db.entries.filter((e) => e.dataISO > today && e.valor > 0);
+    } else if (view === 'proj_7') {
+      title = 'Projeção 7 dias';
+      list = db.entries.filter((e) => e.dataISO <= d7);
+    } else if (view === 'proj_30') {
+      title = 'Projeção 30 dias';
+      list = db.entries.filter((e) => e.dataISO <= d30);
+    } else if (view === 'saldo_hoje') {
+      title = 'Saldo de hoje';
+      list = db.entries.filter((e) => e.dataISO <= today);
+    } else if (view === 'saldo_mutuo') {
+      title = 'Saldo de mútuo';
+      list = db.entries.filter((e) => normalizeName(`${e.descricao} ${e.tipoOriginal} ${e.natureza}`).includes('MUTUO') || normalizeName(`${e.descricao} ${e.tipoOriginal} ${e.natureza}`).includes('MÚTUO'));
+    } else if (view === 'cliente') {
+      title = `Resultado por cliente: ${chave}`;
+      list = db.entries.filter((e) => (e.cliente || 'SEM CLIENTE') === chave);
+    } else if (view === 'projeto') {
+      title = `Resultado por projeto: ${chave}`;
+      list = db.entries.filter((e) => (e.projeto || 'SEM PROJETO') === chave);
+    } else if (view === 'risco_caixa') {
+      title = 'Risco de caixa (projeções)';
+      list = db.entries.filter((e) => e.dataISO <= d30);
+    }
+
+    const total = list.reduce((acc, e) => acc + Number(e.valor || 0), 0);
+    const html = page('Detalhamento do dashboard', `<section><h2>${title}</h2><p>Total do recorte: <strong>R$ ${total.toFixed(2)}</strong></p><p><a href='/dashboard'>← Voltar ao dashboard</a></p>${entriesTable(list)}</section>`, user);
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
     res.end(html);
     return;

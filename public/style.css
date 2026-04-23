@@ -11,5 +11,7 @@ th, td { border: 1px solid #e2e8f0; padding: .5rem; text-align: left; vertical-a
 .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
 .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: .8rem; margin: .7rem 0 1rem; }
 .card { border: 1px solid #e2e8f0; border-radius: 8px; padding: .7rem; background: #f8fafc; }
+.card { color: inherit; text-decoration: none; display: block; }
+.card:hover { border-color: #94a3b8; background: #eef2ff; }
 .card strong { display: block; font-size: .85rem; color: #334155; margin-bottom: .35rem; }
 .card span { font-size: 1.2rem; font-weight: 700; color: #0f172a; }
