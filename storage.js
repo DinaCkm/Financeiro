@@ -90,6 +90,116 @@ function createPostgresStorage(databaseUrl) {
     return result.rows.map((r) => r.data);
   }
 
+  async function syncSavedRules(client, rules) {
+    const normalized = (rules || []).filter(Boolean).map((rule) => ({ ...rule, id: rule.id || crypto.randomUUID() }));
+    const ids = normalized.map((rule) => rule.id);
+
+    if (ids.length) {
+      await client.query('DELETE FROM saved_rules WHERE id <> ALL($1::text[])', [ids]);
+    } else {
+      await client.query('DELETE FROM saved_rules');
+    }
+
+    for (const rule of normalized) {
+      await client.query(
+        'INSERT INTO saved_rules (id, data) VALUES ($1, $2) ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data',
+        [rule.id, rule]
+      );
+    }
+  }
+
+  async function syncReviewRegistry(client, items) {
+    const normalized = (items || []).filter(Boolean).map((item) => ({ ...item, id: item.id || crypto.randomUUID() }));
+    const ids = normalized.map((item) => item.id);
+
+    if (ids.length) {
+      await client.query('DELETE FROM review_registry WHERE id <> ALL($1::text[])', [ids]);
+    } else {
+      await client.query('DELETE FROM review_registry');
+    }
+
+    for (const item of normalized) {
+      await client.query(
+        'INSERT INTO review_registry (id, data) VALUES ($1, $2) ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data',
+        [item.id, item]
+      );
+    }
+  }
+
+  async function syncUploads(client, uploads) {
+    const normalized = (uploads || []).filter(Boolean).map((upload) => ({
+      ...upload,
+      id: upload.id || crypto.randomUUID(),
+      fileName: upload.fileName || '',
+      uploadedAt: upload.uploadedAt || new Date().toISOString(),
+      rowCount: Number(upload.rowCount || 0)
+    }));
+    const ids = normalized.map((upload) => upload.id);
+
+    if (ids.length) {
+      await client.query('DELETE FROM uploads WHERE id <> ALL($1::text[])', [ids]);
+    } else {
+      await client.query('DELETE FROM uploads');
+    }
+
+    for (const upload of normalized) {
+      await client.query(
+        `INSERT INTO uploads (id, file_name, uploaded_at, row_count, payload)
+         VALUES ($1, $2, $3, $4, $5)
+         ON CONFLICT (id) DO UPDATE
+         SET file_name = EXCLUDED.file_name,
+             uploaded_at = EXCLUDED.uploaded_at,
+             row_count = EXCLUDED.row_count,
+             payload = EXCLUDED.payload`,
+        [upload.id, upload.fileName, upload.uploadedAt, upload.rowCount, upload]
+      );
+    }
+  }
+
+  async function syncEntries(client, entries) {
+    const normalized = (entries || []).filter(Boolean).map((entry) => ({ ...entry, id: entry.id || crypto.randomUUID() }));
+    const ids = normalized.map((entry) => entry.id);
+
+    if (ids.length) {
+      await client.query('DELETE FROM entries WHERE id <> ALL($1::text[])', [ids]);
+    } else {
+      await client.query('DELETE FROM entries');
+    }
+
+    for (const entry of normalized) {
+      await client.query(
+        `INSERT INTO entries (id, upload_id, data)
+         VALUES ($1, $2, $3)
+         ON CONFLICT (id) DO UPDATE
+         SET upload_id = EXCLUDED.upload_id,
+             data = EXCLUDED.data`,
+        [entry.id, entry.uploadId || '', entry]
+      );
+    }
+  }
+
+  async function syncIssues(client, issues) {
+    const normalized = (issues || []).filter(Boolean).map((issue) => ({ ...issue, id: issue.id || crypto.randomUUID() }));
+    const ids = normalized.map((issue) => issue.id);
+
+    if (ids.length) {
+      await client.query('DELETE FROM issues WHERE id <> ALL($1::text[])', [ids]);
+    } else {
+      await client.query('DELETE FROM issues');
+    }
+
+    for (const issue of normalized) {
+      await client.query(
+        `INSERT INTO issues (id, upload_id, data)
+         VALUES ($1, $2, $3)
+         ON CONFLICT (id) DO UPDATE
+         SET upload_id = EXCLUDED.upload_id,
+             data = EXCLUDED.data`,
+        [issue.id, issue.uploadId || null, issue]
+      );
+    }
+  }
+
   return {
     async init() {
       await ensureSchema();
@@ -122,30 +232,16 @@ function createPostgresStorage(databaseUrl) {
       const client = await pool.connect();
       try {
         await client.query('BEGIN');
-        await client.query('TRUNCATE uploads, entries, issues, review_registry, saved_rules, manual_adjustments');
+        await client.query('TRUNCATE manual_adjustments');
+        await syncUploads(client, db.uploads || []);
 
-        for (const upload of db.uploads || []) {
-          await client.query(
-            'INSERT INTO uploads (id, file_name, uploaded_at, row_count, payload) VALUES ($1, $2, $3, $4, $5)',
-            [upload.id, upload.fileName || '', upload.uploadedAt || new Date().toISOString(), upload.rowCount || 0, upload]
-          );
-        }
+        await syncEntries(client, db.entries || []);
 
-        for (const entry of db.entries || []) {
-          await client.query('INSERT INTO entries (id, upload_id, data) VALUES ($1, $2, $3)', [entry.id, entry.uploadId || '', entry]);
-        }
+        await syncIssues(client, db.issues || []);
 
-        for (const issue of db.issues || []) {
-          await client.query('INSERT INTO issues (id, upload_id, data) VALUES ($1, $2, $3)', [issue.id, issue.uploadId || null, issue]);
-        }
+        await syncReviewRegistry(client, db.reviewRegistry || []);
 
-        for (const item of db.reviewRegistry || []) {
-          await client.query('INSERT INTO review_registry (id, data) VALUES ($1, $2)', [item.id, item]);
-        }
-
-        for (const rule of db.savedRules || []) {
-          await client.query('INSERT INTO saved_rules (id, data) VALUES ($1, $2)', [rule.id, rule]);
-        }
+        await syncSavedRules(client, db.savedRules || []);
 
         for (const adjustment of db.manualAdjustments || []) {
           await client.query('INSERT INTO manual_adjustments (id, data) VALUES ($1, $2)', [adjustment.id, adjustment]);
