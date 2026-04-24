@@ -383,9 +383,13 @@ def parse_csv(path):
     reader = csv.DictReader(io.StringIO(sample), delimiter=delimiter)
     raw_rows = []
     for row in reader:
-        norm = {str(k).strip(): (str(v).strip() if v is not None else '')
-                for k, v in row.items()}
-        if any(norm.values()):
+        norm = {
+            '__rownum': reader.line_num,
+            **{str(k).strip(): (str(v).strip() if v is not None else '')
+               for k, v in row.items()}
+        }
+        has_data = any(v for k, v in norm.items() if k != '__rownum')
+        if has_data:
             raw_rows.append(norm)
 
     normalized, stats = normalize_rows(raw_rows)

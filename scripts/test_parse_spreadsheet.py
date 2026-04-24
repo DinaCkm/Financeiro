@@ -40,7 +40,7 @@ class ParseSpreadsheetTests(unittest.TestCase):
 
         self.assertEqual(len(rows), 2)
         self.assertEqual(meta['skippedInvalidDate'], 1)
-        self.assertEqual(meta['rejectedRows'][0]['row'], 2)
+        self.assertEqual(meta['rejectedRows'][0]['row'], 3)
 
 
 if __name__ == '__main__':
