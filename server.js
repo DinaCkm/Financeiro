@@ -11,6 +11,7 @@ const PORT = process.env.PORT || 3000;
 const DB_PATH = path.join(__dirname, 'data', 'db.json');
 const PARSER_PATH = path.join(__dirname, 'scripts', 'parse_spreadsheet.py');
 const sessions = new Map();
+const SESSION_TTL_SECONDS = 60 * 60 * 12; // 12h
 
 const TYPE_OPTIONS = ['Cliente', 'Projeto', 'Prestador de Serviço', 'Fornecedor', 'Estrutura Interna', 'Financeiro / Não Operacional', 'Conta / Cartão', 'Pendente de Classificação'];
 const BLOCKING_ISSUES = ['DESPESA_SEM_PROJETO', 'ESTRUTURA_COMO_CLIENTE', 'MUTUO_COMO_CLIENTE', 'MUTUO_CLASSIFICACAO', 'VALOR_INVALIDO', 'DATA_INVALIDA'];
@@ -153,10 +154,46 @@ function parseCookies(req) {
   }));
 }
 
+function isSecureRequest(req) {
+  const forwardedProto = String(req.headers['x-forwarded-proto'] || '').toLowerCase();
+  return forwardedProto.includes('https') || Boolean(req.socket && req.socket.encrypted);
+}
+
+function buildSessionCookie(req, sid, maxAgeSeconds = SESSION_TTL_SECONDS) {
+  const parts = [
+    `sid=${encodeURIComponent(sid)}`,
+    'Path=/',
+    'HttpOnly',
+    'SameSite=Lax',
+    `Max-Age=${maxAgeSeconds}`
+  ];
+  if (process.env.NODE_ENV === 'production' || isSecureRequest(req)) {
+    parts.push('Secure');
+  }
+  return parts.join('; ');
+}
+
 function currentUser(req, db) {
   const sid = parseCookies(req).sid;
   if (!sid) return null;
-  const userId = sessions.get(sid);
+
+  const sessionData = sessions.get(sid);
+  if (!sessionData) return null;
+
+  const now = Date.now();
+  if (typeof sessionData === 'object' && sessionData.expiresAt && sessionData.expiresAt <= now) {
+    sessions.delete(sid);
+    return null;
+  }
+
+  const userId = typeof sessionData === 'string' ? sessionData : sessionData.userId;
+  if (!userId) {
+    sessions.delete(sid);
+    return null;
+  }
+
+  // Sliding session: renova validade quando o usuário segue ativo.
+  sessions.set(sid, { userId, expiresAt: now + SESSION_TTL_SECONDS * 1000 });
   return db.users.find((u) => u.id === userId) || null;
 }
 
@@ -1187,15 +1224,15 @@ const server = http.createServer(async (req, res) => {
       saveDb(db);
     }
     const sid = crypto.randomUUID();
-    sessions.set(sid, user.id);
-    res.writeHead(302, { 'Set-Cookie': `sid=${sid}; Path=/; HttpOnly`, Location: '/' });
+    sessions.set(sid, { userId: user.id, expiresAt: Date.now() + SESSION_TTL_SECONDS * 1000 });
+    res.writeHead(302, { 'Set-Cookie': buildSessionCookie(req, sid), Location: '/' });
     res.end();
     return;
   }
 
   if (req.method === 'GET' && url.pathname === '/logout') {
     sessions.delete(parseCookies(req).sid);
-    res.writeHead(302, { 'Set-Cookie': 'sid=; Path=/; Max-Age=0', Location: '/login' });
+    res.writeHead(302, { 'Set-Cookie': buildSessionCookie(req, '', 0), Location: '/login' });
     res.end();
     return;
   }
