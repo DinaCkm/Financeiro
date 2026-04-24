@@ -11,6 +11,7 @@ const PORT = process.env.PORT || 3000;
 const DB_PATH = path.join(__dirname, 'data', 'db.json');
 const PARSER_PATH = path.join(__dirname, 'scripts', 'parse_spreadsheet.py');
 const sessions = new Map();
+const SESSION_TTL_SECONDS = 60 * 60 * 12; // 12h
 
 const TYPE_OPTIONS = ['Cliente', 'Projeto', 'Prestador de Serviço', 'Fornecedor', 'Estrutura Interna', 'Financeiro / Não Operacional', 'Conta / Cartão', 'Pendente de Classificação'];
 const BLOCKING_ISSUES = ['DESPESA_SEM_PROJETO', 'ESTRUTURA_COMO_CLIENTE', 'MUTUO_COMO_CLIENTE', 'MUTUO_CLASSIFICACAO', 'VALOR_INVALIDO', 'DATA_INVALIDA'];
@@ -41,6 +42,31 @@ const CC_PADRAO = [
   'ADMINISTRATIVO', 'COMERCIAL', 'ESCRITÓRIO', 'FINANCEIRO', 'FISCAL',
   'JURÍDICO', 'MÚTUO', 'OPERACIONAL', 'PRÓ-LABORE', 'RH', 'TEF', 'TI'
 ];
+
+const PASSWORD_PREFIX = 'scrypt$';
+
+function isHashedPassword(stored) {
+  return typeof stored === 'string' && stored.startsWith(PASSWORD_PREFIX);
+}
+
+function hashPassword(password) {
+  const salt = crypto.randomBytes(16).toString('hex');
+  const key = crypto.scryptSync(String(password), salt, 64).toString('hex');
+  return `${PASSWORD_PREFIX}${salt}$${key}`;
+}
+
+function verifyPassword(inputPassword, storedPassword) {
+  if (!storedPassword) return false;
+  if (!isHashedPassword(storedPassword)) return String(storedPassword) === String(inputPassword);
+  const parts = String(storedPassword).split('$');
+  if (parts.length !== 3) return false;
+  const [, salt, expectedHex] = parts;
+  const actualHex = crypto.scryptSync(String(inputPassword), salt, 64).toString('hex');
+  const expected = Buffer.from(expectedHex, 'hex');
+  const actual = Buffer.from(actualHex, 'hex');
+  if (expected.length !== actual.length) return false;
+  return crypto.timingSafeEqual(expected, actual);
+}
 
 const COLUMN_ALIASES = {
   data: ['data', 'dt', 'date', 'data_movimento', 'data movimento', 'vencimento',
@@ -128,10 +154,46 @@ function parseCookies(req) {
   }));
 }
 
+function isSecureRequest(req) {
+  const forwardedProto = String(req.headers['x-forwarded-proto'] || '').toLowerCase();
+  return forwardedProto.includes('https') || Boolean(req.socket && req.socket.encrypted);
+}
+
+function buildSessionCookie(req, sid, maxAgeSeconds = SESSION_TTL_SECONDS) {
+  const parts = [
+    `sid=${encodeURIComponent(sid)}`,
+    'Path=/',
+    'HttpOnly',
+    'SameSite=Lax',
+    `Max-Age=${maxAgeSeconds}`
+  ];
+  if (process.env.NODE_ENV === 'production' || isSecureRequest(req)) {
+    parts.push('Secure');
+  }
+  return parts.join('; ');
+}
+
 function currentUser(req, db) {
   const sid = parseCookies(req).sid;
   if (!sid) return null;
-  const userId = sessions.get(sid);
+
+  const sessionData = sessions.get(sid);
+  if (!sessionData) return null;
+
+  const now = Date.now();
+  if (typeof sessionData === 'object' && sessionData.expiresAt && sessionData.expiresAt <= now) {
+    sessions.delete(sid);
+    return null;
+  }
+
+  const userId = typeof sessionData === 'string' ? sessionData : sessionData.userId;
+  if (!userId) {
+    sessions.delete(sid);
+    return null;
+  }
+
+  // Sliding session: renova validade quando o usuário segue ativo.
+  sessions.set(sid, { userId, expiresAt: now + SESSION_TTL_SECONDS * 1000 });
   return db.users.find((u) => u.id === userId) || null;
 }
 
@@ -406,7 +468,7 @@ function parseRowsWithPython(fileName, buffer) {
 
   const payload = JSON.parse(rawOutput);
   if (payload.error) throw new Error(payload.error);
-  return payload.rows || [];
+  return { rows: payload.rows || [], meta: payload.meta || {} };
 }
 
 function parseEntries(rows, uploadId, db) {
@@ -1149,22 +1211,28 @@ const server = http.createServer(async (req, res) => {
 
   if (req.method === 'POST' && url.pathname === '/login') {
     const form = new URLSearchParams(await readBody(req));
-    const user = db.users.find((u) => u.email === form.get('email') && u.password === form.get('password'));
-    if (!user) {
+    const user = db.users.find((u) => u.email === form.get('email'));
+    const rawPassword = form.get('password') || '';
+    if (!user || !verifyPassword(rawPassword, user.password)) {
       res.writeHead(302, { Location: '/login' });
       res.end();
       return;
     }
+    // Migração transparente: usuário legado com senha em texto puro é convertido para hash no login bem-sucedido
+    if (!isHashedPassword(user.password)) {
+      user.password = hashPassword(rawPassword);
+      saveDb(db);
+    }
     const sid = crypto.randomUUID();
-    sessions.set(sid, user.id);
-    res.writeHead(302, { 'Set-Cookie': `sid=${sid}; Path=/; HttpOnly`, Location: '/' });
+    sessions.set(sid, { userId: user.id, expiresAt: Date.now() + SESSION_TTL_SECONDS * 1000 });
+    res.writeHead(302, { 'Set-Cookie': buildSessionCookie(req, sid), Location: '/' });
     res.end();
     return;
   }
 
   if (req.method === 'GET' && url.pathname === '/logout') {
     sessions.delete(parseCookies(req).sid);
-    res.writeHead(302, { 'Set-Cookie': 'sid=; Path=/; Max-Age=0', Location: '/login' });
+    res.writeHead(302, { 'Set-Cookie': buildSessionCookie(req, '', 0), Location: '/login' });
     res.end();
     return;
   }
@@ -1317,7 +1385,8 @@ async function enviarArquivo(){
       const body = JSON.parse(await readBody(req) || '{}');
       const fileName = body.fileName || 'upload.csv';
       const buffer = Buffer.from(body.fileBase64 || '', 'base64');
-      const rows = parseRowsWithPython(fileName, buffer);
+      const parsed = parseRowsWithPython(fileName, buffer);
+      const rows = parsed.rows;
       const upload = { id: crypto.randomUUID(), fileName, uploadedAt: new Date().toISOString(), rowCount: rows.length };
       const allNewEntries = parseEntries(rows, upload.id, db);
 
@@ -1366,6 +1435,9 @@ async function enviarArquivo(){
         uploadId: upload.id,
         fileName,
         importedRows: entries.length,
+        invalidValueRows: Number(parsed.meta?.skippedInvalidValue || 0),
+        invalidDateRows: Number(parsed.meta?.skippedInvalidDate || 0),
+        rejectedRows: Array.isArray(parsed.meta?.rejectedRows) ? parsed.meta.rejectedRows : [],
         duplicatesIgnored,
         foundNames: registry.length,
         pendingErrors: issues.filter((i) => i.level === 'erro').length,
@@ -2729,7 +2801,7 @@ async function boot() {
     // Modo local: garantir que o db.json existe
     if (!fs.existsSync(DB_PATH)) {
       fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
-      const emptyDb = { users: [{ id: 'owner-ckm', email: 'owner@ckm.local', password: '123456', role: 'owner' }], uploads: [], entries: [], issues: [], reviewRegistry: [], savedRules: [], manualAdjustments: [] };
+      const emptyDb = { users: [{ id: 'owner-ckm', email: 'owner@ckm.local', password: hashPassword('123456'), role: 'owner' }], uploads: [], entries: [], issues: [], reviewRegistry: [], savedRules: [], manualAdjustments: [] };
       fs.writeFileSync(DB_PATH, JSON.stringify(emptyDb, null, 2));
       console.log('[boot] db.json criado com usuário padrão.');
     }
