@@ -89,6 +89,23 @@ function createPostgresStorage(databaseUrl) {
     const result = await pool.query(query);
     return result.rows.map((r) => r.data);
   }
+    async function syncReviewRegistry(client, items) {
+    const normalized = (items || []).filter(Boolean).map((item) => ({ ...item, id: item.id || crypto.randomUUID() }));
+    const ids = normalized.map((item) => item.id);
+
+    if (ids.length) {
+      await client.query('DELETE FROM review_registry WHERE id <> ALL($1::text[])', [ids]);
+    } else {
+      await client.query('DELETE FROM review_registry');
+    }
+
+    for (const item of normalized) {
+      await client.query(
+        'INSERT INTO review_registry (id, data) VALUES ($1, $2) ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data',
+        [item.id, item]
+      );
+    }
+  }
 
   return {
     async init() {
@@ -122,7 +139,7 @@ function createPostgresStorage(databaseUrl) {
       const client = await pool.connect();
       try {
         await client.query('BEGIN');
-        await client.query('TRUNCATE uploads, entries, issues, review_registry, saved_rules, manual_adjustments');
+        await client.query('TRUNCATE uploads, entries, issues, manual_adjustments');
 
         for (const upload of db.uploads || []) {
           await client.query(
@@ -139,9 +156,7 @@ function createPostgresStorage(databaseUrl) {
           await client.query('INSERT INTO issues (id, upload_id, data) VALUES ($1, $2, $3)', [issue.id, issue.uploadId || null, issue]);
         }
 
-        for (const item of db.reviewRegistry || []) {
-          await client.query('INSERT INTO review_registry (id, data) VALUES ($1, $2)', [item.id, item]);
-        }
+        await syncReviewRegistry(client, db.reviewRegistry || []);
 
         for (const rule of db.savedRules || []) {
           await client.query('INSERT INTO saved_rules (id, data) VALUES ($1, $2)', [rule.id, rule]);
