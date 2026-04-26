@@ -43,6 +43,69 @@ const CC_PADRAO = [
   'JURÍDICO', 'MÚTUO', 'OPERACIONAL', 'PRÓ-LABORE', 'RH', 'TEF', 'TI'
 ];
 
+// ============================================================
+// Mapeamento de códigos da planilha CKM para nomes oficiais
+// Clientes: coluna CLIENTE usa códigos 1.X; C CUSTO é o cliente real
+// Projetos: coluna PROJETO usa códigos 4.X
+// ============================================================
+const MAPA_CLIENTES_CKM = {
+  '1.0': 'ADMINISTRAÇÃO',
+  '1.1': 'BANESE',
+  '1.2': 'BRB',
+  '1.3': 'SEBRAE-TO',
+  '1.4': 'SEBRAE-AC',
+  '1.5': 'EMBRAPII',
+  '1.6': 'METRÔ-SP',
+  '1.7': 'BANESE',
+  '1.8': 'BANRISUL',
+  '1.9': 'B2C-MENTORIAS',
+  '1.10': 'CESAMA',
+  '1.11': 'ESTEVÃO',
+  '1.12': 'UFPE',
+  '1.13': 'COFEN',
+  '1.14': 'CPTM',
+  '1.15': 'PROSPECÇÃO COMERCIAL',
+  '1.16': 'PMFROCHA',
+  '1.17': 'IGDRH',
+  '1.18': 'SOROCABA',
+  '1.19': 'TCU',
+  '1.20': 'IGDR'
+};
+const MAPA_PROJETOS_CKM = {
+  '4.1': 'Treinamentos/Assessment/Cursos',
+  '4.2': 'Palestra',
+  '4.3': 'Onboarding',
+  '4.4': 'PDI do BEM',
+  '4.5': 'Prospecção de Novos Clientes',
+  '4.6': 'PDI Evoluir',
+  '4.7': 'Mentorias',
+  '4.8': 'Processo Seletivo',
+  '4.9': 'Processamento de Concurso',
+  '4.10': 'Avaliação de Desempenho - GID',
+  '4.11': 'Estágio Probatório',
+  '4.12': 'Concurso Público'
+};
+const MAPA_TIPOS_DESPESA_CKM = {
+  '5.1': 'Prestador de Serviços/Consultoria',
+  '5.2': 'Logística/Deslocamento/Alimentação',
+  '5.3': 'Material de Treinamento',
+  '5.4': 'Licenças e Ferramentas Digitais',
+  '5.5': 'Avaliações e Testes',
+  '5.6': 'Infraestrutura/Escritório',
+  '5.8': 'Comercial/Marketing/Divulgação',
+  '5.11': 'Despesas Financeiras',
+  '5.12': 'Jurídico e Burocrático',
+  '5.14': 'Mútuo',
+  '5.18': 'Tributos',
+  '5.19': 'Educação e Desenvolvimento',
+  '5.20': 'Folha de Pagamento',
+  '5.21': 'Financiamentos',
+  '5.25': 'Hospedagem e Servidores',
+  '5.27': 'Entidades de Classe',
+  '5.30': 'Desenvolvimento de Ferramenta',
+  '5.31': 'Pró-labore Sócios'
+};
+
 const PASSWORD_PREFIX = 'scrypt$';
 
 function isHashedPassword(stored) {
@@ -218,6 +281,29 @@ function normalizeName(name) {
   if (!name) return '';
   const n = String(name).trim().toUpperCase();
   return ALIAS_RULES[n] || n;
+}
+
+// Resolve o cliente efetivo de um lançamento:
+// 1. Se campo cliente tem valor, usa ele (traduzindo código 1.X se necessário)
+// 2. Se cliente vazio, usa centroCusto como cliente (na planilha CKM o cliente real está no CC)
+function clienteEfetivo(e) {
+  const cli = (e.cliente || '').trim();
+  if (cli) {
+    return MAPA_CLIENTES_CKM[cli] || cli;
+  }
+  // Na planilha CKM, o campo C CUSTO é o cliente real para lançamentos operacionais
+  const cc = (e.centroCusto || '').trim();
+  if (cc && !FORBIDDEN_AS_CLIENT.some((f) => f === cc.toUpperCase())) {
+    return cc;
+  }
+  return 'SEM CLIENTE';
+}
+
+// Resolve o nome oficial do projeto traduzindo o código numérico (4.X)
+function projetoEfetivo(e) {
+  const proj = (e.projeto || '').trim();
+  if (!proj) return 'SEM PROJETO';
+  return MAPA_PROJETOS_CKM[proj] || proj;
 }
 
 // Extrai apenas o nome do beneficiário, removendo dados bancários colados na mesma célula
@@ -1161,11 +1247,13 @@ function calculateDashboard(db) {
   const mutuoCount = mutuoEntries.length;
 
   // Distribuição por cliente e projeto: apenas lançamentos ativos
+  // clienteEfetivo() usa centroCusto quando cliente está vazio (padrão planilha CKM)
+  // projetoEfetivo() traduz códigos 4.X para nomes reais
   const byClient = {};
   const byProject = {};
   sortedEntries.forEach((e) => {
-    const c = e.cliente || 'SEM CLIENTE';
-    const p = e.projeto || 'SEM PROJETO';
+    const c = clienteEfetivo(e);
+    const p = projetoEfetivo(e);
     byClient[c] = (byClient[c] || 0) + (e.valor || 0);
     byProject[p] = (byProject[p] || 0) + (e.valor || 0);
   });
