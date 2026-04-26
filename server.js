@@ -1268,12 +1268,9 @@ function calculateDashboard(db) {
   const upcoming7 = opEntries.filter((e) => (e.dataISO || '') > today && (e.dataISO || '') <= d7);
   const riscoCaixa = proj7 < 0 ? 'alto' : proj30 < 0 ? 'moderado' : 'controlado';
 
-  // Saldo de mútuo: calculado sobre TODOS os lançamentos (históricos + ativos)
-  // pois representa uma dívida acumulada desde o início
-  const isMutuo = (e) => {
-    const txt = normalizeName(`${e.descricao || ''} ${e.tipoOriginal || ''} ${e.natureza || ''} ${e.centroCusto || ''}`);
-    return txt.includes('MUTUO') || txt.includes('MÚTUO');
-  };
+  // Saldo de mútuo: apenas lançamentos do CC 'MÚTUO' (empréstimos de sócios)
+  // Filtrar por centro de custo exato evita capturar clientes que têm 'mútuo' na descrição
+  const isMutuo = (e) => (e.centroCusto || '').toUpperCase().trim() === 'MÚTUO';
   const mutuoEntries = allSorted.filter(isMutuo);
   const saldoMutuo = mutuoEntries.reduce((acc, e) => acc + (e.valor || 0), 0);
   const mutuoCount = mutuoEntries.length;
@@ -2454,14 +2451,26 @@ function openDrawer(view, de, ate) {
         body.innerHTML = '<div class="drawer-empty">Nenhum lançamento encontrado para este período.</div>';
         return;
       }
+      const isMutuo = data.lancamentos.length > 0 && data.lancamentos[0].tipoMutuo !== null && data.lancamentos[0].tipoMutuo !== undefined;
       let rows = data.lancamentos.map(e => {
         const cls = e.valor >= 0 ? 'drawer-val-pos' : 'drawer-val-neg';
         const val = (e.valor >= 0 ? '+' : '') + fmtBRL(e.valor);
         const desc = (e.descricao || '-').slice(0, 45);
+        if (isMutuo) {
+          const tipoCls = e.valor > 0 ? 'drawer-val-pos' : 'drawer-val-neg';
+          const tipoLabel = e.tipoMutuo || '-';
+          const saldoAcumStr = e.saldoAcum !== null ? fmtBRL(e.saldoAcum) : '-';
+          const saldoAcumCls = (e.saldoAcum || 0) >= 0 ? 'drawer-val-pos' : 'drawer-val-neg';
+          return '<tr><td style="white-space:nowrap;color:#64748b">' + (e.dataISO||'-') + '</td><td title="' + (e.descricao||'') + '">' + desc + '</td><td class="' + tipoCls + '" style="font-size:.78rem;font-weight:600">' + tipoLabel + '</td><td class="' + cls + '">' + val + '</td><td class="' + saldoAcumCls + '" style="font-size:.78rem">Saldo: ' + saldoAcumStr + '</td></tr>';
+        }
         const cc = (e.centroCusto || e.cliente || '-').slice(0, 20);
         return '<tr><td style="white-space:nowrap;color:#64748b">' + (e.dataISO||'-') + '</td><td title="' + (e.descricao||'') + '">' + desc + '</td><td style="color:#64748b;font-size:.78rem">' + cc + '</td><td class="' + cls + '">' + val + '</td></tr>';
       }).join('');
-      body.innerHTML = '<table><thead><tr><th>Data</th><th>Descrição</th><th>Centro</th><th style="text-align:right">Valor</th></tr></thead><tbody>' + rows + '</tbody></table>';
+      if (isMutuo) {
+        body.innerHTML = '<table><thead><tr><th>Data</th><th>Descrição</th><th>Tipo</th><th style="text-align:right">Valor</th><th style="text-align:right">Saldo devedor</th></tr></thead><tbody>' + rows + '</tbody></table>';
+      } else {
+        body.innerHTML = '<table><thead><tr><th>Data</th><th>Descrição</th><th>Centro</th><th style="text-align:right">Valor</th></tr></thead><tbody>' + rows + '</tbody></table>';
+      }
     })
     .catch(err => {
       body.innerHTML = '<div class="drawer-empty">Erro ao carregar: ' + err.message + '</div>';
@@ -2517,9 +2526,20 @@ ${conteudoPrincipal}
       titulo = 'A receber — lançamentos futuros positivos';
       list = db.entries.filter(e => isAtivo(e) && (e.dataISO||'') > today && fmtV(e.valor) > 0).sort((a,b)=>(a.dataISO||'').localeCompare(b.dataISO||''));
     } else if (view === 'saldo_mutuo') {
-      titulo = 'Saldo de mútuo — empréstimos e financiamentos';
-      const isMutuoD = (e) => { const txt = normalizeName(`${e.descricao||''} ${e.tipoOriginal||''} ${e.natureza||''} ${e.centroCusto||''}`); return txt.includes('MUTUO') || txt.includes('MÚTUO'); };
-      list = db.entries.filter(isMutuoD).sort((a,b)=>(b.dataISO||'').localeCompare(a.dataISO||''));
+      titulo = 'Mútuo com sócios — empréstimos e devoluções';
+      // Filtra apenas CC MÚTUO (empréstimos de sócios), excluindo clientes com "mútuo" na descrição
+      list = db.entries.filter(e => (e.centroCusto||'').toUpperCase().trim() === 'MÚTUO').sort((a,b)=>(b.dataISO||'').localeCompare(a.dataISO||''));
+      // Calcula saldo acumulado cronologicamente (do mais antigo ao mais novo)
+      const mutuoOrdenado = [...list].sort((a,b)=>(a.dataISO||'').localeCompare(b.dataISO||''));
+      let acum = 0;
+      const mutuoAcum = {};
+      mutuoOrdenado.forEach(e => { acum += fmtV(e.valor); mutuoAcum[e.id] = acum; });
+      // Adiciona campo tipo e saldo acumulado a cada lançamento
+      list = list.map(e => ({
+        ...e,
+        tipoMutuo: fmtV(e.valor) > 0 ? 'Empréstimo recebido' : fmtV(e.valor) < 0 ? 'Devolução paga' : 'Ajuste',
+        saldoAcum: mutuoAcum[e.id]
+      }));
     } else if (view === 'saldo_periodo') {
       titulo = `Saldo do período — ${de} a ${ate}`;
       list = db.entries.filter(e => (e.dataISO||'') >= de && (e.dataISO||'') <= ate && !e.isTransferenciaInterna).sort((a,b)=>(b.dataISO||'').localeCompare(a.dataISO||''));
@@ -2554,7 +2574,9 @@ ${conteudoPrincipal}
         cliente: clienteEfetivo(e).slice(0, 30),
         projeto: projetoEfetivo(e).slice(0, 30),
         valor: fmtV(e.valor),
-        natureza: (e.natureza || '').slice(0, 20)
+        natureza: (e.natureza || '').slice(0, 20),
+        tipoMutuo: e.tipoMutuo || null,
+        saldoAcum: e.saldoAcum !== undefined ? e.saldoAcum : null
       }))
     });
   }
@@ -2588,8 +2610,9 @@ ${conteudoPrincipal}
       title = 'Saldo de hoje';
       list = db.entries.filter((e) => e.dataISO <= today);
     } else if (view === 'saldo_mutuo') {
-      title = 'Saldo de mútuo';
-      list = db.entries.filter((e) => normalizeName(`${e.descricao} ${e.tipoOriginal} ${e.natureza}`).includes('MUTUO') || normalizeName(`${e.descricao} ${e.tipoOriginal} ${e.natureza}`).includes('MÚTUO'));
+      title = 'Mútuo com sócios';
+      // Filtra apenas CC MÚTUO (empréstimos de sócios)
+      list = db.entries.filter((e) => (e.centroCusto||'').toUpperCase().trim() === 'MÚTUO');
     } else if (view === 'cliente') {
       title = `Resultado por cliente: ${chave}`;
       // Usa clienteEfetivo() para filtrar corretamente (mesmo critério do dashboard)
