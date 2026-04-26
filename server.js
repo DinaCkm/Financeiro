@@ -35,7 +35,14 @@ const ALIAS_RULES = {
   'SEBRAE-AC': 'SEBRAE-AC'
 };
 
-const FORBIDDEN_AS_CLIENT = ['ESCRITÓRIO', 'SALÁRIOS', 'JURÍDICO', 'CONTÁBIL', 'TEF', 'MÚTUO', 'PRONAMPE', 'SALDO ATUAL'];
+// CCs que NUNCA devem aparecer como cliente no dashboard
+// São custos de estrutura (overhead) ou movimentações internas
+const FORBIDDEN_AS_CLIENT = [
+  'ESCRITÓRIO', 'SALÁRIOS', 'JURÍDICO', 'CONTÁBIL', 'TEF', 'MÚTUO',
+  'PRONAMPE', 'SALDO ATUAL', 'ADMINISTRATIVO', 'COMERCIAL', 'FINANCEIRO',
+  'FISCAL', 'OPERACIONAL', 'PRÓ-LABORE', 'RH', 'TI', 'IMPOSTOS',
+  'MARKETING', 'INFRAESTRUTURA', 'TECNOLOGIA'
+];
 
 // Centros de custo padrão CKM — sempre disponíveis no datalist de edição
 const CC_PADRAO = [
@@ -1254,12 +1261,31 @@ function calculateDashboard(db) {
   sortedEntries.forEach((e) => {
     const c = clienteEfetivo(e);
     const p = projetoEfetivo(e);
-    byClient[c] = (byClient[c] || 0) + (e.valor || 0);
-    byProject[p] = (byProject[p] || 0) + (e.valor || 0);
+    // Excluir SEM CLIENTE do byClient — esses vão para byEstrutura
+    if (c !== 'SEM CLIENTE') {
+      byClient[c] = (byClient[c] || 0) + (e.valor || 0);
+    }
+    if (p !== 'SEM PROJETO') {
+      byProject[p] = (byProject[p] || 0) + (e.valor || 0);
+    }
+  });
+
+  // Custos de Estrutura: lançamentos sem cliente vinculado (overhead operacional)
+  // Agrupa por Centro de Custo para mostrar onde estão os gastos fixos
+  const byEstrutura = {};
+  const totalEstrutura = { receita: 0, despesa: 0 };
+  sortedEntries.forEach((e) => {
+    if (clienteEfetivo(e) !== 'SEM CLIENTE') return; // tem cliente, não é estrutura
+    const cc = (e.centroCusto || 'SEM CLASSIFICAÇÃO').toUpperCase();
+    // Excluir TEF (transferências internas entre contas) da visão de estrutura
+    if (cc === 'TEF') return;
+    byEstrutura[cc] = (byEstrutura[cc] || 0) + (e.valor || 0);
+    if ((e.valor || 0) < 0) totalEstrutura.despesa += Math.abs(e.valor);
+    else totalEstrutura.receita += (e.valor || 0);
   });
 
   const rolling = allSorted.filter((e) => !e.isTransferenciaInterna).reduce((acc, e) => acc + (e.valor || 0), 0);
-  return { saldoHoje, proj7, proj30, contasPagar, contasReceber, byClient, byProject, rolling, upcoming7, riscoCaixa, saldoMutuo, mutuoCount, corteData: CORTE_DATA };
+  return { saldoHoje, proj7, proj30, contasPagar, contasReceber, byClient, byProject, byEstrutura, totalEstrutura, rolling, upcoming7, riscoCaixa, saldoMutuo, mutuoCount, corteData: CORTE_DATA };
 }
 
 function sortEntries(entries, mode = 'date_desc') {
@@ -2152,19 +2178,41 @@ Responda em português, de forma objetiva e direta, citando os dados específico
   if (req.method === 'GET' && url.pathname === '/dashboard') {
     const metrics = calculateDashboard(db);
     const topItems = (obj) => Object.entries(obj).sort((a, b) => Math.abs(b[1]) - Math.abs(a[1])).slice(0, 10);
+    const fmtBRL = (v) => {
+      const abs = Math.abs(v).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+      return (v < 0 ? '-' : '') + 'R$ ' + abs;
+    };
+    // Seção de Custos de Estrutura: ordenar do maior gasto para o menor
+    const estruturaItems = Object.entries(metrics.byEstrutura).sort((a, b) => a[1] - b[1]);
+    const totalEstruturaNeta = estruturaItems.reduce((acc, [, v]) => acc + v, 0);
+    const estruturaHTML = estruturaItems.length === 0
+      ? '<p style="color:#64748b">Nenhum custo de estrutura identificado.</p>'
+      : `<div style='overflow-x:auto'><table style='width:100%;border-collapse:collapse;font-size:.9rem'>
+<thead><tr style='background:#f1f5f9'><th style='text-align:left;padding:.5rem .75rem;border-bottom:2px solid #e2e8f0'>Centro de Custo</th><th style='text-align:right;padding:.5rem .75rem;border-bottom:2px solid #e2e8f0'>Valor (período)</th><th style='text-align:right;padding:.5rem .75rem;border-bottom:2px solid #e2e8f0'>Detalhes</th></tr></thead>
+<tbody>${estruturaItems.map(([cc, v]) => {
+  const cor = v < 0 ? '#dc2626' : '#16a34a';
+  return `<tr style='border-bottom:1px solid #f1f5f9'><td style='padding:.45rem .75rem;font-weight:600'>${cc}</td><td style='padding:.45rem .75rem;text-align:right;color:${cor};font-weight:700'>${fmtBRL(v)}</td><td style='padding:.45rem .75rem;text-align:right'><a href='/dashboard/detalhe?view=estrutura&chave=${encodeURIComponent(cc)}' style='font-size:.8rem;color:#3b82f6'>ver lançamentos</a></td></tr>`;
+}).join('')}
+<tr style='background:#f8fafc;font-weight:700;border-top:2px solid #e2e8f0'><td style='padding:.5rem .75rem'>TOTAL ESTRUTURA</td><td style='padding:.5rem .75rem;text-align:right;color:${totalEstruturaNeta < 0 ? '#dc2626' : '#16a34a'}'>${fmtBRL(totalEstruturaNeta)}</td><td style='padding:.5rem .75rem;text-align:right'><a href='/dashboard/detalhe?view=estrutura_total' style='font-size:.8rem;color:#3b82f6'>ver todos</a></td></tr>
+</tbody></table></div>
+<p style='font-size:.8rem;color:#64748b;margin-top:.5rem'>* Inclui apenas lançamentos ativos (desde ${CORTE_DATA}). Transferências internas (TEF) excluídas.</p>`;
     const html = page('Dashboard', `<section><h2>Dashboard gerencial</h2>
 <div class='cards'>
-<a class='card' href='/dashboard/detalhe?view=saldo_hoje'><strong>Saldo de hoje</strong><span>R$ ${metrics.saldoHoje.toFixed(2)}</span></a>
-<a class='card' href='/dashboard/detalhe?view=proj_7'><strong>Projeção 7 dias</strong><span>R$ ${metrics.proj7.toFixed(2)}</span></a>
-<a class='card' href='/dashboard/detalhe?view=proj_30'><strong>Projeção 30 dias</strong><span>R$ ${metrics.proj30.toFixed(2)}</span></a>
-<a class='card' href='/dashboard/detalhe?view=a_pagar'><strong>A pagar</strong><span>R$ ${metrics.contasPagar.toFixed(2)}</span></a>
-<a class='card' href='/dashboard/detalhe?view=a_receber'><strong>A receber</strong><span>R$ ${metrics.contasReceber.toFixed(2)}</span></a>
-<a class='card' href='/dashboard/detalhe?view=saldo_mutuo'><strong>Saldo de mútuo</strong><span>R$ ${metrics.saldoMutuo.toFixed(2)}</span></a>
+<a class='card' href='/dashboard/detalhe?view=saldo_hoje'><strong>Saldo de hoje</strong><span>${fmtBRL(metrics.saldoHoje)}</span></a>
+<a class='card' href='/dashboard/detalhe?view=proj_7'><strong>Projeção 7 dias</strong><span>${fmtBRL(metrics.proj7)}</span></a>
+<a class='card' href='/dashboard/detalhe?view=proj_30'><strong>Projeção 30 dias</strong><span>${fmtBRL(metrics.proj30)}</span></a>
+<a class='card' href='/dashboard/detalhe?view=a_pagar'><strong>A pagar</strong><span>${fmtBRL(metrics.contasPagar)}</span></a>
+<a class='card' href='/dashboard/detalhe?view=a_receber'><strong>A receber</strong><span>${fmtBRL(metrics.contasReceber)}</span></a>
+<a class='card' href='/dashboard/detalhe?view=saldo_mutuo'><strong>Saldo de mútuo</strong><span>${fmtBRL(metrics.saldoMutuo)}</span></a>
 <a class='card' href='/dashboard/detalhe?view=risco_caixa'><strong>Risco de caixa</strong><span>${metrics.riscoCaixa}</span></a>
+<a class='card' href='/dashboard/detalhe?view=estrutura_total'><strong>Custos de Estrutura</strong><span style='color:${metrics.totalEstrutura.despesa > 0 ? "#dc2626" : "inherit"}'>${fmtBRL(-metrics.totalEstrutura.despesa)}</span></a>
 </div>
 <h3>Próximos 7 dias (agenda financeira)</h3><ul>${metrics.upcoming7.slice(0, 15).map((e) => `<li>${e.dataISO} | ${e.descricao || '-'} | R$ ${e.valor.toFixed(2)}</li>`).join('') || '<li>Sem lançamentos previstos.</li>'}</ul>
-<h3>Resultado por cliente</h3><ul>${topItems(metrics.byClient).map(([k, v]) => `<li><a href='/dashboard/detalhe?view=cliente&chave=${encodeURIComponent(k)}'>${k}: R$ ${v.toFixed(2)}</a></li>`).join('')}</ul>
-<h3>Resultado por projeto</h3><ul>${topItems(metrics.byProject).map(([k, v]) => `<li><a href='/dashboard/detalhe?view=projeto&chave=${encodeURIComponent(k)}'>${k}: R$ ${v.toFixed(2)}</a></li>`).join('')}</ul>
+<h3>Resultado por cliente</h3><ul>${topItems(metrics.byClient).map(([k, v]) => `<li><a href='/dashboard/detalhe?view=cliente&chave=${encodeURIComponent(k)}'>${k}: ${fmtBRL(v)}</a></li>`).join('')}</ul>
+<h3>Resultado por projeto</h3><ul>${topItems(metrics.byProject).map(([k, v]) => `<li><a href='/dashboard/detalhe?view=projeto&chave=${encodeURIComponent(k)}'>${k}: ${fmtBRL(v)}</a></li>`).join('')}</ul>
+<h3 style='margin-top:1.5rem'>&#127970; Custos de Estrutura (overhead)</h3>
+<p style='color:#64748b;font-size:.9rem;margin-bottom:.75rem'>Gastos fixos da empresa não vinculados a clientes: escritório, salários, impostos, financiamentos e administração.</p>
+${estruturaHTML}
 </section>`, user);
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
     res.end(html);
@@ -2204,13 +2252,33 @@ Responda em português, de forma objetiva e direta, citando os dados específico
       list = db.entries.filter((e) => normalizeName(`${e.descricao} ${e.tipoOriginal} ${e.natureza}`).includes('MUTUO') || normalizeName(`${e.descricao} ${e.tipoOriginal} ${e.natureza}`).includes('MÚTUO'));
     } else if (view === 'cliente') {
       title = `Resultado por cliente: ${chave}`;
-      list = db.entries.filter((e) => (e.cliente || 'SEM CLIENTE') === chave);
+      // Usa clienteEfetivo() para filtrar corretamente (mesmo critério do dashboard)
+      list = db.entries.filter((e) => isAtivo(e) && clienteEfetivo(e) === chave);
     } else if (view === 'projeto') {
       title = `Resultado por projeto: ${chave}`;
-      list = db.entries.filter((e) => (e.projeto || 'SEM PROJETO') === chave);
+      // Usa projetoEfetivo() para filtrar corretamente (mesmo critério do dashboard)
+      list = db.entries.filter((e) => isAtivo(e) && projetoEfetivo(e) === chave);
     } else if (view === 'risco_caixa') {
       title = 'Risco de caixa (projeções)';
       list = db.entries.filter((e) => e.dataISO <= d30);
+    } else if (view === 'estrutura') {
+      // Detalhe de um centro de custo de estrutura específico
+      title = `Custos de Estrutura: ${chave}`;
+      list = db.entries.filter((e) => {
+        if (!isAtivo(e)) return false;
+        if (clienteEfetivo(e) !== 'SEM CLIENTE') return false;
+        const cc = (e.centroCusto || 'SEM CLASSIFICAÇÃO').toUpperCase();
+        return cc === chave.toUpperCase() && cc !== 'TEF';
+      });
+    } else if (view === 'estrutura_total') {
+      // Todos os custos de estrutura
+      title = 'Custos de Estrutura — todos os lançamentos';
+      list = db.entries.filter((e) => {
+        if (!isAtivo(e)) return false;
+        if (clienteEfetivo(e) !== 'SEM CLIENTE') return false;
+        const cc = (e.centroCusto || '').toUpperCase();
+        return cc !== 'TEF';
+      });
     }
     const total = list.reduce((acc, e) => acc + Number(e.valor || 0), 0);
     const html = page('Detalhamento do dashboard', `<section><h2>${title}</h2><p>Total do recorte: <strong>R$ ${total.toFixed(2)}</strong></p><p><a href='/dashboard'>← Voltar ao dashboard</a></p>${entriesTable(list)}</section>`, user);
