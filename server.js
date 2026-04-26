@@ -2744,7 +2744,6 @@ Regras:
   // ===== REFERÊNCIAS: Clientes, Projetos, Centros de Custo =====
   if (req.method === 'GET' && url.pathname === '/referencias') {
     if (!user) { res.writeHead(302, { Location: '/login' }); res.end(); return; }
-    const db = loadDb();
     const refs = db.referencias || { clientes: [], projetos: [], centrosCusto: [], contas: [] };
     // Mostrar apenas os valores cadastrados manualmente + CC_PADRAO
     // Não carregar todos os entries para evitar crash de memória
@@ -3668,6 +3667,7 @@ function renderHistoricoRel() {
   // CADASTROS MESTRES — /cadastros-mestres
   // ============================================================
   if (req.method === 'GET' && url.pathname === '/cadastros-mestres') {
+    const user = requireAuth(req, res, db); if (!user) return;
     let ccs = [], clientes = [], projetos = [], tipos = [], bancos = [];
     try {
       const pg = storage.getPool ? storage.getPool() : null;
@@ -4075,6 +4075,7 @@ async function saveBanco() {
   // CONTRATOS — /contratos
   // ============================================================
   if (req.method === 'GET' && url.pathname === '/contratos') {
+    const user = requireAuth(req, res, db); if (!user) return;
     let contratos = [], clientes = [], projetos = [];
     try {
       const pg = storage.getPool ? storage.getPool() : null;
@@ -4192,6 +4193,7 @@ async function saveContrato() {
   }
 
   if (req.method === 'POST' && url.pathname === '/api/contratos') {
+    if (!requireAuth(req, res, db)) return;
     const pg = storage.getPool ? storage.getPool() : null;
     if (!pg) return json(res, 503, { error: 'Banco não disponível' });
     const body = await new Promise((resolve) => { let d=''; req.on('data',c=>d+=c); req.on('end',()=>{try{resolve(JSON.parse(d));}catch{resolve({});}}); });
@@ -4208,6 +4210,7 @@ async function saveContrato() {
   // CONTAS A PAGAR/RECEBER — /contas
   // ============================================================
   if (req.method === 'GET' && url.pathname === '/contas') {
+    const user = requireAuth(req, res, db); if (!user) return;
     let contas = [], clientes = [], projetos = [], ccs = [], bancos = [];
     try {
       const pg = storage.getPool ? storage.getPool() : null;
@@ -4350,6 +4353,7 @@ async function saveConta() {
   }
 
   if (req.method === 'POST' && url.pathname === '/api/contas') {
+    if (!requireAuth(req, res, db)) return;
     const pg = storage.getPool ? storage.getPool() : null;
     if (!pg) return json(res, 503, { error: 'Banco não disponível' });
     const body = await new Promise((resolve) => { let d=''; req.on('data',c=>d+=c); req.on('end',()=>{try{resolve(JSON.parse(d));}catch{resolve({});}}); });
@@ -4363,6 +4367,7 @@ async function saveConta() {
   }
 
   if (req.method === 'POST' && url.pathname.startsWith('/api/contas/') && url.pathname.endsWith('/baixa')) {
+    if (!requireAuth(req, res, db)) return;
     const pg = storage.getPool ? storage.getPool() : null;
     if (!pg) return json(res, 503, { error: 'Banco não disponível' });
     const id = url.pathname.split('/')[3];
@@ -4380,6 +4385,7 @@ async function saveConta() {
   // CONCILIAÇÃO BANCÁRIA — /conciliacao
   // ============================================================
   if (req.method === 'GET' && url.pathname === '/conciliacao') {
+    const user = requireAuth(req, res, db); if (!user) return;
     let bancos = [], historico = [];
     try {
       const pg = storage.getPool ? storage.getPool() : null;
