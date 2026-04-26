@@ -2743,7 +2743,7 @@ Regras:
 
   // ===== REFERÊNCIAS: Clientes, Projetos, Centros de Custo =====
   if (req.method === 'GET' && url.pathname === '/referencias') {
-    if (!checkAuth(req, res)) return;
+    if (!user) { res.writeHead(302, { Location: '/login' }); res.end(); return; }
     const db = loadDb();
     const refs = db.referencias || { clientes: [], projetos: [], centrosCusto: [], contas: [] };
     // Mostrar apenas os valores cadastrados manualmente + CC_PADRAO
@@ -2806,7 +2806,7 @@ async function excluirRef(tipo,nome){
     return res.end(html);
   }
   if (req.method === 'POST' && url.pathname === '/api/referencias') {
-    if (!checkAuth(req, res)) return;
+    if (!user) { res.writeHead(302, { Location: '/login' }); res.end(); return; }
     const db = loadDb();
     const { tipo, nome } = JSON.parse(await readBody(req) || '{}');
     if (!tipo || !nome) return json(res, 400, { error: 'tipo e nome s\u00e3o obrigat\u00f3rios' });
@@ -2817,7 +2817,7 @@ async function excluirRef(tipo,nome){
     return json(res, 200, { ok: true });
   }
   if (req.method === 'PUT' && url.pathname === '/api/referencias') {
-    if (!checkAuth(req, res)) return;
+    if (!user) { res.writeHead(302, { Location: '/login' }); res.end(); return; }
     const db = loadDb();
     const { tipo, nomeAtual, nomeNovo } = JSON.parse(await readBody(req) || '{}');
     if (!db.referencias || !db.referencias[tipo]) return json(res, 404, { error: 'N\u00e3o encontrado' });
@@ -2834,7 +2834,7 @@ async function excluirRef(tipo,nome){
     return json(res, 200, { ok: true });
   }
   if (req.method === 'DELETE' && url.pathname === '/api/referencias') {
-    if (!checkAuth(req, res)) return;
+    if (!user) { res.writeHead(302, { Location: '/login' }); res.end(); return; }
     const db = loadDb();
     const { tipo, nome } = JSON.parse(await readBody(req) || '{}');
     if (!db.referencias || !db.referencias[tipo]) return json(res, 404, { error: 'N\u00e3o encontrado' });
@@ -2845,7 +2845,7 @@ async function excluirRef(tipo,nome){
   // ===== HISTÓRICO DE ALTERAÇÕES =====
   // GET /api/entries/:id/historico — retorna auditLog filtrado por entryId
   if (req.method === 'GET' && url.pathname.match(/^\/api\/entries\/[^/]+\/historico$/)) {
-    if (!checkAuth(req, res)) return;
+    if (!user) { res.writeHead(302, { Location: '/login' }); res.end(); return; }
     const entryId = url.pathname.split('/')[3];
     const log = (db.auditLog || []).filter(r => r.entryId === entryId).sort((a, b) => b.ts.localeCompare(a.ts));
     return json(res, 200, log);
@@ -2853,7 +2853,7 @@ async function excluirRef(tipo,nome){
 
   // GET /historico — página global de auditoria (com paginação para evitar crash de memória)
   if (req.method === 'GET' && url.pathname === '/historico') {
-    if (!checkAuth(req, res)) return;
+    if (!user) { res.writeHead(302, { Location: '/login' }); res.end(); return; }
     const PAGE_SIZE = 100;
     const page_num = Math.max(1, parseInt(url.searchParams.get('p') || '1', 10));
     const qFilter = (url.searchParams.get('q') || '').toLowerCase().trim();
@@ -3668,8 +3668,6 @@ function renderHistoricoRel() {
   // CADASTROS MESTRES — /cadastros-mestres
   // ============================================================
   if (req.method === 'GET' && url.pathname === '/cadastros-mestres') {
-    const db = loadDb(); const user = currentUser(req, db);
-    if (!user) { res.writeHead(302, { Location: '/login' }); res.end(); return; }
     let ccs = [], clientes = [], projetos = [], tipos = [], bancos = [];
     try {
       const pg = storage.getPool ? storage.getPool() : null;
@@ -3993,8 +3991,6 @@ async function saveBanco() {
 
   // ── APIs de Cadastros Mestres ──
   if (req.url.startsWith('/api/mestres/')) {
-    const db = loadDb(); const user = currentUser(req, db);
-    if (!user) { return json(res, 401, { error: 'Não autenticado' }); }
     const pg = storage.getPool ? storage.getPool() : null;
     if (!pg) { return json(res, 503, { error: 'Banco não disponível' }); }
     const parts = url.pathname.split('/'); // ['','api','mestres','entidade','id?']
@@ -4079,8 +4075,6 @@ async function saveBanco() {
   // CONTRATOS — /contratos
   // ============================================================
   if (req.method === 'GET' && url.pathname === '/contratos') {
-    const db = loadDb(); const user = currentUser(req, db);
-    if (!user) { res.writeHead(302, { Location: '/login' }); res.end(); return; }
     let contratos = [], clientes = [], projetos = [];
     try {
       const pg = storage.getPool ? storage.getPool() : null;
@@ -4198,8 +4192,6 @@ async function saveContrato() {
   }
 
   if (req.method === 'POST' && url.pathname === '/api/contratos') {
-    const db = loadDb(); const user = currentUser(req, db);
-    if (!user) return json(res, 401, { error: 'Não autenticado' });
     const pg = storage.getPool ? storage.getPool() : null;
     if (!pg) return json(res, 503, { error: 'Banco não disponível' });
     const body = await new Promise((resolve) => { let d=''; req.on('data',c=>d+=c); req.on('end',()=>{try{resolve(JSON.parse(d));}catch{resolve({});}}); });
@@ -4216,8 +4208,6 @@ async function saveContrato() {
   // CONTAS A PAGAR/RECEBER — /contas
   // ============================================================
   if (req.method === 'GET' && url.pathname === '/contas') {
-    const db = loadDb(); const user = currentUser(req, db);
-    if (!user) { res.writeHead(302, { Location: '/login' }); res.end(); return; }
     let contas = [], clientes = [], projetos = [], ccs = [], bancos = [];
     try {
       const pg = storage.getPool ? storage.getPool() : null;
@@ -4360,8 +4350,6 @@ async function saveConta() {
   }
 
   if (req.method === 'POST' && url.pathname === '/api/contas') {
-    const db = loadDb(); const user = currentUser(req, db);
-    if (!user) return json(res, 401, { error: 'Não autenticado' });
     const pg = storage.getPool ? storage.getPool() : null;
     if (!pg) return json(res, 503, { error: 'Banco não disponível' });
     const body = await new Promise((resolve) => { let d=''; req.on('data',c=>d+=c); req.on('end',()=>{try{resolve(JSON.parse(d));}catch{resolve({});}}); });
@@ -4375,8 +4363,6 @@ async function saveConta() {
   }
 
   if (req.method === 'POST' && url.pathname.startsWith('/api/contas/') && url.pathname.endsWith('/baixa')) {
-    const db = loadDb(); const user = currentUser(req, db);
-    if (!user) return json(res, 401, { error: 'Não autenticado' });
     const pg = storage.getPool ? storage.getPool() : null;
     if (!pg) return json(res, 503, { error: 'Banco não disponível' });
     const id = url.pathname.split('/')[3];
@@ -4394,8 +4380,6 @@ async function saveConta() {
   // CONCILIAÇÃO BANCÁRIA — /conciliacao
   // ============================================================
   if (req.method === 'GET' && url.pathname === '/conciliacao') {
-    const db = loadDb(); const user = currentUser(req, db);
-    if (!user) { res.writeHead(302, { Location: '/login' }); res.end(); return; }
     let bancos = [], historico = [];
     try {
       const pg = storage.getPool ? storage.getPool() : null;
@@ -4484,8 +4468,6 @@ async function uploadExtrato(input) {
   }
 
   if (req.method === 'POST' && url.pathname === '/api/conciliacao/upload') {
-    const db = loadDb(); const user = currentUser(req, db);
-    if (!user) return json(res, 401, { error: 'Não autenticado' });
     // Processar upload do extrato
     // Por ora, retorna uma resposta de placeholder até implementar o parser OFX
     return json(res, 200, { ok: true, total: 0, conciliados: 0, divergentes: 0, nao_lancados: 0, id: 0, message: 'Parser OFX em implementação' });
