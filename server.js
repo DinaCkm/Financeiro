@@ -3223,6 +3223,22 @@ async function excluirRef(tipo,nome){
   }
 
   // ─── IA FINANCEIRA: ANÁLISE COM JUSTIFICATIVA ─────────────────────────────
+  // ─── DIAGNÓSTICO: verificar variáveis de ambiente da IA ───────────────────────
+  if (req.method === 'GET' && url.pathname === '/api/ia/diag') {
+    if (!requireAuth(req, res, db)) return;
+    const hasOpenAI = !!(process.env.OPENAI_API_KEY);
+    const openAILen = hasOpenAI ? process.env.OPENAI_API_KEY.length : 0;
+    const openAIPrefix = hasOpenAI ? process.env.OPENAI_API_KEY.slice(0, 7) + '...' : 'NÃO CONFIGURADA';
+    return json(res, 200, {
+      OPENAI_API_KEY: openAIPrefix,
+      keyLength: openAILen,
+      configured: hasOpenAI,
+      NODE_ENV: process.env.NODE_ENV || 'não definido',
+      DATABASE_URL: process.env.DATABASE_URL ? 'configurado' : 'não configurado',
+      entries: db.entries ? db.entries.length : 0
+    });
+  }
+
   // POST /api/ia/analisar — chat financeiro com raciocínio transparente
   if (req.method === 'POST' && url.pathname === '/api/ia/analisar') {
     if (!requireAuth(req, res, db)) return;
