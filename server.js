@@ -2403,15 +2403,81 @@ ${estruturaHTML}`;
 <h2>Dashboard gerencial</h2>
 ${periodoHTML}
 <div class='cards'>
-<a class='card' href='/dashboard/detalhe?view=saldo_hoje'><strong>Saldo de hoje</strong><span>${fmtBRL(metrics.saldoHoje)}</span></a>
-<a class='card' href='/dashboard/detalhe?view=proj_7'><strong>Projeção 7 dias</strong><span>${fmtBRL(metrics.proj7)}</span></a>
-<a class='card' href='/dashboard/detalhe?view=proj_30'><strong>Projeção 30 dias</strong><span>${fmtBRL(metrics.proj30)}</span></a>
-<a class='card' href='/dashboard/detalhe?view=a_pagar'><strong>A pagar</strong><span>${fmtBRL(metrics.contasPagar)}</span></a>
-<a class='card' href='/dashboard/detalhe?view=a_receber'><strong>A receber</strong><span>${fmtBRL(metrics.contasReceber)}</span></a>
-<a class='card' href='/dashboard/detalhe?view=saldo_mutuo'><strong>Saldo de mútuo</strong><span>${fmtBRL(metrics.saldoMutuo)}</span></a>
-<div class='card' style='background:${saldoFiltro>=0?'#f0fdf4':'#fef2f2'}'><strong>Saldo do período</strong><span style='color:${saldoFiltro>=0?'#16a34a':'#dc2626'}'>${fmtBRL(saldoFiltro)}</span></div>
-<a class='card' href='/dashboard/detalhe?view=estrutura_total'><strong>Estrutura (período)</strong><span style='color:#dc2626'>${fmtBRL(-Object.values(byEstruturaFiltro).filter(v=>v<0).reduce((a,v)=>a+Math.abs(v),0))}</span></a>
+<div class='card card-clickable' onclick="openDrawer('saldo_hoje','${filtroInicio}','${filtroFim}')"><strong>Saldo de hoje</strong><span class='${metrics.saldoHoje>=0?"pos":"neg"}'>${fmtBRL(metrics.saldoHoje)}</span></div>
+<div class='card card-clickable' onclick="openDrawer('proj_7','${filtroInicio}','${filtroFim}')"><strong>Projeção 7 dias</strong><span class='${metrics.proj7>=0?"pos":"neg"}'>${fmtBRL(metrics.proj7)}</span></div>
+<div class='card card-clickable' onclick="openDrawer('proj_30','${filtroInicio}','${filtroFim}')"><strong>Projeção 30 dias</strong><span class='${metrics.proj30>=0?"pos":"neg"}'>${fmtBRL(metrics.proj30)}</span></div>
+<div class='card card-clickable card-danger' onclick="openDrawer('a_pagar','${filtroInicio}','${filtroFim}')"><strong>A pagar</strong><span class='neg'>${fmtBRL(metrics.contasPagar)}</span></div>
+<div class='card card-clickable card-teal' onclick="openDrawer('a_receber','${filtroInicio}','${filtroFim}')"><strong>A receber</strong><span class='pos'>${fmtBRL(metrics.contasReceber)}</span></div>
+<div class='card card-clickable card-warning' onclick="openDrawer('saldo_mutuo','${filtroInicio}','${filtroFim}')"><strong>Saldo de mútuo</strong><span class='${metrics.saldoMutuo>=0?"pos":"neg"}'>${fmtBRL(metrics.saldoMutuo)}</span></div>
+<div class='card card-clickable' style='background:${saldoFiltro>=0?"#f0fdf4":"#fef2f2"}' onclick="openDrawer('saldo_periodo','${filtroInicio}','${filtroFim}')"><strong>Saldo do período</strong><span style='color:${saldoFiltro>=0?"#16a34a":"#dc2626"}'>${fmtBRL(saldoFiltro)}</span></div>
+<div class='card card-clickable card-danger' onclick="openDrawer('estrutura_total','${filtroInicio}','${filtroFim}')"><strong>Estrutura (período)</strong><span class='neg'>${fmtBRL(-Object.values(byEstruturaFiltro).filter(v=>v<0).reduce((a,v)=>a+Math.abs(v),0))}</span></div>
 </div>
+<!-- Drawer overlay e painel -->
+<div class='drawer-overlay' id='drawerOverlay' onclick='closeDrawer()'></div>
+<div class='drawer' id='drawerPanel'>
+  <div class='drawer-header'>
+    <h3 id='drawerTitle'>Detalhamento</h3>
+    <button class='drawer-close' onclick='closeDrawer()' title='Fechar'>&#10005;</button>
+  </div>
+  <div class='drawer-summary' id='drawerSummary'></div>
+  <div class='drawer-body' id='drawerBody'><div class='drawer-loading'>Carregando...</div></div>
+</div>
+<script>
+function openDrawer(view, de, ate) {
+  const overlay = document.getElementById('drawerOverlay');
+  const panel = document.getElementById('drawerPanel');
+  const body = document.getElementById('drawerBody');
+  const summary = document.getElementById('drawerSummary');
+  const title = document.getElementById('drawerTitle');
+  body.innerHTML = '<div class="drawer-loading">&#9696; Carregando...</div>';
+  summary.innerHTML = '';
+  overlay.classList.add('open');
+  panel.classList.add('open');
+  document.body.style.overflow = 'hidden';
+  const params = new URLSearchParams({ view, de: de||'', ate: ate||'' });
+  fetch('/api/dashboard/drawer?' + params.toString())
+    .then(r => r.json())
+    .then(data => {
+      title.textContent = data.titulo || 'Detalhamento';
+      // Chips de resumo
+      const chips = [];
+      if (data.total !== undefined) {
+        const cls = data.total >= 0 ? 'pos' : 'neg';
+        chips.push('<span class="drawer-chip ' + cls + '">Total: ' + fmtBRL(data.total) + '</span>');
+      }
+      if (data.entradas !== undefined) chips.push('<span class="drawer-chip pos">Entradas: ' + fmtBRL(data.entradas) + '</span>');
+      if (data.saidas !== undefined) chips.push('<span class="drawer-chip neg">Saídas: ' + fmtBRL(data.saidas) + '</span>');
+      if (data.count !== undefined) chips.push('<span class="drawer-chip neu">' + data.count + ' lançamentos</span>');
+      summary.innerHTML = chips.join('');
+      // Tabela de lançamentos
+      if (!data.lancamentos || data.lancamentos.length === 0) {
+        body.innerHTML = '<div class="drawer-empty">Nenhum lançamento encontrado para este período.</div>';
+        return;
+      }
+      let rows = data.lancamentos.map(e => {
+        const cls = e.valor >= 0 ? 'drawer-val-pos' : 'drawer-val-neg';
+        const val = (e.valor >= 0 ? '+' : '') + fmtBRL(e.valor);
+        const desc = (e.descricao || '-').slice(0, 45);
+        const cc = (e.centroCusto || e.cliente || '-').slice(0, 20);
+        return '<tr><td style="white-space:nowrap;color:#64748b">' + (e.dataISO||'-') + '</td><td title="' + (e.descricao||'') + '">' + desc + '</td><td style="color:#64748b;font-size:.78rem">' + cc + '</td><td class="' + cls + '">' + val + '</td></tr>';
+      }).join('');
+      body.innerHTML = '<table><thead><tr><th>Data</th><th>Descrição</th><th>Centro</th><th style="text-align:right">Valor</th></tr></thead><tbody>' + rows + '</tbody></table>';
+    })
+    .catch(err => {
+      body.innerHTML = '<div class="drawer-empty">Erro ao carregar: ' + err.message + '</div>';
+    });
+}
+function closeDrawer() {
+  document.getElementById('drawerOverlay').classList.remove('open');
+  document.getElementById('drawerPanel').classList.remove('open');
+  document.body.style.overflow = '';
+}
+function fmtBRL(v) {
+  const abs = Math.abs(v).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  return (v < 0 ? '-' : '') + 'R$ ' + abs;
+}
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closeDrawer(); });
+</script>
 <h3>Próximos 7 dias (agenda financeira)</h3>
 <ul>${metrics.upcoming7.slice(0, 15).map((e) => `<li>${e.dataISO} | ${e.descricao || '-'} | R$ ${e.valor.toFixed(2)}</li>`).join('') || '<li>Sem lançamentos previstos.</li>'}</ul>
 ${conteudoPrincipal}
@@ -2419,6 +2485,78 @@ ${conteudoPrincipal}
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
     res.end(html);
     return;
+  }
+
+  // ─── API: Drawer do dashboard (retorna JSON com lançamentos por card) ────────
+  if (req.method === 'GET' && url.pathname === '/api/dashboard/drawer') {
+    const userD = requireAuth(req, res, db);
+    if (!userD) return;
+    const view = url.searchParams.get('view') || '';
+    const de = url.searchParams.get('de') || CORTE_DATA;
+    const ate = url.searchParams.get('ate') || new Date().toISOString().slice(0, 10);
+    const today = new Date().toISOString().slice(0, 10);
+    const addDaysD = (date, n) => { const d = new Date(`${date}T00:00:00Z`); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); };
+    const d7 = addDaysD(today, 7);
+    const d30 = addDaysD(today, 30);
+    const fmtV = (v) => Number(v || 0);
+    let titulo = 'Detalhamento';
+    let list = [];
+    if (view === 'saldo_hoje') {
+      titulo = 'Saldo de hoje — todos os lançamentos até hoje';
+      list = db.entries.filter(e => (e.dataISO||'') <= today && !e.isTransferenciaInterna).sort((a,b)=>(b.dataISO||'').localeCompare(a.dataISO||''));
+    } else if (view === 'proj_7') {
+      titulo = 'Projeção 7 dias — lançamentos até ' + d7;
+      list = db.entries.filter(e => isAtivo(e) && (e.dataISO||'') <= d7 && !e.isTransferenciaInterna).sort((a,b)=>(b.dataISO||'').localeCompare(a.dataISO||''));
+    } else if (view === 'proj_30') {
+      titulo = 'Projeção 30 dias — lançamentos até ' + d30;
+      list = db.entries.filter(e => isAtivo(e) && (e.dataISO||'') <= d30 && !e.isTransferenciaInterna).sort((a,b)=>(b.dataISO||'').localeCompare(a.dataISO||''));
+    } else if (view === 'a_pagar') {
+      titulo = 'A pagar — lançamentos futuros negativos';
+      list = db.entries.filter(e => isAtivo(e) && (e.dataISO||'') > today && fmtV(e.valor) < 0).sort((a,b)=>(a.dataISO||'').localeCompare(b.dataISO||''));
+    } else if (view === 'a_receber') {
+      titulo = 'A receber — lançamentos futuros positivos';
+      list = db.entries.filter(e => isAtivo(e) && (e.dataISO||'') > today && fmtV(e.valor) > 0).sort((a,b)=>(a.dataISO||'').localeCompare(b.dataISO||''));
+    } else if (view === 'saldo_mutuo') {
+      titulo = 'Saldo de mútuo — empréstimos e financiamentos';
+      const isMutuoD = (e) => { const txt = normalizeName(`${e.descricao||''} ${e.tipoOriginal||''} ${e.natureza||''} ${e.centroCusto||''}`); return txt.includes('MUTUO') || txt.includes('MÚTUO'); };
+      list = db.entries.filter(isMutuoD).sort((a,b)=>(b.dataISO||'').localeCompare(a.dataISO||''));
+    } else if (view === 'saldo_periodo') {
+      titulo = `Saldo do período — ${de} a ${ate}`;
+      list = db.entries.filter(e => (e.dataISO||'') >= de && (e.dataISO||'') <= ate && !e.isTransferenciaInterna).sort((a,b)=>(b.dataISO||'').localeCompare(a.dataISO||''));
+    } else if (view === 'estrutura_total') {
+      titulo = `Custos de estrutura — ${de} a ${ate}`;
+      list = db.entries.filter(e => {
+        if (!isAtivo(e)) return false;
+        if ((e.dataISO||'') < de || (e.dataISO||'') > ate) return false;
+        if (clienteEfetivo(e) !== 'SEM CLIENTE') return false;
+        const cc = (e.centroCusto||'').toUpperCase();
+        return cc !== 'TEF' && !e.isTransferenciaInterna;
+      }).sort((a,b)=>(b.dataISO||'').localeCompare(a.dataISO||''));
+    } else {
+      return json(res, 400, { error: 'view inválida' });
+    }
+    const MAX = 100;
+    const sample = list.slice(0, MAX);
+    const entradas = list.filter(e => fmtV(e.valor) > 0).reduce((a,e) => a + fmtV(e.valor), 0);
+    const saidas = list.filter(e => fmtV(e.valor) < 0).reduce((a,e) => a + Math.abs(fmtV(e.valor)), 0);
+    const total = entradas - saidas;
+    return json(res, 200, {
+      titulo,
+      total,
+      entradas,
+      saidas,
+      count: list.length,
+      lancamentos: sample.map(e => ({
+        id: e.id,
+        dataISO: e.dataISO || e.data || '',
+        descricao: (e.descricao || e.historico || '').slice(0, 80),
+        centroCusto: (e.centroCusto || '').slice(0, 30),
+        cliente: clienteEfetivo(e).slice(0, 30),
+        projeto: projetoEfetivo(e).slice(0, 30),
+        valor: fmtV(e.valor),
+        natureza: (e.natureza || '').slice(0, 20)
+      }))
+    });
   }
 
   if (req.method === 'GET' && url.pathname === '/dashboard/detalhe') {
