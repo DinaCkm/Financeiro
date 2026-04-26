@@ -298,6 +298,15 @@ def normalize_rows(raw_rows):
         entry['valor'] = parsed_valor
         entry['valorOriginal'] = raw_valor
 
+        # Para linhas SALDO ATUAL: usar coluna movto como valor (coluna K fica vazia na planilha CKM)
+        cc_raw = str(entry.get('centrocusto', '') or entry.get('centroCusto', '')).strip().upper()
+        if cc_raw == 'SALDO ATUAL' and entry['valor'] == 0.0:
+            movto_raw = entry.get('movto', '')
+            movto_val = parse_money(movto_raw)
+            if movto_val is not None and movto_val != 0.0:
+                entry['valor'] = movto_val
+                entry['valorOriginal'] = movto_raw
+
         # Normalizar D/C: se tiver coluna D/C, usar para determinar sinal do valor
         dc = entry.get('dc', '').upper().strip()
         if dc == 'D' and entry['valor'] > 0:

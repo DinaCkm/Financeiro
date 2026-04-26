@@ -1256,8 +1256,17 @@ function calculateDashboard(db) {
   // Lançamentos ativos (a partir do corte) — usados em todos os cálculos operacionais
   const sortedEntries = allSorted.filter(isAtivo);
 
-  // Saldo acumulado histórico (todos os lançamentos, exceto transferências internas dc=T)
-  const saldoHoje = allSorted.filter((e) => (e.dataISO || '') <= today && !e.isTransferenciaInterna).reduce((acc, e) => acc + (e.valor || 0), 0);
+  // Saldo de Hoje: último registro SALDO ATUAL da planilha (saldo bancário real)
+  // A planilha CKM calcula automaticamente o saldo disponível em conta na linha SALDO ATUAL
+  // Fallback: soma acumulada histórica (para planilhas sem linha SALDO ATUAL)
+  const saldoAtualEntries = allSorted
+    .filter((e) => (e.centroCusto || '').toUpperCase().trim() === 'SALDO ATUAL'
+      && (e.dataISO || '') <= today
+      && (e.valor || 0) !== 0)
+    .sort((a, b) => (b.dataISO || '').localeCompare(a.dataISO || ''));
+  const saldoHoje = saldoAtualEntries.length > 0
+    ? saldoAtualEntries[0].valor
+    : allSorted.filter((e) => (e.dataISO || '') <= today && !e.isTransferenciaInterna).reduce((acc, e) => acc + (e.valor || 0), 0);
 
   // Projeções e cálculos operacionais: apenas lançamentos ativos, excluindo transferências internas
   const opEntries = sortedEntries.filter((e) => !e.isTransferenciaInterna);
