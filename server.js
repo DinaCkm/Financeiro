@@ -1268,8 +1268,10 @@ function calculateDashboard(db) {
     ? saldoAtualEntries[0].valor
     : allSorted.filter((e) => (e.dataISO || '') <= today && !e.isTransferenciaInterna).reduce((acc, e) => acc + (e.valor || 0), 0);
 
-  // Projeções e cálculos operacionais: apenas lançamentos ativos, excluindo transferências internas
-  const opEntries = sortedEntries.filter((e) => !e.isTransferenciaInterna);
+  // Projeções e cálculos operacionais: apenas lançamentos ativos, excluindo transferências internas e SALDO ATUAL
+  // SALDO ATUAL é uma linha de controle da planilha CKM (saldo bancário calculado), não um lançamento operacional
+  const isSaldoAtual = (e) => (e.centroCusto || '').toUpperCase().trim() === 'SALDO ATUAL';
+  const opEntries = sortedEntries.filter((e) => !e.isTransferenciaInterna && !isSaldoAtual(e));
   const proj7 = opEntries.filter((e) => (e.dataISO || '') <= d7).reduce((acc, e) => acc + (e.valor || 0), 0);
   const proj30 = opEntries.filter((e) => (e.dataISO || '') <= d30).reduce((acc, e) => acc + (e.valor || 0), 0);
   const contasPagar = opEntries.filter((e) => (e.dataISO || '') > today && (e.valor || 0) < 0).reduce((acc, e) => acc + Math.abs(e.valor), 0);
@@ -1361,8 +1363,9 @@ function calculateDashboard(db) {
   sortedEntries.forEach((e) => {
     if (clienteEfetivo(e) !== 'SEM CLIENTE') return; // tem cliente, não é estrutura
     const cc = (e.centroCusto || 'SEM CLASSIFICAÇÃO').toUpperCase();
-    // Excluir TEF (transferências internas) e empréstimos (têm seção própria)
+    // Excluir TEF (transferências internas), SALDO ATUAL (linha de controle da planilha) e empréstimos (têm seção própria)
     if (cc === 'TEF') return;
+    if (cc === 'SALDO ATUAL') return; // linha de controle da planilha CKM, não é lançamento operacional
     if (isEmprestimo(e)) return; // mútuo e Pronampe vão para seção de Financiamentos
     byEstrutura[cc] = (byEstrutura[cc] || 0) + (e.valor || 0);
     if ((e.valor || 0) < 0) totalEstrutura.despesa += Math.abs(e.valor);
@@ -2305,7 +2308,7 @@ Responda em português, de forma objetiva e direta, citando os dados específico
       if (p !== 'SEM PROJETO') byProjetoFiltro[p] = (byProjetoFiltro[p]||0) + (e.valor||0);
       if (c === 'SEM CLIENTE') {
         const cc = (e.centroCusto||'SEM CC').toUpperCase();
-        if (cc !== 'TEF') byEstruturaFiltro[cc] = (byEstruturaFiltro[cc]||0) + (e.valor||0);
+        if (cc !== 'TEF' && cc !== 'SALDO ATUAL') byEstruturaFiltro[cc] = (byEstruturaFiltro[cc]||0) + (e.valor||0);
       }
     });
 
@@ -2521,13 +2524,13 @@ ${conteudoPrincipal}
     let list = [];
     if (view === 'saldo_hoje') {
       titulo = 'Saldo de hoje — todos os lançamentos até hoje';
-      list = db.entries.filter(e => (e.dataISO||'') <= today && !e.isTransferenciaInterna).sort((a,b)=>(b.dataISO||'').localeCompare(a.dataISO||''));
+      list = db.entries.filter(e => (e.dataISO||'') <= today && !e.isTransferenciaInterna && (e.centroCusto||'').toUpperCase().trim() !== 'SALDO ATUAL').sort((a,b)=>(b.dataISO||'').localeCompare(a.dataISO||''));
     } else if (view === 'proj_7') {
       titulo = 'Projeção 7 dias — lançamentos até ' + d7;
-      list = db.entries.filter(e => isAtivo(e) && (e.dataISO||'') <= d7 && !e.isTransferenciaInterna).sort((a,b)=>(b.dataISO||'').localeCompare(a.dataISO||''));
+      list = db.entries.filter(e => isAtivo(e) && (e.dataISO||'') <= d7 && !e.isTransferenciaInterna && (e.centroCusto||'').toUpperCase().trim() !== 'SALDO ATUAL').sort((a,b)=>(b.dataISO||'').localeCompare(a.dataISO||''));
     } else if (view === 'proj_30') {
       titulo = 'Projeção 30 dias — lançamentos até ' + d30;
-      list = db.entries.filter(e => isAtivo(e) && (e.dataISO||'') <= d30 && !e.isTransferenciaInterna).sort((a,b)=>(b.dataISO||'').localeCompare(a.dataISO||''));
+      list = db.entries.filter(e => isAtivo(e) && (e.dataISO||'') <= d30 && !e.isTransferenciaInterna && (e.centroCusto||'').toUpperCase().trim() !== 'SALDO ATUAL').sort((a,b)=>(b.dataISO||'').localeCompare(a.dataISO||''));
     } else if (view === 'a_pagar') {
       titulo = 'A pagar — lançamentos futuros negativos';
       list = db.entries.filter(e => isAtivo(e) && (e.dataISO||'') > today && fmtV(e.valor) < 0).sort((a,b)=>(a.dataISO||'').localeCompare(b.dataISO||''));
@@ -2551,7 +2554,7 @@ ${conteudoPrincipal}
       }));
     } else if (view === 'saldo_periodo') {
       titulo = `Saldo do período — ${de} a ${ate}`;
-      list = db.entries.filter(e => (e.dataISO||'') >= de && (e.dataISO||'') <= ate && !e.isTransferenciaInterna).sort((a,b)=>(b.dataISO||'').localeCompare(a.dataISO||''));
+      list = db.entries.filter(e => (e.dataISO||'') >= de && (e.dataISO||'') <= ate && !e.isTransferenciaInterna && (e.centroCusto||'').toUpperCase().trim() !== 'SALDO ATUAL').sort((a,b)=>(b.dataISO||'').localeCompare(a.dataISO||''));
     } else if (view === 'estrutura_total') {
       titulo = `Custos de estrutura — ${de} a ${ate}`;
       list = db.entries.filter(e => {
@@ -2559,7 +2562,7 @@ ${conteudoPrincipal}
         if ((e.dataISO||'') < de || (e.dataISO||'') > ate) return false;
         if (clienteEfetivo(e) !== 'SEM CLIENTE') return false;
         const cc = (e.centroCusto||'').toUpperCase();
-        return cc !== 'TEF' && !e.isTransferenciaInterna;
+        return cc !== 'TEF' && cc !== 'SALDO ATUAL' && !e.isTransferenciaInterna;
       }).sort((a,b)=>(b.dataISO||'').localeCompare(a.dataISO||''));
     } else {
       return json(res, 400, { error: 'view inválida' });
