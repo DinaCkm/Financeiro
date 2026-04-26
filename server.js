@@ -3668,7 +3668,7 @@ function renderHistoricoRel() {
   // CADASTROS MESTRES — /cadastros-mestres
   // ============================================================
   if (req.method === 'GET' && url.pathname === '/cadastros-mestres') {
-    const user = getSession(req);
+    const db = loadDb(); const user = currentUser(req, db);
     if (!user) { res.writeHead(302, { Location: '/login' }); res.end(); return; }
     let ccs = [], clientes = [], projetos = [], tipos = [], bancos = [];
     try {
@@ -3993,7 +3993,7 @@ async function saveBanco() {
 
   // ── APIs de Cadastros Mestres ──
   if (req.url.startsWith('/api/mestres/')) {
-    const user = getSession(req);
+    const db = loadDb(); const user = currentUser(req, db);
     if (!user) { return json(res, 401, { error: 'Não autenticado' }); }
     const pg = storage.getPool ? storage.getPool() : null;
     if (!pg) { return json(res, 503, { error: 'Banco não disponível' }); }
@@ -4079,7 +4079,7 @@ async function saveBanco() {
   // CONTRATOS — /contratos
   // ============================================================
   if (req.method === 'GET' && url.pathname === '/contratos') {
-    const user = getSession(req);
+    const db = loadDb(); const user = currentUser(req, db);
     if (!user) { res.writeHead(302, { Location: '/login' }); res.end(); return; }
     let contratos = [], clientes = [], projetos = [];
     try {
@@ -4198,7 +4198,7 @@ async function saveContrato() {
   }
 
   if (req.method === 'POST' && url.pathname === '/api/contratos') {
-    const user = getSession(req);
+    const db = loadDb(); const user = currentUser(req, db);
     if (!user) return json(res, 401, { error: 'Não autenticado' });
     const pg = storage.getPool ? storage.getPool() : null;
     if (!pg) return json(res, 503, { error: 'Banco não disponível' });
@@ -4216,7 +4216,7 @@ async function saveContrato() {
   // CONTAS A PAGAR/RECEBER — /contas
   // ============================================================
   if (req.method === 'GET' && url.pathname === '/contas') {
-    const user = getSession(req);
+    const db = loadDb(); const user = currentUser(req, db);
     if (!user) { res.writeHead(302, { Location: '/login' }); res.end(); return; }
     let contas = [], clientes = [], projetos = [], ccs = [], bancos = [];
     try {
@@ -4360,7 +4360,7 @@ async function saveConta() {
   }
 
   if (req.method === 'POST' && url.pathname === '/api/contas') {
-    const user = getSession(req);
+    const db = loadDb(); const user = currentUser(req, db);
     if (!user) return json(res, 401, { error: 'Não autenticado' });
     const pg = storage.getPool ? storage.getPool() : null;
     if (!pg) return json(res, 503, { error: 'Banco não disponível' });
@@ -4375,7 +4375,7 @@ async function saveConta() {
   }
 
   if (req.method === 'POST' && url.pathname.startsWith('/api/contas/') && url.pathname.endsWith('/baixa')) {
-    const user = getSession(req);
+    const db = loadDb(); const user = currentUser(req, db);
     if (!user) return json(res, 401, { error: 'Não autenticado' });
     const pg = storage.getPool ? storage.getPool() : null;
     if (!pg) return json(res, 503, { error: 'Banco não disponível' });
@@ -4394,7 +4394,7 @@ async function saveConta() {
   // CONCILIAÇÃO BANCÁRIA — /conciliacao
   // ============================================================
   if (req.method === 'GET' && url.pathname === '/conciliacao') {
-    const user = getSession(req);
+    const db = loadDb(); const user = currentUser(req, db);
     if (!user) { res.writeHead(302, { Location: '/login' }); res.end(); return; }
     let bancos = [], historico = [];
     try {
@@ -4484,7 +4484,7 @@ async function uploadExtrato(input) {
   }
 
   if (req.method === 'POST' && url.pathname === '/api/conciliacao/upload') {
-    const user = getSession(req);
+    const db = loadDb(); const user = currentUser(req, db);
     if (!user) return json(res, 401, { error: 'Não autenticado' });
     // Processar upload do extrato
     // Por ora, retorna uma resposta de placeholder até implementar o parser OFX
@@ -4575,40 +4575,51 @@ function limparCadastrosAutomatico(db) {
   }
 }
 
-// Boot: se DATABASE_URL estiver configurado, carregar dados do PostgreSQL
-// e sincronizar o db.json local antes de aceitar requisições
+// Boot: sobe o servidor imediatamente para evitar timeout do Railway,
+// depois carrega os dados do PostgreSQL em background.
+let bootReady = false;
+
 async function boot() {
-  if (process.env.DATABASE_URL) {
-    try {
-      console.log('[boot] DATABASE_URL detectado — inicializando schema PostgreSQL...');
-      await storage.init();
-      console.log('[boot] Carregando dados do PostgreSQL...');
-      const pgDb = await storage.loadDb();
-      // Sincronizar db.json local com os dados do PostgreSQL
-      fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
-      fs.writeFileSync(DB_PATH, JSON.stringify(pgDb, null, 2));
-      // Executar limpeza automática após carregar o banco
-      limparCadastrosAutomatico(pgDb);
-      fs.writeFileSync(DB_PATH, JSON.stringify(pgDb, null, 2));
-      // Persistir limpeza de volta ao PostgreSQL
-      await storage.saveDb(pgDb).catch(e => console.error('[boot] Erro ao salvar limpeza:', e.message));
-      console.log(`[boot] Sincronizado: ${pgDb.entries.length} lançamentos, ${pgDb.reviewRegistry.length} cadastros, ${pgDb.savedRules.length} regras`);
-    } catch (err) {
-      console.error('[boot] Erro ao carregar PostgreSQL:', err.message);
-      console.error('[boot] Continuando com db.json local (pode estar vazio).');
-    }
-  } else {
-    // Modo local: garantir que o db.json existe
-    if (!fs.existsSync(DB_PATH)) {
-      fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
-      const emptyDb = { users: [{ id: 'owner-ckm', email: 'owner@ckm.local', password: hashPassword('123456'), role: 'owner' }], uploads: [], entries: [], issues: [], reviewRegistry: [], savedRules: [], manualAdjustments: [] };
-      fs.writeFileSync(DB_PATH, JSON.stringify(emptyDb, null, 2));
-      console.log('[boot] db.json criado com usuário padrão.');
-    }
+  // Garantir que o db.json existe com usuário padrão (para o servidor aceitar requisições imediatamente)
+  if (!fs.existsSync(DB_PATH)) {
+    fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
+    const emptyDb = { users: [{ id: 'owner-ckm', email: 'owner@ckm.local', password: hashPassword('123456'), role: 'owner' }], uploads: [], entries: [], issues: [], reviewRegistry: [], savedRules: [], manualAdjustments: [] };
+    fs.writeFileSync(DB_PATH, JSON.stringify(emptyDb, null, 2));
+    console.log('[boot] db.json criado com usuário padrão.');
   }
+
+  // Subir o servidor IMEDIATAMENTE — Railway health check passa em < 1s
   server.listen(PORT, () => {
     console.log(`CKM MVP running at http://localhost:${PORT}`);
   });
+
+  // Carregar dados do PostgreSQL em background (não bloqueia o health check)
+  if (process.env.DATABASE_URL) {
+    (async () => {
+      try {
+        console.log('[boot] DATABASE_URL detectado — inicializando schema PostgreSQL...');
+        await storage.init();
+        console.log('[boot] Carregando dados do PostgreSQL...');
+        const pgDb = await storage.loadDb();
+        // Sincronizar db.json local com os dados do PostgreSQL
+        fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
+        fs.writeFileSync(DB_PATH, JSON.stringify(pgDb, null, 2));
+        // Executar limpeza automática após carregar o banco
+        limparCadastrosAutomatico(pgDb);
+        fs.writeFileSync(DB_PATH, JSON.stringify(pgDb, null, 2));
+        // Persistir limpeza de volta ao PostgreSQL
+        await storage.saveDb(pgDb).catch(e => console.error('[boot] Erro ao salvar limpeza:', e.message));
+        bootReady = true;
+        console.log(`[boot] Sincronizado: ${pgDb.entries.length} lançamentos, ${pgDb.reviewRegistry.length} cadastros, ${pgDb.savedRules.length} regras`);
+      } catch (err) {
+        console.error('[boot] Erro ao carregar PostgreSQL:', err.message);
+        console.error('[boot] Continuando com db.json local (pode estar vazio).');
+        bootReady = true;
+      }
+    })();
+  } else {
+    bootReady = true;
+  }
 }
 
 boot().catch((err) => {
