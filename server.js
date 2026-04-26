@@ -2337,18 +2337,32 @@ Responda em português, de forma objetiva e direta, citando os dados específico
     const arvore = {};
     TIPOS_ORDEM.forEach(t => { arvore[t] = {}; });
 
+    // Função para normalizar CC removendo acentos (para busca no ccTipoMap)
+    function normCC(s) {
+      return (s||'').toUpperCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').trim();
+    }
+
     // Função para resolver tipo de um lançamento
+    // Retorna: { tipo: 'OPERACIONAL'|'ESTRUTURA'|'FINANCEIRO'|'TRANSFERENCIA', cc: string }
     function resolverTipoCC(e) {
-      const cc = (e.centroCusto || '').toUpperCase().trim();
-      // Primeiro: verificar no mapa do banco
-      if (ccTipoMap[cc]) return { tipo: ccTipoMap[cc], cc };
+      const ccRaw = (e.centroCusto || '').trim();
+      const ccUp  = ccRaw.toUpperCase();
+      const ccNorm = normCC(ccRaw);
+
+      // Primeiro: verificar no mapa do banco (com e sem acento)
+      if (ccTipoMap[ccUp])   return { tipo: ccTipoMap[ccUp],   cc: ccRaw };
+      if (ccTipoMap[ccNorm]) return { tipo: ccTipoMap[ccNorm], cc: ccRaw };
+
       // Segundo: heurística por FORBIDDEN_AS_CLIENT
-      if (FORBIDDEN_AS_CLIENT.includes(cc)) return { tipo: 'ESTRUTURA', cc };
+      if (FORBIDDEN_AS_CLIENT.includes(ccUp) || FORBIDDEN_AS_CLIENT.includes(ccNorm))
+        return { tipo: 'ESTRUTURA', cc: ccRaw };
+
       // Terceiro: se tem cliente operacional, é OPERACIONAL
       const c = clienteEfetivo(e);
-      if (c !== 'SEM CLIENTE') return { tipo: 'OPERACIONAL', cc: c };
+      if (c !== 'SEM CLIENTE') return { tipo: 'OPERACIONAL', cc: ccRaw };
+
       // Default: ESTRUTURA
-      return { tipo: 'ESTRUTURA', cc: cc || 'SEM CC' };
+      return { tipo: 'ESTRUTURA', cc: ccRaw || 'SEM CC' };
     }
 
     lancsFiltrados.forEach(e => {
@@ -2356,21 +2370,25 @@ Responda em português, de forma objetiva e direta, citando os dados específico
       const { tipo, cc } = resolverTipoCC(e);
       if (tipo === 'TRANSFERENCIA') return; // ignora TEF
       if (!arvore[tipo]) arvore[tipo] = {};
-      if (!arvore[tipo][cc]) arvore[tipo][cc] = { entradas: 0, saidas: 0, empresas: {} };
-      if (v > 0) arvore[tipo][cc].entradas += v;
-      else arvore[tipo][cc].saidas += Math.abs(v);
 
       if (tipo === 'OPERACIONAL') {
+        // Para OPERACIONAL: árvore é EMPRESA → PROJETO (sem nível CC intermediário)
         const empresa = clienteEfetivo(e);
         const projeto = projetoEfetivo(e);
-        if (!arvore[tipo][cc].empresas[empresa]) arvore[tipo][cc].empresas[empresa] = { entradas: 0, saidas: 0, projetos: {} };
-        if (v > 0) arvore[tipo][cc].empresas[empresa].entradas += v;
-        else arvore[tipo][cc].empresas[empresa].saidas += Math.abs(v);
+        if (!arvore[tipo][empresa]) arvore[tipo][empresa] = { entradas: 0, saidas: 0, empresas: {} };
+        if (v > 0) arvore[tipo][empresa].entradas += v;
+        else arvore[tipo][empresa].saidas += Math.abs(v);
+        // Projetos ficam no nível 'empresas' (reaproveitando estrutura)
         if (projeto !== 'SEM PROJETO') {
-          if (!arvore[tipo][cc].empresas[empresa].projetos[projeto]) arvore[tipo][cc].empresas[empresa].projetos[projeto] = { entradas: 0, saidas: 0 };
-          if (v > 0) arvore[tipo][cc].empresas[empresa].projetos[projeto].entradas += v;
-          else arvore[tipo][cc].empresas[empresa].projetos[projeto].saidas += Math.abs(v);
+          if (!arvore[tipo][empresa].empresas[projeto]) arvore[tipo][empresa].empresas[projeto] = { entradas: 0, saidas: 0, projetos: {} };
+          if (v > 0) arvore[tipo][empresa].empresas[projeto].entradas += v;
+          else arvore[tipo][empresa].empresas[projeto].saidas += Math.abs(v);
         }
+      } else {
+        // Para ESTRUTURA e FINANCEIRO: nível CC simples
+        if (!arvore[tipo][cc]) arvore[tipo][cc] = { entradas: 0, saidas: 0, empresas: {} };
+        if (v > 0) arvore[tipo][cc].entradas += v;
+        else arvore[tipo][cc].saidas += Math.abs(v);
       }
     });
 
@@ -2488,56 +2506,45 @@ Responda em português, de forma objetiva e direta, citando os dados específico
 <div style='padding:.5rem .75rem'>`;
 
       // Linha de cabeçalho das colunas
-      arvoreHTML += `<div style='${hdrStyle}'><span>Centro de Custo</span><span style='text-align:right'>Entradas</span><span style='text-align:right'>Saídas</span><span style='text-align:right'>Saldo</span></div>`;
+      const hdrLabel = tipo === 'OPERACIONAL' ? 'Empresa / Cliente' : 'Centro de Custo';
+      arvoreHTML += `<div style='${hdrStyle}'><span>${hdrLabel}</span><span style='text-align:right'>Entradas</span><span style='text-align:right'>Saídas</span><span style='text-align:right'>Saldo</span></div>`;
 
-      // Cada CC dentro do tipo
-      for (const [cc, dados] of Object.entries(ccs).sort((a,b) => (b[1].entradas - b[1].saidas) - (a[1].entradas - a[1].saidas))) {
-        const temEmpresas = tipo === 'OPERACIONAL' && Object.keys(dados.empresas||{}).length > 0;
-        if (temEmpresas) {
-          // CC operacional: abre um sub-details para empresas
-          arvoreHTML += `<details style='margin:.2rem 0;border-left:3px solid ${cor}44;padding-left:.5rem'>
+      // Cada item dentro do tipo
+      for (const [chave, dados] of Object.entries(ccs).sort((a,b) => (b[1].entradas - b[1].saidas) - (a[1].entradas - a[1].saidas))) {
+        if (tipo === 'OPERACIONAL') {
+          // OPERACIONAL: chave = empresa, dados.empresas = projetos
+          const temProjetos = Object.keys(dados.empresas||{}).length > 0;
+          if (temProjetos) {
+            arvoreHTML += `<details style='margin:.2rem 0;border-left:3px solid ${cor}44;padding-left:.5rem'>
 <summary style='cursor:pointer;list-style:none;${rowStyle};background:#f8fafc;border-radius:.25rem'>
-  <span style='font-weight:600'>\u25B6 ${cc}</span>
+  <span style='font-weight:600'>\u25B6 ${chave}</span>
   <span style='text-align:right;color:#16a34a'>${fmtBRL(dados.entradas)}</span>
   <span style='text-align:right;color:#dc2626'>${fmtBRL(dados.saidas)}</span>
   ${fmtSaldo(dados.entradas,dados.saidas)}
 </summary>
 <div style='padding:.25rem 0 .25rem .75rem'>`;
-
-          for (const [empresa, empDados] of Object.entries(dados.empresas).sort((a,b) => (b[1].entradas-b[1].saidas)-(a[1].entradas-a[1].saidas))) {
-            const temProjetos = Object.keys(empDados.projetos||{}).length > 0;
-            if (temProjetos) {
-              arvoreHTML += `<details style='margin:.15rem 0'>
-<summary style='cursor:pointer;list-style:none;${rowStyle};color:#374151'>
-  <span>\u25B6 ${empresa}</span>
-  <span style='text-align:right;color:#16a34a;font-size:.82rem'>${fmtBRL(empDados.entradas)}</span>
-  <span style='text-align:right;color:#dc2626;font-size:.82rem'>${fmtBRL(empDados.saidas)}</span>
-  ${fmtSaldo(empDados.entradas,empDados.saidas)}
-</summary>
-<div style='padding:.15rem 0 .15rem 1rem'>`;
-              for (const [proj, pDados] of Object.entries(empDados.projetos).sort((a,b) => (b[1].entradas-b[1].saidas)-(a[1].entradas-a[1].saidas))) {
-                arvoreHTML += `<div style='${rowStyle};color:#64748b;font-size:.83rem'>
-  <span style='padding-left:.5rem'>\u2514 ${proj}</span>
+            for (const [proj, pDados] of Object.entries(dados.empresas).sort((a,b) => (b[1].entradas-b[1].saidas)-(a[1].entradas-a[1].saidas))) {
+              arvoreHTML += `<div style='${rowStyle};color:#64748b;font-size:.85rem;border-bottom:1px solid #f1f5f9'>
+  <span style='padding-left:.25rem'>\u2514 ${proj}</span>
   <span style='text-align:right;color:#16a34a'>${fmtBRL(pDados.entradas)}</span>
   <span style='text-align:right;color:#dc2626'>${fmtBRL(pDados.saidas)}</span>
   ${fmtSaldo(pDados.entradas,pDados.saidas)}
 </div>`;
-              }
-              arvoreHTML += `</div></details>`;
-            } else {
-              arvoreHTML += `<div style='${rowStyle};color:#374151'>
-  <span>${empresa}</span>
-  <span style='text-align:right;color:#16a34a;font-size:.82rem'>${fmtBRL(empDados.entradas)}</span>
-  <span style='text-align:right;color:#dc2626;font-size:.82rem'>${fmtBRL(empDados.saidas)}</span>
-  ${fmtSaldo(empDados.entradas,empDados.saidas)}
-</div>`;
             }
+            arvoreHTML += `</div></details>`;
+          } else {
+            // Empresa sem projetos detalhados
+            arvoreHTML += `<div style='${rowStyle};border-bottom:1px solid #f1f5f9'>
+  <span style='font-weight:500'>${chave}</span>
+  <span style='text-align:right;color:#16a34a'>${fmtBRL(dados.entradas)}</span>
+  <span style='text-align:right;color:#dc2626'>${fmtBRL(dados.saidas)}</span>
+  ${fmtSaldo(dados.entradas,dados.saidas)}
+</div>`;
           }
-          arvoreHTML += `</div></details>`;
         } else {
-          // CC de estrutura/financeiro: linha simples
+          // ESTRUTURA / FINANCEIRO: linha simples por CC
           arvoreHTML += `<div style='${rowStyle};border-bottom:1px solid #f1f5f9'>
-  <span style='font-weight:500'>${cc}</span>
+  <span style='font-weight:500'>${chave}</span>
   <span style='text-align:right;color:#16a34a'>${fmtBRL(dados.entradas)}</span>
   <span style='text-align:right;color:#dc2626'>${fmtBRL(dados.saidas)}</span>
   ${fmtSaldo(dados.entradas,dados.saidas)}
