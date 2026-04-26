@@ -4050,13 +4050,14 @@ function clearFormCC() {
   document.getElementById('form-cc-title').textContent='➕ Novo Centro de Custo';
 }
 function editCC(id,codigo,nome,tipo,ativo) {
+  switchTab('cc');
   document.getElementById('cc-id').value=id;
   document.getElementById('cc-codigo').value=codigo;
   document.getElementById('cc-nome').value=nome;
   document.getElementById('cc-tipo').value=tipo;
   document.getElementById('cc-ativo').value=String(ativo);
   document.getElementById('form-cc-title').textContent='✏ Editar Centro de Custo: '+nome;
-  document.getElementById('form-cc').scrollIntoView({behavior:'smooth'});
+  setTimeout(()=>document.getElementById('form-cc').scrollIntoView({behavior:'smooth'}),100);
 }
 async function saveCC() {
   const id=document.getElementById('cc-id').value;
@@ -4080,8 +4081,8 @@ function editCliente(id,codigo,nome,curto,cnpj,ativo) {
   document.getElementById('cli-cnpj').value=cnpj;
   document.getElementById('cli-ativo').value=String(ativo);
   document.getElementById('form-cli-title').textContent='✏ Editar Cliente: '+nome;
-  document.querySelector('[onclick="switchTab(\'clientes\')"]').click();
-  document.querySelector('#panel-clientes .master-form').scrollIntoView({behavior:'smooth'});
+  switchTab('clientes');
+  setTimeout(()=>document.querySelector('#panel-clientes .master-form').scrollIntoView({behavior:'smooth'}),100);
 }
 async function saveCliente() {
   const id=document.getElementById('cli-id').value;
@@ -4106,8 +4107,8 @@ function editProjeto(id,codigo,nome,tipo,clienteId,ativo) {
   document.getElementById('proj-cliente').value=clienteId;
   document.getElementById('proj-ativo').value=String(ativo);
   document.getElementById('form-proj-title').textContent='✏ Editar Projeto: '+nome;
-  document.querySelector('[onclick="switchTab(\'projetos\')"]').click();
-  document.querySelector('#panel-projetos .master-form').scrollIntoView({behavior:'smooth'});
+  switchTab('projetos');
+  setTimeout(()=>document.querySelector('#panel-projetos .master-form').scrollIntoView({behavior:'smooth'}),100);
 }
 async function saveProjeto() {
   const id=document.getElementById('proj-id').value;
@@ -4131,8 +4132,8 @@ function editBanco(id,codigo,nome,agencia,conta,ativo) {
   document.getElementById('banco-conta').value=conta;
   document.getElementById('banco-ativo').value=String(ativo);
   document.getElementById('form-banco-title').textContent='✏ Editar Banco: '+nome;
-  document.querySelector('[onclick="switchTab(\'bancos\')"]').click();
-  document.querySelector('#panel-bancos .master-form').scrollIntoView({behavior:'smooth'});
+  switchTab('bancos');
+  setTimeout(()=>document.querySelector('#panel-bancos .master-form').scrollIntoView({behavior:'smooth'}),100);
 }
 async function saveBanco() {
   const id=document.getElementById('banco-id').value;
