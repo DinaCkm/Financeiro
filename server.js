@@ -879,7 +879,7 @@ function serveStatic(req, res) {
 
 function page(title, body, user) {
   return `<!doctype html><html lang='pt-BR'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>${title} — CKM Financeiro</title><link rel='preconnect' href='https://fonts.googleapis.com'><link rel='stylesheet' href='https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap'><link rel='stylesheet' href='/public/style.css'></head><body>
-<header><h1>Painel <em>CKM</em> Financeiro</h1>${user ? `<nav><a href='/'>Home</a><a href='/upload'>Upload</a><a href='/pendencias'>Pré-análise</a><a href='/cadastros'>Cadastro Revisável</a><a href='/fatura'>Fatura Cartão</a><a href='/referencias'>Referências</a><a href='/historico'>Histórico</a><a href='/dashboard'>Dashboard</a><a href='/logout' class='sair'>Sair</a></nav>` : ''}</header>
+<header><h1>Painel <em>CKM</em> Financeiro</h1>${user ? `<nav><a href='/'>Home</a><a href='/upload'>Upload</a><a href='/pendencias'>Pré-análise</a><a href='/cadastros'>Cadastro Revisável</a><a href='/fatura'>Fatura Cartão</a><a href='/referencias'>Referências</a><a href='/historico'>Histórico</a><a href='/dashboard'>Dashboard</a><a href='/ia' style='background:#2563eb;color:#fff;border-radius:.375rem;padding:.2rem .6rem'>🤖 IA</a><a href='/relatorio' style='background:#7c3aed;color:#fff;border-radius:.375rem;padding:.2rem .6rem'>📄 Relatórios</a><a href='/logout' class='sair'>Sair</a></nav>` : ''}</header>
 <main>${body}</main></body></html>`;
 }
 
@@ -1270,22 +1270,76 @@ function calculateDashboard(db) {
     }
   });
 
+  // Detectores de empréstimos/financiamentos
+  const isEmprestimoMutuo = (e) => {
+    const txt = [e.descricao, e.tipoOriginal, e.natureza, e.centroCusto, e.parceiro]
+      .map(v => normalizeName(v || '')).join(' ');
+    return txt.includes('MUTUO') || txt.includes('MÚTUO');
+  };
+  const isEmprestimoPronampe = (e) => {
+    const txt = [e.descricao, e.tipoOriginal, e.natureza, e.centroCusto, e.parceiro]
+      .map(v => normalizeName(v || '')).join(' ');
+    return txt.includes('PRONAMPE');
+  };
+  const isEmprestimo = (e) => isEmprestimoMutuo(e) || isEmprestimoPronampe(e);
+
+  // Empréstimos e financiamentos: calculados sobre TODOS os lançamentos (histórico completo)
+  // pois o saldo devedor é acumulado desde o início
+  const emprestimos = {
+    mutuo: {
+      // Saldo histórico acumulado (negativo = empresa deve)
+      saldoHistorico: allSorted.filter(isEmprestimoMutuo).reduce((a, e) => a + (e.valor || 0), 0),
+      totalRecebido: allSorted.filter(isEmprestimoMutuo).filter(e => (e.valor||0) > 0).reduce((a, e) => a + (e.valor || 0), 0),
+      totalPago: allSorted.filter(isEmprestimoMutuo).filter(e => (e.valor||0) < 0).reduce((a, e) => a + Math.abs(e.valor || 0), 0),
+      // Movimentação no período ativo (para ver fluxo recente)
+      saldoPeriodo: sortedEntries.filter(isEmprestimoMutuo).reduce((a, e) => a + (e.valor || 0), 0),
+      count: allSorted.filter(isEmprestimoMutuo).length,
+      // Credores (parceiros) com saldo individual
+      porCredor: (() => {
+        const m = {};
+        allSorted.filter(isEmprestimoMutuo).forEach(e => {
+          const p = (e.parceiro || e.descricao || 'SEM IDENTIFICAÇÃO').slice(0, 40);
+          if (!m[p]) m[p] = { recebido: 0, pago: 0, saldo: 0 };
+          m[p].saldo += (e.valor || 0);
+          if ((e.valor || 0) > 0) m[p].recebido += (e.valor || 0);
+          else m[p].pago += Math.abs(e.valor || 0);
+        });
+        return m;
+      })()
+    },
+    pronampe: {
+      saldoHistorico: allSorted.filter(isEmprestimoPronampe).reduce((a, e) => a + (e.valor || 0), 0),
+      totalRecebido: allSorted.filter(isEmprestimoPronampe).filter(e => (e.valor||0) > 0).reduce((a, e) => a + (e.valor || 0), 0),
+      totalPago: allSorted.filter(isEmprestimoPronampe).filter(e => (e.valor||0) < 0).reduce((a, e) => a + Math.abs(e.valor || 0), 0),
+      jurosEstimados: (() => {
+        const recebido = allSorted.filter(isEmprestimoPronampe).filter(e => (e.valor||0) > 0).reduce((a, e) => a + (e.valor || 0), 0);
+        const pago = allSorted.filter(isEmprestimoPronampe).filter(e => (e.valor||0) < 0).reduce((a, e) => a + Math.abs(e.valor || 0), 0);
+        return pago > recebido ? pago - recebido : 0; // juros = excedente pago sobre o principal
+      })(),
+      saldoPeriodo: sortedEntries.filter(isEmprestimoPronampe).reduce((a, e) => a + (e.valor || 0), 0),
+      count: allSorted.filter(isEmprestimoPronampe).length,
+      // Última parcela paga e estimativa de parcelas restantes
+      ultimaParcela: allSorted.filter(isEmprestimoPronampe).filter(e => (e.valor||0) < 0).sort((a,b) => (b.dataISO||'').localeCompare(a.dataISO||''))[0] || null
+    }
+  };
+
   // Custos de Estrutura: lançamentos sem cliente vinculado (overhead operacional)
-  // Agrupa por Centro de Custo para mostrar onde estão os gastos fixos
+  // EXCLUINDO empréstimos (mútuo e Pronampe) — esses têm seção própria
   const byEstrutura = {};
   const totalEstrutura = { receita: 0, despesa: 0 };
   sortedEntries.forEach((e) => {
     if (clienteEfetivo(e) !== 'SEM CLIENTE') return; // tem cliente, não é estrutura
     const cc = (e.centroCusto || 'SEM CLASSIFICAÇÃO').toUpperCase();
-    // Excluir TEF (transferências internas entre contas) da visão de estrutura
+    // Excluir TEF (transferências internas) e empréstimos (têm seção própria)
     if (cc === 'TEF') return;
+    if (isEmprestimo(e)) return; // mútuo e Pronampe vão para seção de Financiamentos
     byEstrutura[cc] = (byEstrutura[cc] || 0) + (e.valor || 0);
     if ((e.valor || 0) < 0) totalEstrutura.despesa += Math.abs(e.valor);
     else totalEstrutura.receita += (e.valor || 0);
   });
 
   const rolling = allSorted.filter((e) => !e.isTransferenciaInterna).reduce((acc, e) => acc + (e.valor || 0), 0);
-  return { saldoHoje, proj7, proj30, contasPagar, contasReceber, byClient, byProject, byEstrutura, totalEstrutura, rolling, upcoming7, riscoCaixa, saldoMutuo, mutuoCount, corteData: CORTE_DATA };
+  return { saldoHoje, proj7, proj30, contasPagar, contasReceber, byClient, byProject, byEstrutura, totalEstrutura, emprestimos, rolling, upcoming7, riscoCaixa, saldoMutuo, mutuoCount, corteData: CORTE_DATA };
 }
 
 function sortEntries(entries, mode = 'date_desc') {
@@ -2176,27 +2230,153 @@ Responda em português, de forma objetiva e direta, citando os dados específico
   }
 
   if (req.method === 'GET' && url.pathname === '/dashboard') {
+    const user = requireAuth(req, res, db);
+    if (!user) return;
+    const hoje = new Date().toISOString().slice(0, 10);
+    const anoAtual = hoje.slice(0, 4);
+    // Filtro de período via query string (?de=YYYY-MM-DD&ate=YYYY-MM-DD&visao=fluxo|resultado)
+    const filtroInicio = url.searchParams.get('de') || CORTE_DATA;
+    const filtroFim = url.searchParams.get('ate') || hoje;
+    const visao = url.searchParams.get('visao') || 'resultado'; // 'fluxo' ou 'resultado'
+
+    // Calcular métricas gerais (sem filtro de período — para os cards de saldo)
     const metrics = calculateDashboard(db);
-    const topItems = (obj) => Object.entries(obj).sort((a, b) => Math.abs(b[1]) - Math.abs(a[1])).slice(0, 10);
+
+    // Calcular métricas filtradas pelo período selecionado
+    const lancsFiltrados = db.entries.filter(e =>
+      (e.dataISO||'') >= filtroInicio &&
+      (e.dataISO||'') <= filtroFim &&
+      !e.isTransferenciaInterna
+    );
+    const totalReceitasFiltro = lancsFiltrados.filter(e=>(e.valor||0)>0).reduce((a,e)=>a+(e.valor||0),0);
+    const totalDespesasFiltro = lancsFiltrados.filter(e=>(e.valor||0)<0).reduce((a,e)=>a+Math.abs(e.valor||0),0);
+    const saldoFiltro = totalReceitasFiltro - totalDespesasFiltro;
+
+    // Fluxo de caixa mês a mês no período filtrado
+    const fluxoMensal = {};
+    lancsFiltrados.forEach(e => {
+      const mes = (e.dataISO||'').slice(0,7);
+      if (!fluxoMensal[mes]) fluxoMensal[mes] = { receitas: 0, despesas: 0, saldo: 0 };
+      if ((e.valor||0) > 0) fluxoMensal[mes].receitas += (e.valor||0);
+      else fluxoMensal[mes].despesas += Math.abs(e.valor||0);
+      fluxoMensal[mes].saldo += (e.valor||0);
+    });
+    const meses = Object.keys(fluxoMensal).sort();
+
+    // Resultado por cliente no período filtrado
+    const byClienteFiltro = {};
+    const byProjetoFiltro = {};
+    const byEstruturaFiltro = {};
+    lancsFiltrados.forEach(e => {
+      const c = clienteEfetivo(e);
+      const p = projetoEfetivo(e);
+      if (c !== 'SEM CLIENTE') byClienteFiltro[c] = (byClienteFiltro[c]||0) + (e.valor||0);
+      if (p !== 'SEM PROJETO') byProjetoFiltro[p] = (byProjetoFiltro[p]||0) + (e.valor||0);
+      if (c === 'SEM CLIENTE') {
+        const cc = (e.centroCusto||'SEM CC').toUpperCase();
+        if (cc !== 'TEF') byEstruturaFiltro[cc] = (byEstruturaFiltro[cc]||0) + (e.valor||0);
+      }
+    });
+
     const fmtBRL = (v) => {
       const abs = Math.abs(v).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
       return (v < 0 ? '-' : '') + 'R$ ' + abs;
     };
-    // Seção de Custos de Estrutura: ordenar do maior gasto para o menor
-    const estruturaItems = Object.entries(metrics.byEstrutura).sort((a, b) => a[1] - b[1]);
+    const topItems = (obj) => Object.entries(obj).sort((a, b) => Math.abs(b[1]) - Math.abs(a[1])).slice(0, 10);
+
+    // Gráfico de barras do fluxo mensal (SVG simples)
+    const maxAbs = Math.max(...meses.map(m => Math.max(fluxoMensal[m].receitas, fluxoMensal[m].despesas)), 1);
+    const barW = meses.length > 0 ? Math.max(20, Math.floor(560 / (meses.length * 2 + 1))) : 30;
+    const chartH = 120;
+    const svgBars = meses.map((m, i) => {
+      const v = fluxoMensal[m];
+      const hRec = Math.round((v.receitas / maxAbs) * chartH);
+      const hDesp = Math.round((v.despesas / maxAbs) * chartH);
+      const x = i * (barW * 2 + 4) + 2;
+      const label = m.slice(5); // MM
+      return `<rect x='${x}' y='${chartH - hRec}' width='${barW}' height='${hRec}' fill='#22c55e' rx='2'/>
+<rect x='${x + barW + 2}' y='${chartH - hDesp}' width='${barW}' height='${hDesp}' fill='#ef4444' rx='2'/>
+<text x='${x + barW}' y='${chartH + 14}' text-anchor='middle' font-size='9' fill='#64748b'>${label}</text>
+<text x='${x}' y='${chartH - hRec - 3}' font-size='8' fill='#16a34a' text-anchor='middle'>${v.saldo >= 0 ? '+' : ''}${(v.saldo/1000).toFixed(0)}k</text>`;
+    }).join('');
+    const svgW = meses.length * (barW * 2 + 4) + 10;
+    const fluxoGrafico = meses.length === 0 ? '<p style="color:#64748b">Sem dados no período.</p>' :
+      `<div style='overflow-x:auto'><svg width='${svgW}' height='${chartH + 24}' style='display:block'>${svgBars}</svg>
+<div style='display:flex;gap:1rem;font-size:.8rem;margin-top:.25rem'><span style='color:#22c55e'>&#9646; Receitas</span><span style='color:#ef4444'>&#9646; Despesas</span><span style='color:#64748b'>Número = saldo do mês (em R$ mil)</span></div></div>`;
+
+    // Tabela de fluxo mensal detalhada
+    const fluxoTabela = meses.length === 0 ? '' : `<div style='overflow-x:auto;margin-top:1rem'><table style='width:100%;border-collapse:collapse;font-size:.88rem'>
+<thead><tr style='background:#f1f5f9'><th style='text-align:left;padding:.4rem .6rem'>Mês</th><th style='text-align:right;padding:.4rem .6rem;color:#16a34a'>Entradas</th><th style='text-align:right;padding:.4rem .6rem;color:#dc2626'>Saídas</th><th style='text-align:right;padding:.4rem .6rem'>Saldo do Mês</th></tr></thead>
+<tbody>${meses.map(m => {
+  const v = fluxoMensal[m];
+  const cor = v.saldo >= 0 ? '#16a34a' : '#dc2626';
+  return `<tr style='border-bottom:1px solid #f1f5f9'><td style='padding:.4rem .6rem;font-weight:600'>${m}</td><td style='padding:.4rem .6rem;text-align:right;color:#16a34a'>${fmtBRL(v.receitas)}</td><td style='padding:.4rem .6rem;text-align:right;color:#dc2626'>${fmtBRL(v.despesas)}</td><td style='padding:.4rem .6rem;text-align:right;font-weight:700;color:${cor}'>${fmtBRL(v.saldo)}</td></tr>`;
+}).join('')}
+<tr style='background:#f8fafc;font-weight:700;border-top:2px solid #e2e8f0'><td style='padding:.4rem .6rem'>TOTAL</td><td style='padding:.4rem .6rem;text-align:right;color:#16a34a'>${fmtBRL(totalReceitasFiltro)}</td><td style='padding:.4rem .6rem;text-align:right;color:#dc2626'>${fmtBRL(totalDespesasFiltro)}</td><td style='padding:.4rem .6rem;text-align:right;color:${saldoFiltro>=0?'#16a34a':'#dc2626'}'>${fmtBRL(saldoFiltro)}</td></tr>
+</tbody></table></div>`;
+
+    // Seção de Custos de Estrutura (período filtrado)
+    const estruturaItems = Object.entries(byEstruturaFiltro).sort((a, b) => a[1] - b[1]);
     const totalEstruturaNeta = estruturaItems.reduce((acc, [, v]) => acc + v, 0);
     const estruturaHTML = estruturaItems.length === 0
-      ? '<p style="color:#64748b">Nenhum custo de estrutura identificado.</p>'
+      ? '<p style="color:#64748b">Nenhum custo de estrutura no período.</p>'
       : `<div style='overflow-x:auto'><table style='width:100%;border-collapse:collapse;font-size:.9rem'>
 <thead><tr style='background:#f1f5f9'><th style='text-align:left;padding:.5rem .75rem;border-bottom:2px solid #e2e8f0'>Centro de Custo</th><th style='text-align:right;padding:.5rem .75rem;border-bottom:2px solid #e2e8f0'>Valor (período)</th><th style='text-align:right;padding:.5rem .75rem;border-bottom:2px solid #e2e8f0'>Detalhes</th></tr></thead>
 <tbody>${estruturaItems.map(([cc, v]) => {
   const cor = v < 0 ? '#dc2626' : '#16a34a';
   return `<tr style='border-bottom:1px solid #f1f5f9'><td style='padding:.45rem .75rem;font-weight:600'>${cc}</td><td style='padding:.45rem .75rem;text-align:right;color:${cor};font-weight:700'>${fmtBRL(v)}</td><td style='padding:.45rem .75rem;text-align:right'><a href='/dashboard/detalhe?view=estrutura&chave=${encodeURIComponent(cc)}' style='font-size:.8rem;color:#3b82f6'>ver lançamentos</a></td></tr>`;
 }).join('')}
-<tr style='background:#f8fafc;font-weight:700;border-top:2px solid #e2e8f0'><td style='padding:.5rem .75rem'>TOTAL ESTRUTURA</td><td style='padding:.5rem .75rem;text-align:right;color:${totalEstruturaNeta < 0 ? '#dc2626' : '#16a34a'}'>${fmtBRL(totalEstruturaNeta)}</td><td style='padding:.5rem .75rem;text-align:right'><a href='/dashboard/detalhe?view=estrutura_total' style='font-size:.8rem;color:#3b82f6'>ver todos</a></td></tr>
-</tbody></table></div>
-<p style='font-size:.8rem;color:#64748b;margin-top:.5rem'>* Inclui apenas lançamentos ativos (desde ${CORTE_DATA}). Transferências internas (TEF) excluídas.</p>`;
-    const html = page('Dashboard', `<section><h2>Dashboard gerencial</h2>
+<tr style='background:#f8fafc;font-weight:700;border-top:2px solid #e2e8f0'><td style='padding:.5rem .75rem'>TOTAL ESTRUTURA</td><td style='padding:.5rem .75rem;text-align:right;color:${totalEstruturaNeta < 0 ? '#dc2626' : '#16a34a'}'>${fmtBRL(totalEstruturaNeta)}</td><td></td></tr>
+</tbody></table></div>`;
+
+    // Seletor de período rápido
+    const mesAtual = hoje.slice(0, 7);
+    const mesAnterior = (() => { const d = new Date(hoje); d.setMonth(d.getMonth()-1); return d.toISOString().slice(0,7); })();
+    const trimestreInicio = (() => { const m = parseInt(hoje.slice(5,7)); const t = Math.floor((m-1)/3)*3+1; return `${anoAtual}-${String(t).padStart(2,'0')}-01`; })();
+    const periodoHTML = `<div style='background:#f8fafc;border:1px solid #e2e8f0;border-radius:.5rem;padding:1rem;margin-bottom:1.5rem'>
+<form method='GET' action='/dashboard' style='display:flex;gap:.75rem;flex-wrap:wrap;align-items:flex-end'>
+<div><label style='display:block;font-size:.8rem;color:#64748b;margin-bottom:.2rem'>De</label>
+<input type='date' name='de' value='${filtroInicio}' style='padding:.35rem .5rem;border:1px solid #cbd5e1;border-radius:.375rem;font-size:.9rem'></div>
+<div><label style='display:block;font-size:.8rem;color:#64748b;margin-bottom:.2rem'>Até</label>
+<input type='date' name='ate' value='${filtroFim}' style='padding:.35rem .5rem;border:1px solid #cbd5e1;border-radius:.375rem;font-size:.9rem'></div>
+<div><label style='display:block;font-size:.8rem;color:#64748b;margin-bottom:.2rem'>Visão</label>
+<select name='visao' style='padding:.35rem .5rem;border:1px solid #cbd5e1;border-radius:.375rem;font-size:.9rem'>
+<option value='resultado'${visao==='resultado'?' selected':''}>Resultado Econômico</option>
+<option value='fluxo'${visao==='fluxo'?' selected':''}>Fluxo de Caixa</option>
+</select></div>
+<button type='submit' style='padding:.4rem .9rem;background:#2563eb;color:#fff;border:none;border-radius:.375rem;cursor:pointer;font-size:.9rem'>Aplicar</button>
+</form>
+<div style='display:flex;gap:.5rem;flex-wrap:wrap;margin-top:.6rem'>
+<a href='/dashboard?de=${mesAtual}-01&ate=${hoje}&visao=${visao}' style='font-size:.8rem;padding:.25rem .6rem;background:#e2e8f0;border-radius:.375rem;text-decoration:none;color:#374151'>Este mês</a>
+<a href='/dashboard?de=${mesAnterior}-01&ate=${mesAnterior}-31&visao=${visao}' style='font-size:.8rem;padding:.25rem .6rem;background:#e2e8f0;border-radius:.375rem;text-decoration:none;color:#374151'>Mês anterior</a>
+<a href='/dashboard?de=${trimestreInicio}&ate=${hoje}&visao=${visao}' style='font-size:.8rem;padding:.25rem .6rem;background:#e2e8f0;border-radius:.375rem;text-decoration:none;color:#374151'>Trimestre atual</a>
+<a href='/dashboard?de=${anoAtual}-01-01&ate=${hoje}&visao=${visao}' style='font-size:.8rem;padding:.25rem .6rem;background:#e2e8f0;border-radius:.375rem;text-decoration:none;color:#374151'>Este ano</a>
+<a href='/dashboard?de=${CORTE_DATA}&ate=${hoje}&visao=${visao}' style='font-size:.8rem;padding:.25rem .6rem;background:#e2e8f0;border-radius:.375rem;text-decoration:none;color:#374151'>Tudo</a>
+<a href='/ia?de=${filtroInicio}&ate=${filtroFim}' style='font-size:.8rem;padding:.25rem .6rem;background:#eff6ff;border:1px solid #bfdbfe;border-radius:.375rem;text-decoration:none;color:#1d4ed8'>🤖 Analisar com IA</a>
+</div></div>`;
+
+    // Conteúdo principal conforme visão selecionada
+    const conteudoPrincipal = visao === 'fluxo'
+      ? `<h3>💰 Fluxo de Caixa Mês a Mês</h3>
+<p style='color:#64748b;font-size:.9rem;margin-bottom:.75rem'>Dinheiro que <strong>realmente entrou e saiu</strong> no período. Não inclui transferências internas entre contas (TEF).</p>
+${fluxoGrafico}${fluxoTabela}
+<div style='margin-top:1rem;padding:.75rem;background:#fffbeb;border:1px solid #fde68a;border-radius:.375rem;font-size:.85rem;color:#92400e'>
+⚠️ <strong>Fluxo de Caixa ≠ Lucro:</strong> Um mês com saldo negativo não significa prejuízo — pode ser que você pagou equipe de um projeto que ainda não faturou. Use a visão <a href='/dashboard?de=${filtroInicio}&ate=${filtroFim}&visao=resultado'>Resultado Econômico</a> para ver o lucro real por projeto.
+</div>`
+      : `<h3>📊 Resultado por Cliente <span style='font-size:.8rem;color:#64748b;font-weight:400'>(período: ${filtroInicio} a ${filtroFim})</span></h3>
+<ul>${topItems(byClienteFiltro).map(([k, v]) => `<li><a href='/dashboard/detalhe?view=cliente&chave=${encodeURIComponent(k)}'>${k}: ${fmtBRL(v)}</a></li>`).join('') || '<li>Sem dados no período.</li>'}</ul>
+<h3>📁 Resultado por Projeto <span style='font-size:.8rem;color:#64748b;font-weight:400'>(período: ${filtroInicio} a ${filtroFim})</span></h3>
+<ul>${topItems(byProjetoFiltro).map(([k, v]) => `<li><a href='/dashboard/detalhe?view=projeto&chave=${encodeURIComponent(k)}'>${k}: ${fmtBRL(v)}</a></li>`).join('') || '<li>Sem dados no período.</li>'}</ul>
+<div style='margin-top:1rem;padding:.75rem;background:#eff6ff;border:1px solid #bfdbfe;border-radius:.375rem;font-size:.85rem;color:#1e40af'>
+💡 <strong>Resultado Econômico:</strong> Mostra o lucro/prejuízo acumulado de cada cliente e projeto no período. Para ver como o dinheiro entrou e saiu mês a mês, use a visão <a href='/dashboard?de=${filtroInicio}&ate=${filtroFim}&visao=fluxo'>Fluxo de Caixa</a>.
+</div>
+<h3 style='margin-top:1.5rem'>🏠 Custos de Estrutura (overhead)</h3>
+<p style='color:#64748b;font-size:.9rem;margin-bottom:.75rem'>Gastos fixos não vinculados a clientes: escritório, salários, impostos e administração.</p>
+${estruturaHTML}`;
+
+    const html = page('Dashboard', `<section>
+<h2>Dashboard gerencial</h2>
+${periodoHTML}
 <div class='cards'>
 <a class='card' href='/dashboard/detalhe?view=saldo_hoje'><strong>Saldo de hoje</strong><span>${fmtBRL(metrics.saldoHoje)}</span></a>
 <a class='card' href='/dashboard/detalhe?view=proj_7'><strong>Projeção 7 dias</strong><span>${fmtBRL(metrics.proj7)}</span></a>
@@ -2204,15 +2384,12 @@ Responda em português, de forma objetiva e direta, citando os dados específico
 <a class='card' href='/dashboard/detalhe?view=a_pagar'><strong>A pagar</strong><span>${fmtBRL(metrics.contasPagar)}</span></a>
 <a class='card' href='/dashboard/detalhe?view=a_receber'><strong>A receber</strong><span>${fmtBRL(metrics.contasReceber)}</span></a>
 <a class='card' href='/dashboard/detalhe?view=saldo_mutuo'><strong>Saldo de mútuo</strong><span>${fmtBRL(metrics.saldoMutuo)}</span></a>
-<a class='card' href='/dashboard/detalhe?view=risco_caixa'><strong>Risco de caixa</strong><span>${metrics.riscoCaixa}</span></a>
-<a class='card' href='/dashboard/detalhe?view=estrutura_total'><strong>Custos de Estrutura</strong><span style='color:${metrics.totalEstrutura.despesa > 0 ? "#dc2626" : "inherit"}'>${fmtBRL(-metrics.totalEstrutura.despesa)}</span></a>
+<div class='card' style='background:${saldoFiltro>=0?'#f0fdf4':'#fef2f2'}'><strong>Saldo do período</strong><span style='color:${saldoFiltro>=0?'#16a34a':'#dc2626'}'>${fmtBRL(saldoFiltro)}</span></div>
+<a class='card' href='/dashboard/detalhe?view=estrutura_total'><strong>Estrutura (período)</strong><span style='color:#dc2626'>${fmtBRL(-Object.values(byEstruturaFiltro).filter(v=>v<0).reduce((a,v)=>a+Math.abs(v),0))}</span></a>
 </div>
-<h3>Próximos 7 dias (agenda financeira)</h3><ul>${metrics.upcoming7.slice(0, 15).map((e) => `<li>${e.dataISO} | ${e.descricao || '-'} | R$ ${e.valor.toFixed(2)}</li>`).join('') || '<li>Sem lançamentos previstos.</li>'}</ul>
-<h3>Resultado por cliente</h3><ul>${topItems(metrics.byClient).map(([k, v]) => `<li><a href='/dashboard/detalhe?view=cliente&chave=${encodeURIComponent(k)}'>${k}: ${fmtBRL(v)}</a></li>`).join('')}</ul>
-<h3>Resultado por projeto</h3><ul>${topItems(metrics.byProject).map(([k, v]) => `<li><a href='/dashboard/detalhe?view=projeto&chave=${encodeURIComponent(k)}'>${k}: ${fmtBRL(v)}</a></li>`).join('')}</ul>
-<h3 style='margin-top:1.5rem'>&#127970; Custos de Estrutura (overhead)</h3>
-<p style='color:#64748b;font-size:.9rem;margin-bottom:.75rem'>Gastos fixos da empresa não vinculados a clientes: escritório, salários, impostos, financiamentos e administração.</p>
-${estruturaHTML}
+<h3>Próximos 7 dias (agenda financeira)</h3>
+<ul>${metrics.upcoming7.slice(0, 15).map((e) => `<li>${e.dataISO} | ${e.descricao || '-'} | R$ ${e.valor.toFixed(2)}</li>`).join('') || '<li>Sem lançamentos previstos.</li>'}</ul>
+${conteudoPrincipal}
 </section>`, user);
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
     res.end(html);
@@ -2844,6 +3021,621 @@ async function excluirRef(tipo,nome){
       totalRegistry: db.reviewRegistry.length,
       issuesNovoCadastroRemovidos: issuesRemovidos
     });
+    return;
+  }
+
+  // ─── IA FINANCEIRA: ANÁLISE COM JUSTIFICATIVA ─────────────────────────────
+  // POST /api/ia/analisar — chat financeiro com raciocínio transparente
+  if (req.method === 'POST' && url.pathname === '/api/ia/analisar') {
+    if (!requireAuth(req, res, db)) return;
+    try {
+      const { pergunta, periodo_inicio, periodo_fim } = JSON.parse(await readBody(req) || '{}');
+      if (!pergunta) return json(res, 400, { error: 'Pergunta obrigatória' });
+
+      const hoje = new Date().toISOString().slice(0, 10);
+      const pInicio = periodo_inicio || CORTE_DATA;
+      const pFim = periodo_fim || hoje;
+
+      // Filtrar lançamentos do período solicitado
+      const lancsPeriodo = db.entries.filter(e =>
+        (e.dataISO || '') >= pInicio &&
+        (e.dataISO || '') <= pFim &&
+        !e.isTransferenciaInterna
+      );
+
+      // Calcular resumo financeiro do período
+      const totalReceitas = lancsPeriodo.filter(e => (e.valor||0) > 0).reduce((a,e) => a+(e.valor||0), 0);
+      const totalDespesas = lancsPeriodo.filter(e => (e.valor||0) < 0).reduce((a,e) => a+Math.abs(e.valor||0), 0);
+      const saldoPeriodo = totalReceitas - totalDespesas;
+
+      // Fluxo de caixa mês a mês
+      const fluxoMensal = {};
+      lancsPeriodo.forEach(e => {
+        const mes = (e.dataISO||'').slice(0,7);
+        if (!fluxoMensal[mes]) fluxoMensal[mes] = { receitas: 0, despesas: 0, saldo: 0 };
+        if ((e.valor||0) > 0) fluxoMensal[mes].receitas += (e.valor||0);
+        else fluxoMensal[mes].despesas += Math.abs(e.valor||0);
+        fluxoMensal[mes].saldo += (e.valor||0);
+      });
+      const fluxoMensalStr = Object.entries(fluxoMensal).sort().map(([m,v]) =>
+        `${m}: entradas=R$${v.receitas.toFixed(2)} | saídas=R$${v.despesas.toFixed(2)} | saldo=R$${v.saldo.toFixed(2)}`
+      ).join('\n');
+
+      // Resultado por cliente no período
+      const byClientePeriodo = {};
+      lancsPeriodo.forEach(e => {
+        const c = clienteEfetivo(e);
+        if (c !== 'SEM CLIENTE') {
+          byClientePeriodo[c] = (byClientePeriodo[c]||0) + (e.valor||0);
+        }
+      });
+      const clientesStr = Object.entries(byClientePeriodo)
+        .sort((a,b) => b[1]-a[1]).slice(0,15)
+        .map(([k,v]) => `${k}: R$${v.toFixed(2)}`).join(' | ');
+
+      // Resultado por projeto no período
+      const byProjetoPeriodo = {};
+      lancsPeriodo.forEach(e => {
+        const p = projetoEfetivo(e);
+        if (p !== 'SEM PROJETO') {
+          byProjetoPeriodo[p] = (byProjetoPeriodo[p]||0) + (e.valor||0);
+        }
+      });
+      const projetosStr = Object.entries(byProjetoPeriodo)
+        .sort((a,b) => b[1]-a[1]).slice(0,15)
+        .map(([k,v]) => `${k}: R$${v.toFixed(2)}`).join(' | ');
+
+      // Custos de estrutura no período
+      const byCCPeriodo = {};
+      lancsPeriodo.forEach(e => {
+        if (clienteEfetivo(e) === 'SEM CLIENTE') {
+          const cc = (e.centroCusto||'SEM CC').toUpperCase();
+          if (cc !== 'TEF') byCCPeriodo[cc] = (byCCPeriodo[cc]||0) + (e.valor||0);
+        }
+      });
+      const estruturaStr = Object.entries(byCCPeriodo)
+        .sort((a,b) => a[1]-b[1]).slice(0,10)
+        .map(([k,v]) => `${k}: R$${v.toFixed(2)}`).join(' | ');
+
+      // Mútuo e Pronampe no período
+      const mutuoPeriodo = lancsPeriodo.filter(e => {
+        const txt = [e.descricao,e.centroCusto,e.parceiro].map(v=>(v||'').toUpperCase()).join(' ');
+        return txt.includes('MÚTUO') || txt.includes('MUTUO') || txt.includes('PRONAMPE');
+      });
+      const mutuoStr = mutuoPeriodo.length > 0
+        ? `${mutuoPeriodo.length} lançamentos | saldo período: R$${mutuoPeriodo.reduce((a,e)=>a+(e.valor||0),0).toFixed(2)}`
+        : 'Nenhum lançamento de mútuo/Pronampe no período';
+
+      // Saldo acumulado histórico (para contexto)
+      const saldoHistorico = db.entries
+        .filter(e => (e.dataISO||'') <= pFim && !e.isTransferenciaInterna)
+        .reduce((a,e) => a+(e.valor||0), 0);
+
+      // Lançamentos mais relevantes (maiores valores absolutos)
+      const topLancs = [...lancsPeriodo]
+        .sort((a,b) => Math.abs(b.valor||0) - Math.abs(a.valor||0))
+        .slice(0,20)
+        .map(e => `${e.dataISO||'-'} | ${(e.descricao||'-').slice(0,50)} | R$${Number(e.valor||0).toFixed(2)} | CC:${e.centroCusto||'-'} | cliente:${e.cliente||'-'} | projeto:${e.projeto||'-'}`)
+        .join('\n');
+
+      const systemPrompt = `Você é o assistente financeiro da empresa CKM Consultoria, especializado em análise de fluxo de caixa e resultado econômico.
+
+Sua função é analisar os dados financeiros reais da empresa e responder perguntas de forma TRANSPARENTE, sempre mostrando:
+1. DADOS UTILIZADOS: quais números e lançamentos você considerou
+2. RACIOCÍNIO: como você chegou à conclusão (passo a passo)
+3. CONCLUSÃO: resposta clara em linguagem simples para o empresário
+4. ALERTAS: o que pode estar distorcendo a análise ou o que precisa de atenção
+5. CONFIANÇA: se os dados são suficientes ou se há lacunas que podem mudar a conclusão
+
+IMPORTANTE:
+- Nunca invente dados. Se não tiver informação suficiente, diga claramente.
+- Diferencie FLUXO DE CAIXA (dinheiro que entrou/saiu no período) de RESULTADO ECONÔMICO (lucro/prejuízo do projeto, independente de quando foi pago).
+- Mútuo e Pronampe são EMPRÉSTIMOS, não receita operacional. Não some com faturamento.
+- TEF são transferências entre contas próprias (BB, Itaú, Santander), não são receita nem despesa.
+- Explique os números em contexto: R$50.000 de despesa com escritório pode ser alto ou baixo dependendo do faturamento.
+
+Empresa: CKM Consultoria
+Ramo: Consultoria em RH, treinamentos, seleção e desenvolvimento organizacional
+Bancos: Banco do Brasil, Itaú, Santander (STD)
+Sócios: Carlos Kiyomitu Makiyama, Maria Dinamar P S Makiyama`;
+
+      const userPrompt = `PERÍODO ANALISADO: ${pInicio} a ${pFim}
+
+=== RESUMO DO PERÍODO ===
+Total de lançamentos: ${lancsPeriodo.length}
+Total receitas (entradas): R$${totalReceitas.toFixed(2)}
+Total despesas (saídas): R$${totalDespesas.toFixed(2)}
+Saldo do período: R$${saldoPeriodo.toFixed(2)}
+Saldo histórico acumulado (até ${pFim}): R$${saldoHistorico.toFixed(2)}
+
+=== FLUXO DE CAIXA MÊS A MÊS ===
+${fluxoMensalStr || 'Sem dados no período'}
+
+=== RESULTADO POR CLIENTE (período) ===
+${clientesStr || 'Sem dados'}
+
+=== RESULTADO POR PROJETO (período) ===
+${projetosStr || 'Sem dados'}
+
+=== CUSTOS DE ESTRUTURA (período) ===
+${estruturaStr || 'Sem dados'}
+
+=== EMPRÉSTIMOS/MÚTUO (período) ===
+${mutuoStr}
+
+=== 20 MAIORES LANÇAMENTOS DO PERÍODO ===
+${topLancs || 'Sem dados'}
+
+=== PERGUNTA DO EMPRESÁRIO ===
+${pergunta}
+
+Responda seguindo OBRIGATORIAMENTE a estrutura:
+📊 DADOS UTILIZADOS:
+[liste os números e lançamentos que você vai usar para responder]
+
+🧮 RACIOCÍNIO:
+[explique passo a passo como chegou à conclusão]
+
+✅ CONCLUSÃO:
+[resposta clara e direta em linguagem simples]
+
+⚠️ ALERTAS:
+[o que pode estar distorcendo a análise]
+
+🎯 CONFIANÇA:
+[Alta/Média/Baixa — e por quê]`;
+
+      const { OpenAI } = require('openai');
+      const openai = new OpenAI();
+      const completion = await openai.chat.completions.create({
+        model: 'gpt-4.1-mini',
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: userPrompt }
+        ],
+        temperature: 0.1,
+        max_tokens: 1500
+      });
+      const resposta = completion.choices[0]?.message?.content?.trim() || 'Sem resposta.';
+
+      return json(res, 200, {
+        resposta,
+        contexto: {
+          periodo: { inicio: pInicio, fim: pFim },
+          totalLancamentos: lancsPeriodo.length,
+          totalReceitas,
+          totalDespesas,
+          saldoPeriodo,
+          saldoHistorico
+        }
+      });
+    } catch (err) {
+      console.error('[IA analisar]', err.message);
+      return json(res, 500, { error: 'Erro ao consultar IA: ' + err.message });
+    }
+  }
+
+  // ─── PÁGINA DE ANÁLISE IA ─────────────────────────────────────────────────
+  if (req.method === 'GET' && url.pathname === '/ia') {
+    const user = requireAuth(req, res, db);
+    if (!user) return;
+    const hoje = new Date().toISOString().slice(0, 10);
+    const mesAtual = hoje.slice(0, 7);
+    const mesAnterior = (() => { const d = new Date(hoje); d.setMonth(d.getMonth()-1); return d.toISOString().slice(0,7); })();
+    const html = page('Análise com IA', `
+<section>
+  <h2>🤖 Assistente Financeiro com IA</h2>
+  <p style='color:#64748b;margin-bottom:1.5rem'>Faça perguntas sobre seus dados financeiros. A IA mostrará os dados utilizados, o raciocínio e os alertas para você validar a resposta.</p>
+
+  <div style='background:#f8fafc;border:1px solid #e2e8f0;border-radius:.5rem;padding:1.25rem;margin-bottom:1.5rem'>
+    <h3 style='margin:0 0 1rem'>Período de análise</h3>
+    <div style='display:flex;gap:1rem;flex-wrap:wrap;align-items:flex-end'>
+      <div><label style='display:block;font-size:.85rem;color:#64748b;margin-bottom:.25rem'>De</label>
+        <input type='date' id='ia-inicio' value='${mesAtual}-01' style='padding:.4rem .6rem;border:1px solid #cbd5e1;border-radius:.375rem'></div>
+      <div><label style='display:block;font-size:.85rem;color:#64748b;margin-bottom:.25rem'>Até</label>
+        <input type='date' id='ia-fim' value='${hoje}' style='padding:.4rem .6rem;border:1px solid #cbd5e1;border-radius:.375rem'></div>
+      <div style='display:flex;gap:.5rem;flex-wrap:wrap'>
+        <button onclick="setPeriodo('${mesAtual}-01','${hoje}')" style='padding:.4rem .75rem;background:#e2e8f0;border:none;border-radius:.375rem;cursor:pointer;font-size:.85rem'>Este mês</button>
+        <button onclick="setPeriodo('${mesAnterior}-01','${mesAnterior}-31')" style='padding:.4rem .75rem;background:#e2e8f0;border:none;border-radius:.375rem;cursor:pointer;font-size:.85rem'>Mês anterior</button>
+        <button onclick="setPeriodo('${hoje.slice(0,4)}-01-01','${hoje}')" style='padding:.4rem .75rem;background:#e2e8f0;border:none;border-radius:.375rem;cursor:pointer;font-size:.85rem'>Este ano</button>
+        <button onclick="setPeriodo('${CORTE_DATA}','${hoje}')" style='padding:.4rem .75rem;background:#e2e8f0;border:none;border-radius:.375rem;cursor:pointer;font-size:.85rem'>Tudo (desde ${CORTE_DATA})</button>
+      </div>
+    </div>
+  </div>
+
+  <div style='margin-bottom:1rem'>
+    <p style='font-size:.85rem;color:#64748b;margin-bottom:.5rem'>Sugestões de perguntas:</p>
+    <div style='display:flex;gap:.5rem;flex-wrap:wrap'>
+      ${[
+        'Como foi meu fluxo de caixa mês a mês?',
+        'Qual projeto está me dando mais prejuízo?',
+        'Tenho dinheiro para pagar a folha do mês que vem?',
+        'Qual cliente gerou mais receita no período?',
+        'Quanto paguei de impostos?',
+        'Qual é minha dívida total de mútuo?',
+        'Compare meu faturamento com minhas despesas fixas',
+        'Em quais meses meu caixa ficou negativo?'
+      ].map(s => `<button onclick="usarSugestao('${s.replace(/'/g,"\\'")}')"
+        style='padding:.35rem .65rem;background:#eff6ff;border:1px solid #bfdbfe;border-radius:.375rem;cursor:pointer;font-size:.8rem;color:#1d4ed8'>${s}</button>`).join('')}
+    </div>
+  </div>
+
+  <div style='display:flex;gap:.75rem;margin-bottom:1.5rem'>
+    <textarea id='ia-pergunta' placeholder='Digite sua pergunta sobre os dados financeiros...' rows='3'
+      style='flex:1;padding:.6rem .75rem;border:1px solid #cbd5e1;border-radius:.375rem;font-size:.95rem;resize:vertical'></textarea>
+    <button onclick='enviarPergunta()' id='ia-btn'
+      style='padding:.6rem 1.25rem;background:#2563eb;color:#fff;border:none;border-radius:.375rem;cursor:pointer;font-weight:600;align-self:flex-end'>Analisar</button>
+  </div>
+
+  <div id='ia-resultado' style='display:none'>
+    <div id='ia-contexto' style='background:#f0fdf4;border:1px solid #bbf7d0;border-radius:.5rem;padding:1rem;margin-bottom:1rem;font-size:.85rem;color:#166534'></div>
+    <div id='ia-resposta' style='background:#fff;border:1px solid #e2e8f0;border-radius:.5rem;padding:1.25rem;white-space:pre-wrap;line-height:1.7;font-size:.95rem'></div>
+    <div style='margin-top:.75rem;display:flex;gap:.5rem'>
+      <button onclick='avaliar(true)' style='padding:.4rem .75rem;background:#dcfce7;border:1px solid #86efac;border-radius:.375rem;cursor:pointer;font-size:.85rem;color:#166534'>✅ Análise correta</button>
+      <button onclick='avaliar(false)' style='padding:.4rem .75rem;background:#fee2e2;border:1px solid #fca5a5;border-radius:.375rem;cursor:pointer;font-size:.85rem;color:#991b1b'>❌ Análise incorreta — quero corrigir</button>
+    </div>
+    <div id='ia-correcao' style='display:none;margin-top:.75rem'>
+      <textarea id='ia-correcao-texto' placeholder='Explique o que está errado na análise...' rows='3'
+        style='width:100%;padding:.6rem;border:1px solid #fca5a5;border-radius:.375rem;font-size:.9rem;box-sizing:border-box'></textarea>
+      <button onclick='enviarCorrecao()' style='margin-top:.5rem;padding:.4rem .75rem;background:#dc2626;color:#fff;border:none;border-radius:.375rem;cursor:pointer;font-size:.85rem'>Enviar correção</button>
+    </div>
+  </div>
+
+  <div id='ia-historico' style='margin-top:2rem'></div>
+</section>
+
+<script>
+let historicoAnalises = [];
+
+function setPeriodo(inicio, fim) {
+  document.getElementById('ia-inicio').value = inicio;
+  document.getElementById('ia-fim').value = fim;
+}
+
+function usarSugestao(texto) {
+  document.getElementById('ia-pergunta').value = texto;
+  document.getElementById('ia-pergunta').focus();
+}
+
+async function enviarPergunta() {
+  const pergunta = document.getElementById('ia-pergunta').value.trim();
+  if (!pergunta) return alert('Digite uma pergunta.');
+  const inicio = document.getElementById('ia-inicio').value;
+  const fim = document.getElementById('ia-fim').value;
+  const btn = document.getElementById('ia-btn');
+  btn.disabled = true; btn.textContent = 'Analisando...';
+  document.getElementById('ia-resultado').style.display = 'none';
+  try {
+    const r = await fetch('/api/ia/analisar', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pergunta, periodo_inicio: inicio, periodo_fim: fim })
+    });
+    const data = await r.json();
+    if (data.error) throw new Error(data.error);
+    const ctx = data.contexto;
+    document.getElementById('ia-contexto').innerHTML =
+      '<strong>📋 Contexto da análise:</strong> Período ' + ctx.periodo.inicio + ' a ' + ctx.periodo.fim +
+      ' | ' + ctx.totalLancamentos + ' lançamentos | Receitas: R$ ' + ctx.totalReceitas.toLocaleString('pt-BR',{minimumFractionDigits:2}) +
+      ' | Despesas: R$ ' + ctx.totalDespesas.toLocaleString('pt-BR',{minimumFractionDigits:2}) +
+      ' | Saldo: R$ ' + ctx.saldoPeriodo.toLocaleString('pt-BR',{minimumFractionDigits:2});
+    document.getElementById('ia-resposta').textContent = data.resposta;
+    document.getElementById('ia-resultado').style.display = 'block';
+    document.getElementById('ia-correcao').style.display = 'none';
+    historicoAnalises.unshift({ pergunta, periodo: ctx.periodo, resposta: data.resposta, ctx });
+    renderHistorico();
+  } catch(e) {
+    alert('Erro: ' + e.message);
+  } finally {
+    btn.disabled = false; btn.textContent = 'Analisar';
+  }
+}
+
+function avaliar(correto) {
+  if (correto) {
+    alert('Ótimo! Análise marcada como correta.');
+    document.getElementById('ia-correcao').style.display = 'none';
+  } else {
+    document.getElementById('ia-correcao').style.display = 'block';
+    document.getElementById('ia-correcao-texto').focus();
+  }
+}
+
+function enviarCorrecao() {
+  const texto = document.getElementById('ia-correcao-texto').value.trim();
+  if (!texto) return alert('Explique o que está errado.');
+  alert('Correção registrada! Esta informação será usada para melhorar as próximas análises.');
+  document.getElementById('ia-correcao').style.display = 'none';
+}
+
+function renderHistorico() {
+  const el = document.getElementById('ia-historico');
+  if (historicoAnalises.length === 0) { el.innerHTML = ''; return; }
+  el.innerHTML = '<h3>Histórico desta sessão</h3>' +
+    historicoAnalises.slice(0,5).map((h,i) =>
+      '<details style="margin-bottom:.5rem;border:1px solid #e2e8f0;border-radius:.375rem"><summary style="padding:.6rem .75rem;cursor:pointer;background:#f8fafc"><strong>' +
+      h.pergunta.slice(0,80) + '</strong> <span style="color:#64748b;font-size:.8rem">' + h.periodo.inicio + ' a ' + h.periodo.fim + '</span></summary>' +
+      '<div style="padding:.75rem;white-space:pre-wrap;font-size:.9rem">' + h.resposta + '</div></details>'
+    ).join('');
+}
+
+document.getElementById('ia-pergunta').addEventListener('keydown', e => {
+  if (e.ctrlKey && e.key === 'Enter') enviarPergunta();
+});
+</script>`, user);
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+    res.end(html);
+    return;
+  }
+
+  // ─── RELATÓRIO AUTOMÁTICO MENSAL GERADO POR IA ───────────────────────────
+  if (req.method === 'POST' && url.pathname === '/api/ia/relatorio') {
+    if (!requireAuth(req, res, db)) return;
+    try {
+      const { mes } = JSON.parse(await readBody(req) || '{}');
+      // mes no formato YYYY-MM, ex: '2025-03'
+      const hoje = new Date().toISOString().slice(0, 10);
+      const mesRef = mes || hoje.slice(0, 7);
+      const mesAnterior = (() => { const d = new Date(mesRef + '-01'); d.setMonth(d.getMonth()-1); return d.toISOString().slice(0,7); })();
+      const pInicio = mesRef + '-01';
+      const pFim = mesRef + '-31'; // PostgreSQL aceita datas inexistentes, JS filtra
+      const pInicioAnt = mesAnterior + '-01';
+      const pFimAnt = mesAnterior + '-31';
+
+      const lancsAtivos = db.entries.filter(e => !e.isTransferenciaInterna);
+
+      // Dados do mês de referência
+      const lancsMes = lancsAtivos.filter(e => (e.dataISO||'') >= pInicio && (e.dataISO||'') <= pFim);
+      const lancsAnt = lancsAtivos.filter(e => (e.dataISO||'') >= pInicioAnt && (e.dataISO||'') <= pFimAnt);
+
+      const resumo = (lancs) => ({
+        receitas: lancs.filter(e=>(e.valor||0)>0).reduce((a,e)=>a+(e.valor||0),0),
+        despesas: lancs.filter(e=>(e.valor||0)<0).reduce((a,e)=>a+Math.abs(e.valor||0),0),
+        saldo: lancs.reduce((a,e)=>a+(e.valor||0),0),
+        count: lancs.length
+      });
+
+      const rMes = resumo(lancsMes);
+      const rAnt = resumo(lancsAnt);
+
+      // Por cliente
+      const byClienteMes = {};
+      const byClienteAnt = {};
+      lancsMes.forEach(e => { const c=clienteEfetivo(e); if(c!=='SEM CLIENTE') byClienteMes[c]=(byClienteMes[c]||0)+(e.valor||0); });
+      lancsAnt.forEach(e => { const c=clienteEfetivo(e); if(c!=='SEM CLIENTE') byClienteAnt[c]=(byClienteAnt[c]||0)+(e.valor||0); });
+
+      // Por projeto
+      const byProjetoMes = {};
+      lancsMes.forEach(e => { const p=projetoEfetivo(e); if(p!=='SEM PROJETO') byProjetoMes[p]=(byProjetoMes[p]||0)+(e.valor||0); });
+
+      // Estrutura
+      const byEstrMes = {};
+      lancsMes.forEach(e => {
+        if(clienteEfetivo(e)==='SEM CLIENTE') {
+          const cc=(e.centroCusto||'SEM CC').toUpperCase();
+          if(cc!=='TEF') byEstrMes[cc]=(byEstrMes[cc]||0)+(e.valor||0);
+        }
+      });
+
+      // Mútuo/Pronampe
+      const mutuoMes = lancsMes.filter(e=>{
+        const t=[e.descricao,e.centroCusto,e.parceiro].map(v=>(v||'').toUpperCase()).join(' ');
+        return t.includes('MÚTUO')||t.includes('MUTUO')||t.includes('PRONAMPE');
+      });
+
+      // Saldo histórico acumulado até o fim do mês
+      const saldoAcumulado = lancsAtivos
+        .filter(e=>(e.dataISO||'')<=pFim)
+        .reduce((a,e)=>a+(e.valor||0),0);
+
+      // Variações mês a mês
+      const varReceita = rAnt.receitas > 0 ? ((rMes.receitas - rAnt.receitas)/rAnt.receitas*100).toFixed(1) : 'N/A';
+      const varDespesa = rAnt.despesas > 0 ? ((rMes.despesas - rAnt.despesas)/rAnt.despesas*100).toFixed(1) : 'N/A';
+
+      const clientesStr = Object.entries(byClienteMes).sort((a,b)=>b[1]-a[1]).slice(0,8).map(([k,v])=>`${k}: R$${v.toFixed(2)}`).join(' | ');
+      const projetosStr = Object.entries(byProjetoMes).sort((a,b)=>b[1]-a[1]).slice(0,8).map(([k,v])=>`${k}: R$${v.toFixed(2)}`).join(' | ');
+      const estruturaStr = Object.entries(byEstrMes).sort((a,b)=>a[1]-b[1]).slice(0,8).map(([k,v])=>`${k}: R$${v.toFixed(2)}`).join(' | ');
+      const clientesAntStr = Object.entries(byClienteAnt).sort((a,b)=>b[1]-a[1]).slice(0,5).map(([k,v])=>`${k}: R$${v.toFixed(2)}`).join(' | ');
+
+      const systemPrompt = `Você é o assistente financeiro da CKM Consultoria. Gere um RELATÓRIO MENSAL EXECUTIVO completo e transparente.
+
+O relatório deve ser escrito em linguagem simples para um empresário leigo em contabilidade, mas com números precisos.
+
+ESTRUTURA OBRIGATÓRIA DO RELATÓRIO:
+
+# Relatório Financeiro — [Mês/Ano]
+
+## 1. Resumo Executivo
+[3-4 frases resumindo o mês: foi bom ou ruim? por quê?]
+
+## 2. Fluxo de Caixa do Mês
+[Tabela: Receitas | Despesas | Saldo | Comparação com mês anterior]
+
+## 3. Clientes e Projetos
+[Quais clientes geraram mais receita? Quais projetos estão no positivo/negativo?]
+
+## 4. Custos de Estrutura
+[Como estão os gastos fixos? Estão crescendo ou estabilizados?]
+
+## 5. Empréstimos e Financiamentos
+[Quanto foi pago de mútuo/Pronampe? Qual o impacto no caixa?]
+
+## 6. Alertas e Pontos de Atenção
+[O que precisa de atenção urgente? Riscos identificados?]
+
+## 7. Recomendações
+[3-5 ações concretas para o próximo mês]
+
+## 8. Dados Utilizados e Confiabilidade
+[Quais dados foram usados? Há lacunas que podem distorcer a análise?]
+
+IMPORTANTE: Seja transparente sobre incertezas. Se um número parece estranho, mencione. Não invente dados.`;
+
+      const userPrompt = `MÊS DE REFERÊNCIA: ${mesRef}
+
+=== MÊS ATUAL (${mesRef}) ===
+Lançamentos: ${rMes.count}
+Receitas: R$${rMes.receitas.toFixed(2)}
+Despesas: R$${rMes.despesas.toFixed(2)}
+Saldo do mês: R$${rMes.saldo.toFixed(2)}
+Saldo histórico acumulado: R$${saldoAcumulado.toFixed(2)}
+
+=== MÊS ANTERIOR (${mesAnterior}) ===
+Receitas: R$${rAnt.receitas.toFixed(2)}
+Despesas: R$${rAnt.despesas.toFixed(2)}
+Saldo: R$${rAnt.saldo.toFixed(2)}
+
+=== VARIAÇÕES ===
+Receitas: ${varReceita}% vs mês anterior
+Despesas: ${varDespesa}% vs mês anterior
+
+=== CLIENTES (mês atual) ===
+${clientesStr || 'Sem dados'}
+
+=== CLIENTES (mês anterior) ===
+${clientesAntStr || 'Sem dados'}
+
+=== PROJETOS (mês atual) ===
+${projetosStr || 'Sem dados'}
+
+=== CUSTOS DE ESTRUTURA (mês atual) ===
+${estruturaStr || 'Sem dados'}
+
+=== MÚTUO/PRONAMPE (mês atual) ===
+${mutuoMes.length} lançamentos | saldo: R$${mutuoMes.reduce((a,e)=>a+(e.valor||0),0).toFixed(2)}
+
+Gere o relatório mensal completo seguindo a estrutura definida.`;
+
+      const { OpenAI } = require('openai');
+      const openai = new OpenAI();
+      const completion = await openai.chat.completions.create({
+        model: 'gpt-4.1-mini',
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: userPrompt }
+        ],
+        temperature: 0.2,
+        max_tokens: 2000
+      });
+      const relatorio = completion.choices[0]?.message?.content?.trim() || 'Erro ao gerar relatório.';
+
+      return json(res, 200, {
+        relatorio,
+        mes: mesRef,
+        resumo: { receitas: rMes.receitas, despesas: rMes.despesas, saldo: rMes.saldo, saldoAcumulado }
+      });
+    } catch (err) {
+      console.error('[IA relatorio]', err.message);
+      return json(res, 500, { error: 'Erro ao gerar relatório: ' + err.message });
+    }
+  }
+
+  // ─── PÁGINA DE RELATÓRIOS ──────────────────────────────────────────────────────
+  if (req.method === 'GET' && url.pathname === '/relatorio') {
+    const user = requireAuth(req, res, db);
+    if (!user) return;
+    const hoje = new Date().toISOString().slice(0, 10);
+    const mesAtual = hoje.slice(0, 7);
+    // Gerar lista de meses disponíveis (desde CORTE_DATA até hoje)
+    const mesesDisponiveis = [];
+    const dCorte = new Date(CORTE_DATA);
+    const dHoje = new Date(hoje);
+    let d = new Date(dCorte.getFullYear(), dCorte.getMonth(), 1);
+    while (d <= dHoje) {
+      mesesDisponiveis.unshift(d.toISOString().slice(0,7));
+      d.setMonth(d.getMonth()+1);
+    }
+    const html = page('Relatórios', `
+<section>
+  <h2>📄 Relatórios Mensais com IA</h2>
+  <p style='color:#64748b;margin-bottom:1.5rem'>Gere um relatório executivo completo de qualquer mês. A IA analisa todos os dados e apresenta um resumo com alertas e recomendações.</p>
+
+  <div style='background:#f8fafc;border:1px solid #e2e8f0;border-radius:.5rem;padding:1.25rem;margin-bottom:1.5rem;display:flex;gap:1rem;align-items:flex-end;flex-wrap:wrap'>
+    <div>
+      <label style='display:block;font-size:.85rem;color:#64748b;margin-bottom:.25rem'>Mês de referência</label>
+      <select id='rel-mes' style='padding:.4rem .6rem;border:1px solid #cbd5e1;border-radius:.375rem;font-size:.95rem'>
+        ${mesesDisponiveis.map(m => `<option value='${m}'${m===mesAtual?' selected':''}>${m}</option>`).join('')}
+      </select>
+    </div>
+    <button onclick='gerarRelatorio()' id='rel-btn'
+      style='padding:.5rem 1.25rem;background:#2563eb;color:#fff;border:none;border-radius:.375rem;cursor:pointer;font-weight:600'>Gerar Relatório</button>
+    <button onclick='gerarRelatorio(true)' id='rel-btn-comp'
+      style='padding:.5rem 1.25rem;background:#7c3aed;color:#fff;border:none;border-radius:.375rem;cursor:pointer;font-weight:600'>🔄 Comparar com mês anterior</button>
+  </div>
+
+  <div id='rel-loading' style='display:none;text-align:center;padding:2rem;color:#64748b'>
+    <div style='font-size:1.5rem;margin-bottom:.5rem'>⏳</div>
+    Gerando relatório... isso pode levar alguns segundos.
+  </div>
+
+  <div id='rel-resultado' style='display:none'>
+    <div id='rel-resumo' style='display:flex;gap:1rem;flex-wrap:wrap;margin-bottom:1.25rem'></div>
+    <div id='rel-conteudo' style='background:#fff;border:1px solid #e2e8f0;border-radius:.5rem;padding:1.5rem;line-height:1.8;font-size:.95rem;white-space:pre-wrap'></div>
+    <div style='margin-top:1rem;display:flex;gap:.75rem;flex-wrap:wrap'>
+      <button onclick='copiarRelatorio()' style='padding:.4rem .9rem;background:#f1f5f9;border:1px solid #e2e8f0;border-radius:.375rem;cursor:pointer;font-size:.85rem'>&#128203; Copiar texto</button>
+      <a id='rel-link-ia' href='/ia' style='padding:.4rem .9rem;background:#eff6ff;border:1px solid #bfdbfe;border-radius:.375rem;text-decoration:none;font-size:.85rem;color:#1d4ed8'>🤖 Fazer perguntas sobre este mês</a>
+    </div>
+  </div>
+
+  <div id='rel-historico' style='margin-top:2rem'></div>
+</section>
+
+<script>
+let relatoriosGerados = [];
+
+async function gerarRelatorio(comparar) {
+  const mes = document.getElementById('rel-mes').value;
+  const btn = document.getElementById('rel-btn');
+  const btnComp = document.getElementById('rel-btn-comp');
+  btn.disabled = true; btnComp.disabled = true;
+  document.getElementById('rel-loading').style.display = 'block';
+  document.getElementById('rel-resultado').style.display = 'none';
+  try {
+    const r = await fetch('/api/ia/relatorio', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mes })
+    });
+    const data = await r.json();
+    if (data.error) throw new Error(data.error);
+    const rs = data.resumo;
+    const fmtBRL = (v) => (v<0?'-':'') + 'R\u00a0' + Math.abs(v).toLocaleString('pt-BR',{minimumFractionDigits:2});
+    document.getElementById('rel-resumo').innerHTML = [
+      { label: 'Receitas', val: rs.receitas, cor: '#16a34a' },
+      { label: 'Despesas', val: rs.despesas, cor: '#dc2626' },
+      { label: 'Saldo do M\u00eas', val: rs.saldo, cor: rs.saldo>=0?'#16a34a':'#dc2626' },
+      { label: 'Saldo Acumulado', val: rs.saldoAcumulado, cor: rs.saldoAcumulado>=0?'#16a34a':'#dc2626' }
+    ].map(function(c) { return '<div style="flex:1;min-width:140px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:.5rem;padding:.75rem 1rem"><div style="font-size:.8rem;color:#64748b">' + c.label + '</div><div style="font-size:1.15rem;font-weight:700;color:' + c.cor + '">' + fmtBRL(c.val) + '</div></div>'; }).join('');
+    document.getElementById('rel-conteudo').textContent = data.relatorio;
+    document.getElementById('rel-link-ia').href = '/ia?de=' + mes + '-01&ate=' + mes + '-31';
+    document.getElementById('rel-resultado').style.display = 'block';
+    relatoriosGerados.unshift({ mes, relatorio: data.relatorio, resumo: rs });
+    renderHistoricoRel();
+  } catch(e) {
+    alert('Erro: ' + e.message);
+  } finally {
+    btn.disabled = false; btnComp.disabled = false;
+    document.getElementById('rel-loading').style.display = 'none';
+  }
+}
+
+function copiarRelatorio() {
+  const texto = document.getElementById('rel-conteudo').textContent;
+  navigator.clipboard.writeText(texto).then(() => alert('Relat\u00f3rio copiado!')).catch(() => alert('N\u00e3o foi poss\u00edvel copiar.'));
+}
+
+function renderHistoricoRel() {
+  const el = document.getElementById('rel-historico');
+  if (relatoriosGerados.length <= 1) { el.innerHTML = ''; return; }
+  el.innerHTML = '<h3>Relat\u00f3rios gerados nesta sess\u00e3o</h3>' +
+    relatoriosGerados.slice(1).map(h =>
+      '<details style="margin-bottom:.5rem;border:1px solid #e2e8f0;border-radius:.375rem"><summary style="padding:.6rem .75rem;cursor:pointer;background:#f8fafc"><strong>' + h.mes + '</strong></summary>' +
+      '<div style="padding:.75rem;white-space:pre-wrap;font-size:.9rem">' + h.relatorio + '</div></details>'
+    ).join('');
+}
+</script>`, user);
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+    res.end(html);
     return;
   }
 
