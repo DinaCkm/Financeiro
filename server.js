@@ -11,6 +11,7 @@ const PORT = process.env.PORT || 3000;
 const DB_PATH = path.join(__dirname, 'data', 'db.json');
 const PARSER_PATH = path.join(__dirname, 'scripts', 'parse_spreadsheet.py');
 const sessions = new Map();
+const SESSION_TTL_SECONDS = 60 * 60 * 12; // 12h
 
 const TYPE_OPTIONS = ['Cliente', 'Projeto', 'Prestador de Serviço', 'Fornecedor', 'Estrutura Interna', 'Financeiro / Não Operacional', 'Conta / Cartão', 'Pendente de Classificação'];
 const BLOCKING_ISSUES = ['DESPESA_SEM_PROJETO', 'ESTRUTURA_COMO_CLIENTE', 'MUTUO_COMO_CLIENTE', 'MUTUO_CLASSIFICACAO', 'VALOR_INVALIDO', 'DATA_INVALIDA'];
@@ -35,6 +36,37 @@ const ALIAS_RULES = {
 };
 
 const FORBIDDEN_AS_CLIENT = ['ESCRITÓRIO', 'SALÁRIOS', 'JURÍDICO', 'CONTÁBIL', 'TEF', 'MÚTUO', 'PRONAMPE', 'SALDO ATUAL'];
+
+// Centros de custo padrão CKM — sempre disponíveis no datalist de edição
+const CC_PADRAO = [
+  'ADMINISTRATIVO', 'COMERCIAL', 'ESCRITÓRIO', 'FINANCEIRO', 'FISCAL',
+  'JURÍDICO', 'MÚTUO', 'OPERACIONAL', 'PRÓ-LABORE', 'RH', 'TEF', 'TI'
+];
+
+const PASSWORD_PREFIX = 'scrypt$';
+
+function isHashedPassword(stored) {
+  return typeof stored === 'string' && stored.startsWith(PASSWORD_PREFIX);
+}
+
+function hashPassword(password) {
+  const salt = crypto.randomBytes(16).toString('hex');
+  const key = crypto.scryptSync(String(password), salt, 64).toString('hex');
+  return `${PASSWORD_PREFIX}${salt}$${key}`;
+}
+
+function verifyPassword(inputPassword, storedPassword) {
+  if (!storedPassword) return false;
+  if (!isHashedPassword(storedPassword)) return String(storedPassword) === String(inputPassword);
+  const parts = String(storedPassword).split('$');
+  if (parts.length !== 3) return false;
+  const [, salt, expectedHex] = parts;
+  const actualHex = crypto.scryptSync(String(inputPassword), salt, 64).toString('hex');
+  const expected = Buffer.from(expectedHex, 'hex');
+  const actual = Buffer.from(actualHex, 'hex');
+  if (expected.length !== actual.length) return false;
+  return crypto.timingSafeEqual(expected, actual);
+}
 
 const COLUMN_ALIASES = {
   data: ['data', 'dt', 'date', 'data_movimento', 'data movimento', 'vencimento',
@@ -122,10 +154,46 @@ function parseCookies(req) {
   }));
 }
 
+function isSecureRequest(req) {
+  const forwardedProto = String(req.headers['x-forwarded-proto'] || '').toLowerCase();
+  return forwardedProto.includes('https') || Boolean(req.socket && req.socket.encrypted);
+}
+
+function buildSessionCookie(req, sid, maxAgeSeconds = SESSION_TTL_SECONDS) {
+  const parts = [
+    `sid=${encodeURIComponent(sid)}`,
+    'Path=/',
+    'HttpOnly',
+    'SameSite=Lax',
+    `Max-Age=${maxAgeSeconds}`
+  ];
+  if (process.env.NODE_ENV === 'production' || isSecureRequest(req)) {
+    parts.push('Secure');
+  }
+  return parts.join('; ');
+}
+
 function currentUser(req, db) {
   const sid = parseCookies(req).sid;
   if (!sid) return null;
-  const userId = sessions.get(sid);
+
+  const sessionData = sessions.get(sid);
+  if (!sessionData) return null;
+
+  const now = Date.now();
+  if (typeof sessionData === 'object' && sessionData.expiresAt && sessionData.expiresAt <= now) {
+    sessions.delete(sid);
+    return null;
+  }
+
+  const userId = typeof sessionData === 'string' ? sessionData : sessionData.userId;
+  if (!userId) {
+    sessions.delete(sid);
+    return null;
+  }
+
+  // Sliding session: renova validade quando o usuário segue ativo.
+  sessions.set(sid, { userId, expiresAt: now + SESSION_TTL_SECONDS * 1000 });
   return db.users.find((u) => u.id === userId) || null;
 }
 
@@ -400,7 +468,7 @@ function parseRowsWithPython(fileName, buffer) {
 
   const payload = JSON.parse(rawOutput);
   if (payload.error) throw new Error(payload.error);
-  return payload.rows || [];
+  return { rows: payload.rows || [], meta: payload.meta || {} };
 }
 
 function parseEntries(rows, uploadId, db) {
@@ -427,6 +495,9 @@ function parseEntries(rows, uploadId, db) {
       if (dc === 'D' && valor > 0) valor = -valor;
       if (dc === 'C' && valor < 0) valor = -valor;
 
+      // dc=T: Transferência Interna entre contas próprias — tratar antes de qualquer cálculo
+      const isTransferenciaInterna = dc === 'T';
+
       // Status da planilha: PG=pago, RE=realizado, ZZ=zerado/cancelado, TF=transferência
       const statusPlanilha = String(r.status || '').toUpperCase().trim();
       const statusImport = statusPlanilha || 'importado';
@@ -451,15 +522,18 @@ function parseEntries(rows, uploadId, db) {
         tipoOriginal,
         statusPlanilha,
         notaFiscal: r.notafiscal || '',
-        tipo: valor >= 0 ? 'entrada' : 'saida',
+        tipo: isTransferenciaInterna ? 'transferencia_interna' : (valor >= 0 ? 'entrada' : 'saida'),
         valor,
-        natureza: 'Pendente de Classificação',
+        natureza: isTransferenciaInterna ? 'Transferência Interna' : 'Pendente de Classificação',
+        isTransferenciaInterna,
         categoria: '',
         status: statusImport
       };
 
-      applySavedRulesToEntry(entry, db);
-      entry.natureza = inferNature(entry);
+      if (!isTransferenciaInterna) {
+        applySavedRulesToEntry(entry, db);
+        entry.natureza = inferNature(entry);
+      }
       return entry;
     });
 }
@@ -468,8 +542,8 @@ function buildIssues(entries, db) {
   const issues = [];
   const newNames = new Set();
   const knownNames = new Set((db.reviewRegistry || []).map((item) => normalizeName(item.nomeOficial)));
-  // Apenas lançamentos ativos (a partir do corte) geram issues
-  const activeEntries = entries.filter(isAtivo);
+  // Apenas lançamentos ativos (a partir do corte) e que NÃO são transferências internas geram issues
+  const activeEntries = entries.filter((e) => isAtivo(e) && !e.isTransferenciaInterna);
   for (const e of activeEntries) {
     const desc = normalizeName(e.descricao);
     const client = normalizeName(e.cliente);
@@ -571,8 +645,8 @@ function buildIssues(entries, db) {
 
 function buildReviewRegistry(entries) {
   const map = new Map();
-  // Apenas lançamentos ativos (a partir do corte) geram cadastros para revisão
-  const activeEntries = entries.filter(isAtivo);
+  // Apenas lançamentos ativos (a partir do corte) e que NÃO são transferências internas geram cadastros para revisão
+  const activeEntries = entries.filter((e) => isAtivo(e) && !e.isTransferenciaInterna);
   for (const e of activeEntries) {
     [e.cliente, e.projeto, e.parceiro].forEach((name) => {
       if (!name) return;
@@ -839,9 +913,19 @@ function reviewCards(list, allEntries) {
                   var contaVal = (e.conta||'').replace(/'/g,"&#39;");
                   var clienteVal = (e.cliente||e.parceiro||'').replace(/'/g,"&#39;");
                   var projVal = (e.projeto||'').replace(/'/g,"&#39;");
-                  var isPendNat = !e.natureza || e.natureza==='Pendente';
+                  var isPendNat = !e.natureza || e.natureza==='Pendente' || e.natureza==='Pendente de Classificação';
+                  // Verificar se este lançamento é o motivo da revisão pendente
+                  var nomeCard = r.nomeOficial ? r.nomeOficial.toUpperCase() : '';
+                  var clienteNorm = (e.cliente||'').toUpperCase();
+                  var parceiroNorm = (e.parceiro||'').toUpperCase();
+                  var projetoNorm = (e.projeto||'').toUpperCase();
+                  var clienteEMotivo = isPendente && (clienteNorm === nomeCard || parceiroNorm === nomeCard);
+                  // Projeto só é motivo se o nome do card for exatamente o projeto deste lançamento
+                  var projetoEMotivo = isPendente && projetoNorm && projetoNorm === nomeCard;
                   var fv = function(v){ return (!v||v==='-'||v==='0.00') ? 'border:2px solid #ef4444;background:#fff5f5' : ''; };
+                  var fvMotivo = function(v, isMotivo){ return isMotivo ? 'border:2px solid #ef4444;background:#fff5f5' : fv(v); };
                   var lv = function(v){ return (!v||v==='-'||v==='0.00') ? 'color:#dc2626;font-weight:700' : 'color:#64748b'; };
+                  var lvMotivo = function(v, isMotivo){ return isMotivo ? 'color:#dc2626;font-weight:700' : lv(v); };
                   var warn = function(v){ return (!v||v==='-'||v==='0.00') ? '⚠ ' : ''; };
                   var natOpts2 = ['Receita Operacional','Despesa Direta','Despesa Indireta','Despesa Administrativa',
                     'Despesa Financeira','Movimentação Financeira Não Operacional','Transferência','Pendente']
@@ -878,12 +962,12 @@ function reviewCards(list, allEntries) {
                     + "<input id='ef-conta-"+eId+"' list='dl-contas' value='"+contaVal+"' placeholder='Selecione ou digite...' style='font-size:.8rem;padding:.3rem .5rem'/>"
                     + "</div>"
                     + "<div>"
-                    + "<label style='font-size:.72rem;font-weight:700;"+lv(clienteVal)+";text-transform:uppercase'>"+warn(clienteVal)+"Cliente / Parceiro</label>"
-                    + "<input id='ef-cliente-"+eId+"' list='dl-clientes' value='"+clienteVal+"' placeholder='Selecione ou digite...' style='font-size:.8rem;padding:.3rem .5rem;"+fv(clienteVal)+"'/>"
+                    + "<label style='font-size:.72rem;font-weight:700;"+lvMotivo(clienteVal,clienteEMotivo)+";text-transform:uppercase'>"+(clienteEMotivo?'\u26a0 \u2190 PENDENTE DE CLASSIFICA\u00c7\u00c3O ':warn(clienteVal))+"Cliente / Parceiro</label>"
+                    + "<input id='ef-cliente-"+eId+"' list='dl-clientes' value='"+clienteVal+"' placeholder='Selecione ou digite...' style='font-size:.8rem;padding:.3rem .5rem;"+fvMotivo(clienteVal,clienteEMotivo)+"'/>"
                     + "</div>"
                     + "<div>"
-                    + "<label style='font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase'>Projeto</label>"
-                    + "<input id='ef-proj-"+eId+"' list='dl-projetos' value='"+projVal+"' placeholder='Selecione ou digite...' style='font-size:.8rem;padding:.3rem .5rem'/>"
+                    + "<label style='font-size:.72rem;font-weight:700;"+lvMotivo(projVal,projetoEMotivo)+";text-transform:uppercase'>"+(projetoEMotivo?'\u26a0 \u2190 PENDENTE DE CLASSIFICA\u00c7\u00c3O ':'')+'Projeto <span style=\'font-weight:400;font-size:.7rem\'>(opcional)</span></label>'
+                    + "<input id='ef-proj-"+eId+"' list='dl-projetos' value='"+projVal+"' placeholder='Selecione ou digite...' style='font-size:.8rem;padding:.3rem .5rem;"+(projetoEMotivo?'border:2px solid #ef4444;background:#fff5f5':'')+"'/>"
                     + "</div>"
                     + "<div>"
                     + "<label style='font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase'>Status</label>"
@@ -981,6 +1065,25 @@ function reviewCards(list, allEntries) {
         </div>
       </div>`;
 
+    // Banner explicativo: por que este cadastro está pendente?
+    const motivoBanner = isPendente
+      ? `<div style='background:#fef2f2;border:1px solid #fca5a5;border-radius:8px;padding:.6rem .9rem;margin-bottom:.75rem;display:flex;align-items:flex-start;gap:.5rem'>
+          <span style='font-size:1rem;flex-shrink:0'>&#9888;&#65039;</span>
+          <div>
+            <strong style='font-size:.8rem;color:#991b1b'>Por que este cadastro está pendente?</strong>
+            <p style='font-size:.78rem;color:#7f1d1d;margin:.2rem 0 0'>O nome <strong>${r.nomeOficial}</strong> aparece como <strong>parceiro, cliente ou projeto</strong> em ${linked.length} lançamento(s), mas ainda não foi classificado. Defina o <strong>Tipo</strong> abaixo e clique em <strong>Confirmar revisão</strong>.</p>
+          </div>
+        </div>`
+      : (r.statusRevisao !== 'revisado'
+          ? `<div style='background:#fff7ed;border:1px solid #fdba74;border-radius:8px;padding:.6rem .9rem;margin-bottom:.75rem;display:flex;align-items:flex-start;gap:.5rem'>
+              <span style='font-size:1rem;flex-shrink:0'>&#128161;</span>
+              <div>
+                <strong style='font-size:.8rem;color:#c2410c'>Tipo definido — aguardando confirmação</strong>
+                <p style='font-size:.78rem;color:#7c2d12;margin:.2rem 0 0'>O tipo <strong>${tipoAtual}</strong> foi sugerido automaticamente. Verifique os lançamentos e clique em <strong>Confirmar revisão</strong> para marcar como revisado.</p>
+              </div>
+            </div>`
+          : '');
+
     return `<div class='review-card' data-id='${r.id}' data-status='${r.statusRevisao}'>
   <div class='review-card-header' onclick="toggleCard('${r.id}')">
     <div class='review-card-title'>
@@ -996,6 +1099,7 @@ function reviewCards(list, allEntries) {
     </div>
   </div>
   <div class='review-card-body' id='body-${r.id}' style='display:none'>
+    ${motivoBanner}
     <p style='font-size:.75rem;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--gray-400);margin-bottom:.4rem'>&#128196; Lançamentos vinculados (${linked.length})</p>
     ${lancTable}
     ${classifPanel}
@@ -1034,15 +1138,16 @@ function calculateDashboard(db) {
   // Lançamentos ativos (a partir do corte) — usados em todos os cálculos operacionais
   const sortedEntries = allSorted.filter(isAtivo);
 
-  // Saldo acumulado histórico (todos os lançamentos, inclusive anteriores ao corte)
-  const saldoHoje = allSorted.filter((e) => (e.dataISO || '') <= today).reduce((acc, e) => acc + (e.valor || 0), 0);
+  // Saldo acumulado histórico (todos os lançamentos, exceto transferências internas dc=T)
+  const saldoHoje = allSorted.filter((e) => (e.dataISO || '') <= today && !e.isTransferenciaInterna).reduce((acc, e) => acc + (e.valor || 0), 0);
 
-  // Projeções e cálculos operacionais: apenas lançamentos ativos
-  const proj7 = sortedEntries.filter((e) => (e.dataISO || '') <= d7).reduce((acc, e) => acc + (e.valor || 0), 0);
-  const proj30 = sortedEntries.filter((e) => (e.dataISO || '') <= d30).reduce((acc, e) => acc + (e.valor || 0), 0);
-  const contasPagar = sortedEntries.filter((e) => (e.dataISO || '') > today && (e.valor || 0) < 0).reduce((acc, e) => acc + Math.abs(e.valor), 0);
-  const contasReceber = sortedEntries.filter((e) => (e.dataISO || '') > today && (e.valor || 0) > 0).reduce((acc, e) => acc + (e.valor || 0), 0);
-  const upcoming7 = sortedEntries.filter((e) => (e.dataISO || '') > today && (e.dataISO || '') <= d7);
+  // Projeções e cálculos operacionais: apenas lançamentos ativos, excluindo transferências internas
+  const opEntries = sortedEntries.filter((e) => !e.isTransferenciaInterna);
+  const proj7 = opEntries.filter((e) => (e.dataISO || '') <= d7).reduce((acc, e) => acc + (e.valor || 0), 0);
+  const proj30 = opEntries.filter((e) => (e.dataISO || '') <= d30).reduce((acc, e) => acc + (e.valor || 0), 0);
+  const contasPagar = opEntries.filter((e) => (e.dataISO || '') > today && (e.valor || 0) < 0).reduce((acc, e) => acc + Math.abs(e.valor), 0);
+  const contasReceber = opEntries.filter((e) => (e.dataISO || '') > today && (e.valor || 0) > 0).reduce((acc, e) => acc + (e.valor || 0), 0);
+  const upcoming7 = opEntries.filter((e) => (e.dataISO || '') > today && (e.dataISO || '') <= d7);
   const riscoCaixa = proj7 < 0 ? 'alto' : proj30 < 0 ? 'moderado' : 'controlado';
 
   // Saldo de mútuo: calculado sobre TODOS os lançamentos (históricos + ativos)
@@ -1065,7 +1170,7 @@ function calculateDashboard(db) {
     byProject[p] = (byProject[p] || 0) + (e.valor || 0);
   });
 
-  const rolling = allSorted.reduce((acc, e) => acc + (e.valor || 0), 0);
+  const rolling = allSorted.filter((e) => !e.isTransferenciaInterna).reduce((acc, e) => acc + (e.valor || 0), 0);
   return { saldoHoje, proj7, proj30, contasPagar, contasReceber, byClient, byProject, rolling, upcoming7, riscoCaixa, saldoMutuo, mutuoCount, corteData: CORTE_DATA };
 }
 
@@ -1106,22 +1211,28 @@ const server = http.createServer(async (req, res) => {
 
   if (req.method === 'POST' && url.pathname === '/login') {
     const form = new URLSearchParams(await readBody(req));
-    const user = db.users.find((u) => u.email === form.get('email') && u.password === form.get('password'));
-    if (!user) {
+    const user = db.users.find((u) => u.email === form.get('email'));
+    const rawPassword = form.get('password') || '';
+    if (!user || !verifyPassword(rawPassword, user.password)) {
       res.writeHead(302, { Location: '/login' });
       res.end();
       return;
     }
+    // Migração transparente: usuário legado com senha em texto puro é convertido para hash no login bem-sucedido
+    if (!isHashedPassword(user.password)) {
+      user.password = hashPassword(rawPassword);
+      saveDb(db);
+    }
     const sid = crypto.randomUUID();
-    sessions.set(sid, user.id);
-    res.writeHead(302, { 'Set-Cookie': `sid=${sid}; Path=/; HttpOnly`, Location: '/' });
+    sessions.set(sid, { userId: user.id, expiresAt: Date.now() + SESSION_TTL_SECONDS * 1000 });
+    res.writeHead(302, { 'Set-Cookie': buildSessionCookie(req, sid), Location: '/' });
     res.end();
     return;
   }
 
   if (req.method === 'GET' && url.pathname === '/logout') {
     sessions.delete(parseCookies(req).sid);
-    res.writeHead(302, { 'Set-Cookie': 'sid=; Path=/; Max-Age=0', Location: '/login' });
+    res.writeHead(302, { 'Set-Cookie': buildSessionCookie(req, '', 0), Location: '/login' });
     res.end();
     return;
   }
@@ -1274,7 +1385,8 @@ async function enviarArquivo(){
       const body = JSON.parse(await readBody(req) || '{}');
       const fileName = body.fileName || 'upload.csv';
       const buffer = Buffer.from(body.fileBase64 || '', 'base64');
-      const rows = parseRowsWithPython(fileName, buffer);
+      const parsed = parseRowsWithPython(fileName, buffer);
+      const rows = parsed.rows;
       const upload = { id: crypto.randomUUID(), fileName, uploadedAt: new Date().toISOString(), rowCount: rows.length };
       const allNewEntries = parseEntries(rows, upload.id, db);
 
@@ -1323,6 +1435,9 @@ async function enviarArquivo(){
         uploadId: upload.id,
         fileName,
         importedRows: entries.length,
+        invalidValueRows: Number(parsed.meta?.skippedInvalidValue || 0),
+        invalidDateRows: Number(parsed.meta?.skippedInvalidDate || 0),
+        rejectedRows: Array.isArray(parsed.meta?.rejectedRows) ? parsed.meta.rejectedRows : [],
         duplicatesIgnored,
         foundNames: registry.length,
         pendingErrors: issues.filter((i) => i.level === 'erro').length,
@@ -1433,10 +1548,19 @@ ${groups.map((g) => `<h3>${g.title}</h3><ul>${openIssues.filter((i) => i.code ==
   ${(()=>{
     // Extrair valores únicos dos entries para os datalists
     const refs = db.referencias || {};
-    const ccSet = new Set([...(refs.centrosCusto||[]), ...db.entries.map(e=>e.centroCusto||'').filter(Boolean)]);
-    const clienteSet = new Set([...(refs.clientes||[]), ...db.entries.map(e=>e.cliente||e.parceiro||'').filter(v=>v&&v!=='-')]);
-    const projetoSet = new Set([...(refs.projetos||[]), ...db.entries.map(e=>e.projeto||'').filter(v=>v&&v!=='-')]);
-    const contaSet = new Set([...(refs.contas||[]), ...db.entries.map(e=>e.conta||'').filter(v=>v&&v!=='-')]);
+    // Filtro de lixo: remove valores puramente numéricos, vazios, só pontos/traços
+    const isValido = v => {
+      if (!v || v === '-' || v === '--' || v === '.') return false;
+      const s = String(v).trim();
+      if (!s) return false;
+      if (/^\d+(\.\d+)*$/.test(s)) return false; // puramente numérico ou decimal
+      if (/^\d+$/.test(s)) return false;
+      return true;
+    };
+    const ccSet = new Set([...CC_PADRAO, ...(refs.centrosCusto||[]), ...db.entries.map(e=>e.centroCusto||'').filter(isValido)]);
+    const clienteSet = new Set([...(refs.clientes||[]), ...db.entries.map(e=>e.cliente||e.parceiro||'').filter(isValido)]);
+    const projetoSet = new Set([...(refs.projetos||[]), ...db.entries.map(e=>e.projeto||'').filter(isValido)]);
+    const contaSet = new Set([...(refs.contas||[]), ...db.entries.map(e=>e.conta||'').filter(isValido)]);
     const toOpts = arr => [...arr].sort().map(v=>`<option value='${v.replace(/'/g,"&#39;")}'>`).join('');
     return `<datalist id='dl-cc'>${toOpts(ccSet)}</datalist>
 <datalist id='dl-clientes'>${toOpts(clienteSet)}</datalist>
@@ -2264,15 +2388,12 @@ Regras:
     if (!checkAuth(req, res)) return;
     const db = loadDb();
     const refs = db.referencias || { clientes: [], projetos: [], centrosCusto: [], contas: [] };
-    // Enriquecer com valores já usados nos entries
-    const usedCC = [...new Set(db.entries.map(e=>e.centroCusto||'').filter(v=>v&&v!=='-'))].sort();
-    const usedClientes = [...new Set(db.entries.map(e=>e.cliente||e.parceiro||'').filter(v=>v&&v!=='-'))].sort();
-    const usedProjetos = [...new Set(db.entries.map(e=>e.projeto||'').filter(v=>v&&v!=='-'))].sort();
-    const usedContas = [...new Set(db.entries.map(e=>e.conta||'').filter(v=>v&&v!=='-'))].sort();
-    const allCC = [...new Set([...refs.centrosCusto, ...usedCC])].sort();
-    const allClientes = [...new Set([...refs.clientes, ...usedClientes])].sort();
-    const allProjetos = [...new Set([...refs.projetos, ...usedProjetos])].sort();
-    const allContas = [...new Set([...refs.contas, ...usedContas])].sort();
+    // Mostrar apenas os valores cadastrados manualmente + CC_PADRAO
+    // Não carregar todos os entries para evitar crash de memória
+    const allCC = [...new Set([...CC_PADRAO, ...(refs.centrosCusto||[])])].sort();
+    const allClientes = [...(refs.clientes||[])].sort();
+    const allProjetos = [...(refs.projetos||[])].sort();
+    const allContas = [...(refs.contas||[])].sort();
     const section = (titulo, lista, tipo, cor) => `
       <div style='background:#fff;border:1px solid var(--gray-200);border-radius:10px;padding:1.25rem'>
         <div style='display:flex;align-items:center;justify-content:space-between;margin-bottom:1rem'>
@@ -2372,10 +2493,33 @@ async function excluirRef(tipo,nome){
     return json(res, 200, log);
   }
 
-  // GET /historico — página global de auditoria
+  // GET /historico — página global de auditoria (com paginação para evitar crash de memória)
   if (req.method === 'GET' && url.pathname === '/historico') {
     if (!checkAuth(req, res)) return;
-    const log = (db.auditLog || []).slice().sort((a, b) => b.ts.localeCompare(a.ts));
+    const PAGE_SIZE = 100;
+    const page_num = Math.max(1, parseInt(url.searchParams.get('p') || '1', 10));
+    const qFilter = (url.searchParams.get('q') || '').toLowerCase().trim();
+
+    // Construir mapa de entries para lookup rápido
+    const entryMap = new Map(db.entries.map(e => [e.id, e]));
+
+    // Ordenar e filtrar sem gerar HTML de todas as linhas de uma vez
+    let log = (db.auditLog || []).slice().sort((a, b) => b.ts.localeCompare(a.ts));
+
+    // Filtro server-side por texto (registro, campo, usuário)
+    if (qFilter) {
+      log = log.filter(r => {
+        const entry = r.entryId ? entryMap.get(r.entryId) : null;
+        const descricao = entry ? (entry.descricao || '') : (r.nomeOficial || r.registroId || '');
+        return (descricao + r.campo + (r.de || '') + (r.para || '') + (r.usuario || '')).toLowerCase().includes(qFilter);
+      });
+    }
+
+    const totalLog = log.length;
+    const totalPages = Math.max(1, Math.ceil(totalLog / PAGE_SIZE));
+    const currentPage = Math.min(page_num, totalPages);
+    const pageLog = log.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE);
+
     const LABELS = {
       cliente: 'Cliente', projeto: 'Projeto', parceiro: 'Parceiro', centroCusto: 'Centro de Custo',
       natureza: 'Natureza', categoria: 'Categoria', detalhe: 'Detalhe', conta: 'Conta',
@@ -2388,8 +2532,8 @@ async function excluirRef(tipo,nome){
       const d = new Date(ts);
       return d.toLocaleDateString('pt-BR') + ' ' + d.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
     };
-    const rows = log.map(r => {
-      const entry = r.entryId ? db.entries.find(e => e.id === r.entryId) : null;
+    const rows = pageLog.map(r => {
+      const entry = r.entryId ? entryMap.get(r.entryId) : null;
       const descricao = entry ? (entry.descricao || entry.id.slice(0, 8)) : (r.nomeOficial || r.registroId || '-');
       const tipoLog = r.tipo === 'revisao' ? '<span style="font-size:.72rem;background:#ede9fe;color:#7c3aed;padding:.15rem .45rem;border-radius:4px">Revisão</span>' : '<span style="font-size:.72rem;background:#dbeafe;color:#1d4ed8;padding:.15rem .45rem;border-radius:4px">Lançamento</span>';
       return `<tr>
@@ -2402,14 +2546,32 @@ async function excluirRef(tipo,nome){
         <td style='font-size:.78rem;color:var(--gray-500)'>${r.usuario || '-'}</td>
       </tr>`;
     }).join('');
+
+    // Paginação
+    const buildPageUrl = (p) => '/historico?p=' + p + (qFilter ? '&q=' + encodeURIComponent(qFilter) : '');
+    const pagination = totalPages <= 1 ? '' : `
+    <div style='display:flex;gap:.5rem;align-items:center;flex-wrap:wrap;margin-top:1rem'>
+      ${currentPage > 1 ? `<a href='${buildPageUrl(1)}' style='padding:.3rem .7rem;border:1px solid var(--gray-200);border-radius:6px;font-size:.82rem;text-decoration:none;color:var(--gray-700)'>&laquo; Primeira</a>` : ''}
+      ${currentPage > 1 ? `<a href='${buildPageUrl(currentPage-1)}' style='padding:.3rem .7rem;border:1px solid var(--gray-200);border-radius:6px;font-size:.82rem;text-decoration:none;color:var(--gray-700)'>&lsaquo; Anterior</a>` : ''}
+      <span style='font-size:.82rem;color:var(--gray-500)'>Página ${currentPage} de ${totalPages} (${totalLog} registros)</span>
+      ${currentPage < totalPages ? `<a href='${buildPageUrl(currentPage+1)}' style='padding:.3rem .7rem;border:1px solid var(--gray-200);border-radius:6px;font-size:.82rem;text-decoration:none;color:var(--gray-700)'>Próxima &rsaquo;</a>` : ''}
+      ${currentPage < totalPages ? `<a href='${buildPageUrl(totalPages)}' style='padding:.3rem .7rem;border:1px solid var(--gray-200);border-radius:6px;font-size:.82rem;text-decoration:none;color:var(--gray-700)'>Última &raquo;</a>` : ''}
+    </div>`;
+
     const html = page('Histórico de Alterações', `
 <section>
-  <div style='display:flex;align-items:center;gap:1rem;margin-bottom:1.5rem'>
+  <div style='display:flex;align-items:center;gap:1rem;margin-bottom:1rem;flex-wrap:wrap'>
     <h2 style='margin:0'>Histórico de Alterações</h2>
-    <span style='font-size:.82rem;color:var(--gray-400)'>${log.length} registro(s)</span>
+    <span style='font-size:.82rem;color:var(--gray-400)'>${totalLog} registro(s)${qFilter ? ' filtrados' : ''}</span>
   </div>
-  <p style='font-size:.85rem;color:var(--gray-400);margin-bottom:1.25rem'>Trilha completa de auditoria: toda alteração manual em lançamentos e revisões de cadastro é registrada aqui com o valor anterior e o novo valor.</p>
-  <div style='overflow-x:auto'>
+  <p style='font-size:.85rem;color:var(--gray-400);margin-bottom:1rem'>Trilha completa de auditoria: toda alteração manual em lançamentos e revisões de cadastro é registrada aqui.</p>
+  <form method='get' action='/historico' style='display:flex;gap:.5rem;margin-bottom:1rem'>
+    <input name='q' value='${qFilter.replace(/"/g,'&quot;')}' placeholder='Buscar por registro, campo ou usuário...' style='flex:1;padding:.5rem .8rem;border:1px solid var(--gray-200);border-radius:8px;font-size:.88rem'/>
+    <button type='submit' style='padding:.5rem 1rem;font-size:.88rem'>Buscar</button>
+    ${qFilter ? `<a href='/historico' style='padding:.5rem .8rem;border:1px solid var(--gray-200);border-radius:8px;font-size:.88rem;text-decoration:none;color:var(--gray-600)'>Limpar</a>` : ''}
+  </form>
+  ${pagination}
+  <div style='overflow-x:auto;margin-top:.75rem'>
   <table style='width:100%;border-collapse:collapse;font-size:.85rem'>
     <thead><tr style='background:var(--gray-50);border-bottom:2px solid var(--gray-200)'>
       <th style='padding:.6rem .75rem;text-align:left;white-space:nowrap'>Data/Hora</th>
@@ -2420,23 +2582,11 @@ async function excluirRef(tipo,nome){
       <th style='padding:.6rem .75rem;text-align:left'>Depois</th>
       <th style='padding:.6rem .75rem;text-align:left'>Usuário</th>
     </tr></thead>
-    <tbody id='audit-body'>${rows || '<tr><td colspan="7" style="text-align:center;padding:2rem;color:var(--gray-400)">Nenhuma alteração registrada ainda.</td></tr>'}</tbody>
+    <tbody>${rows || '<tr><td colspan="7" style="text-align:center;padding:2rem;color:var(--gray-400)">Nenhuma alteração registrada ainda.</td></tr>'}</tbody>
   </table>
   </div>
-</section>
-<script>
-const rows = document.querySelectorAll('#audit-body tr');
-document.addEventListener('DOMContentLoaded', () => {
-  const inp = document.createElement('input');
-  inp.placeholder = 'Filtrar por registro, campo ou usuário...';
-  inp.style.cssText = 'width:100%;padding:.6rem .9rem;border:1px solid var(--gray-200);border-radius:8px;font-size:.9rem;margin-bottom:1rem';
-  inp.oninput = () => {
-    const q = inp.value.toLowerCase();
-    rows.forEach(r => { r.style.display = r.textContent.toLowerCase().includes(q) ? '' : 'none'; });
-  };
-  document.querySelector('section').insertBefore(inp, document.querySelector('table').parentElement);
-});
-<\/script>`, user);
+  ${pagination}
+</section>`, user);
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
     return res.end(html);
   }
@@ -2456,13 +2606,22 @@ document.addEventListener('DOMContentLoaded', () => {
       return false;
     };
 
-    // 1. Corrigir entries: aplicar normalizeParceiro e limpar cliente lixo
+    // 1. Corrigir entries: aplicar normalizeParceiro, limpar cliente lixo e marcar dc=T
     let entriesCorrigidos = 0;
+    let transferenciasInternas = 0;
     for (const e of db.entries) {
       let changed = false;
       const novoParceiro = normalizeParceiro(e.parceiro || '');
       if (novoParceiro !== (e.parceiro || '')) { e.parceiro = novoParceiro; changed = true; }
       if (isLixo(e.cliente)) { if (e.cliente) { e.cliente = ''; changed = true; } }
+      // Marcar transferências internas (dc=T) que ainda não foram marcadas
+      if (String(e.dc || '').toUpperCase().trim() === 'T' && !e.isTransferenciaInterna) {
+        e.isTransferenciaInterna = true;
+        e.natureza = 'Transferência Interna';
+        e.tipo = 'transferencia_interna';
+        changed = true;
+        transferenciasInternas++;
+      }
       if (changed) entriesCorrigidos++;
     }
 
@@ -2475,6 +2634,8 @@ document.addEventListener('DOMContentLoaded', () => {
     for (const e of db.entries) {
       const dataISO = e.dataISO || e.data || '';
       if (dataISO < CORTE) continue;
+      // Pular lançamentos de transferência interna (dc=T) — não geram cadastros
+      if (e.isTransferenciaInterna || String(e.dc || '').toUpperCase().trim() === 'T') continue;
       for (const campo of ['cliente', 'projeto', 'parceiro']) {
         const val = (e[campo] || '').trim();
         if (!val || val === '-' || isLixo(val)) continue;
@@ -2501,14 +2662,31 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     db.reviewRegistry = [...revisados, ...novosPendentes];
+
+    // 3. Limpar issues NOVO_CADASTRO obsoletos (gerados com nomes com ruído)
+    //    Manter apenas os que correspondem a nomes que ainda estão no reviewRegistry
+    const nomesValidos = new Set(db.reviewRegistry.map(r => (r.nomeOficial || '').toUpperCase()));
+    const issuesAntes = (db.issues || []).length;
+    db.issues = (db.issues || []).filter(i => {
+      if (i.code !== 'NOVO_CADASTRO') return true; // manter outros tipos de issue
+      // extrair o nome do message: "Novo cadastro identificado: NOME."
+      const match = (i.message || '').match(/Novo cadastro identificado: (.+)\./);
+      if (!match) return false;
+      const nome = match[1].trim().toUpperCase();
+      return nomesValidos.has(nome);
+    });
+    const issuesRemovidos = issuesAntes - db.issues.length;
+
     saveDb(db);
 
     json(res, 200, {
       ok: true,
       entriesCorrigidos,
+      transferenciasInternasCorrigidas: transferenciasInternas,
       revisadosPreservados: revisados.length,
       novosPendentes: novosPendentes.length,
-      totalRegistry: db.reviewRegistry.length
+      totalRegistry: db.reviewRegistry.length,
+      issuesNovoCadastroRemovidos: issuesRemovidos
     });
     return;
   }
@@ -2516,6 +2694,86 @@ document.addEventListener('DOMContentLoaded', () => {
   res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
   res.end('Not found');
 });
+
+// ===== LIMPEZA AUTOMÁTICA: executada no boot e após cada upload =====
+// Garante que dc=T seja marcado como transferência interna e que o reviewRegistry
+// não contenha entradas geradas por esses lançamentos.
+function limparCadastrosAutomatico(db) {
+  const isLixo = (val) => {
+    if (!val) return true;
+    const s = String(val).trim();
+    if (/^\d+(\.\d+)+$/.test(s)) return true;
+    if (/^\d+$/.test(s)) return true;
+    if (s === '' || s === '-' || s === '--' || s === '.') return true;
+    return false;
+  };
+
+  // 1. Marcar entries dc=T como transferência interna
+  let transferenciasInternas = 0;
+  for (const e of db.entries) {
+    let changed = false;
+    const novoParceiro = normalizeParceiro(e.parceiro || '');
+    if (novoParceiro !== (e.parceiro || '')) { e.parceiro = novoParceiro; changed = true; }
+    if (isLixo(e.cliente)) { if (e.cliente) { e.cliente = ''; changed = true; } }
+    if (String(e.dc || '').toUpperCase().trim() === 'T' && !e.isTransferenciaInterna) {
+      e.isTransferenciaInterna = true;
+      e.natureza = 'Transferência Interna';
+      e.tipo = 'transferencia_interna';
+      changed = true;
+      transferenciasInternas++;
+    }
+  }
+
+  // 2. Reconstruir reviewRegistry sem entradas de dc=T
+  const CORTE = '2024-06-01';
+  const revisados = (db.reviewRegistry || []).filter(r => r.statusRevisao === 'revisado');
+  const revisadosKeys = new Set(revisados.map(r => (r.nomeOficial || '').toUpperCase()));
+
+  const novosNomes = new Map();
+  for (const e of db.entries) {
+    const dataISO = e.dataISO || e.data || '';
+    if (dataISO < CORTE) continue;
+    if (e.isTransferenciaInterna || String(e.dc || '').toUpperCase().trim() === 'T') continue;
+    for (const campo of ['cliente', 'projeto', 'parceiro']) {
+      const val = (e[campo] || '').trim();
+      if (!val || val === '-' || isLixo(val)) continue;
+      const key = val.toUpperCase();
+      if (!novosNomes.has(key)) novosNomes.set(key, { nomeOriginal: val, nomeOficial: key });
+    }
+  }
+
+  const novosPendentes = [];
+  for (const [key, info] of novosNomes) {
+    if (revisadosKeys.has(key)) continue;
+    novosPendentes.push({
+      id: crypto.randomUUID(),
+      nomeOriginal: info.nomeOriginal,
+      nomeOficial: key,
+      tipoSugerido: 'Pendente de Classificação',
+      tipoFinal: 'Pendente de Classificação',
+      clienteVinculado: '',
+      projetoVinculado: '',
+      manterAlias: true,
+      observacao: '',
+      statusRevisao: 'pendente'
+    });
+  }
+  db.reviewRegistry = [...revisados, ...novosPendentes];
+
+  // 3. Limpar issues NOVO_CADASTRO de transferências internas
+  const nomesValidos = new Set(db.reviewRegistry.map(r => (r.nomeOficial || '').toUpperCase()));
+  db.issues = (db.issues || []).filter(i => {
+    if (i.code !== 'NOVO_CADASTRO') return true;
+    const match = (i.message || '').match(/Novo cadastro identificado: (.+)\./);
+    if (!match) return false;
+    const nome = match[1].trim().toUpperCase();
+    return nomesValidos.has(nome);
+  });
+
+  if (transferenciasInternas > 0 || novosPendentes.length !== (db.reviewRegistry.length - revisados.length)) {
+    console.log(`[limpeza] dc=T marcados: ${transferenciasInternas} | registry: ${revisados.length} revisados + ${novosPendentes.length} pendentes`);
+  }
+}
 
 // Boot: se DATABASE_URL estiver configurado, carregar dados do PostgreSQL
 // e sincronizar o db.json local antes de aceitar requisições
@@ -2529,6 +2787,11 @@ async function boot() {
       // Sincronizar db.json local com os dados do PostgreSQL
       fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
       fs.writeFileSync(DB_PATH, JSON.stringify(pgDb, null, 2));
+      // Executar limpeza automática após carregar o banco
+      limparCadastrosAutomatico(pgDb);
+      fs.writeFileSync(DB_PATH, JSON.stringify(pgDb, null, 2));
+      // Persistir limpeza de volta ao PostgreSQL
+      await storage.saveDb(pgDb).catch(e => console.error('[boot] Erro ao salvar limpeza:', e.message));
       console.log(`[boot] Sincronizado: ${pgDb.entries.length} lançamentos, ${pgDb.reviewRegistry.length} cadastros, ${pgDb.savedRules.length} regras`);
     } catch (err) {
       console.error('[boot] Erro ao carregar PostgreSQL:', err.message);
@@ -2538,7 +2801,7 @@ async function boot() {
     // Modo local: garantir que o db.json existe
     if (!fs.existsSync(DB_PATH)) {
       fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
-      const emptyDb = { users: [{ id: 'owner-ckm', email: 'owner@ckm.local', password: '123456', role: 'owner' }], uploads: [], entries: [], issues: [], reviewRegistry: [], savedRules: [], manualAdjustments: [] };
+      const emptyDb = { users: [{ id: 'owner-ckm', email: 'owner@ckm.local', password: hashPassword('123456'), role: 'owner' }], uploads: [], entries: [], issues: [], reviewRegistry: [], savedRules: [], manualAdjustments: [] };
       fs.writeFileSync(DB_PATH, JSON.stringify(emptyDb, null, 2));
       console.log('[boot] db.json criado com usuário padrão.');
     }

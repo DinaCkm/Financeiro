@@ -1,16 +1,28 @@
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
+
+const PASSWORD_PREFIX = 'scrypt$';
+
+function hashPassword(password) {
+  const salt = crypto.randomBytes(16).toString('hex');
+  const key = crypto.scryptSync(String(password), salt, 64).toString('hex');
+  return `${PASSWORD_PREFIX}${salt}$${key}`;
+}
 
 function createJsonStorage(dbPath) {
   return {
     async init() {
       if (!fs.existsSync(dbPath)) {
         fs.mkdirSync(path.dirname(dbPath), { recursive: true });
-        fs.writeFileSync(dbPath, JSON.stringify({ users: [], uploads: [], entries: [], issues: [], reviewRegistry: [], savedRules: [] }, null, 2));
+        fs.writeFileSync(dbPath, JSON.stringify({
+          users: [], uploads: [], entries: [], issues: [],
+          reviewRegistry: [], savedRules: [], manualAdjustments: []
+        }, null, 2));
       }
       const db = JSON.parse(fs.readFileSync(dbPath, 'utf8'));
       if (!db.users.length) {
-        db.users.push({ id: 'owner-ckm', email: 'owner@ckm.local', password: '123456', role: 'owner' });
+        db.users.push({ id: 'owner-ckm', email: 'owner@ckm.local', password: hashPassword('123456'), role: 'owner' });
         fs.writeFileSync(dbPath, JSON.stringify(db, null, 2));
       }
     },
@@ -72,13 +84,93 @@ function createPostgresStorage(databaseUrl) {
   async function seedUser() {
     const count = await pool.query('SELECT COUNT(*)::int AS c FROM users');
     if (!count.rows[0].c) {
-      await pool.query('INSERT INTO users (id, email, password, role) VALUES ($1, $2, $3, $4)', ['owner-ckm', 'owner@ckm.local', '123456', 'owner']);
+      await pool.query(
+        'INSERT INTO users (id, email, password, role) VALUES ($1, $2, $3, $4)',
+        ['owner-ckm', 'owner@ckm.local', hashPassword('123456'), 'owner']
+      );
     }
   }
 
   async function loadCollection(query) {
     const result = await pool.query(query);
     return result.rows.map((r) => r.data);
+  }
+
+  // Inserção em lote via unnest — muito mais rápido que INSERT individual
+  // Processa em chunks de 500 para evitar limites de parâmetros do PostgreSQL
+  async function batchUpsertEntries(client, entries) {
+    if (!entries || !entries.length) return;
+    const CHUNK = 500;
+    for (let i = 0; i < entries.length; i += CHUNK) {
+      const chunk = entries.slice(i, i + CHUNK);
+      const ids = chunk.map(e => e.id);
+      const uploadIds = chunk.map(e => e.uploadId || '');
+      const datas = chunk.map(e => e);
+      await client.query(
+        `INSERT INTO entries (id, upload_id, data)
+         SELECT * FROM unnest($1::text[], $2::text[], $3::jsonb[])
+         ON CONFLICT (id) DO UPDATE
+         SET upload_id = EXCLUDED.upload_id, data = EXCLUDED.data`,
+        [ids, uploadIds, datas]
+      );
+    }
+  }
+
+  async function batchUpsertIssues(client, issues) {
+    if (!issues || !issues.length) return;
+    const CHUNK = 500;
+    for (let i = 0; i < issues.length; i += CHUNK) {
+      const chunk = issues.slice(i, i + CHUNK);
+      const ids = chunk.map(i => i.id);
+      const uploadIds = chunk.map(i => i.uploadId || null);
+      const datas = chunk.map(i => i);
+      await client.query(
+        `INSERT INTO issues (id, upload_id, data)
+         SELECT * FROM unnest($1::text[], $2::text[], $3::jsonb[])
+         ON CONFLICT (id) DO UPDATE
+         SET upload_id = EXCLUDED.upload_id, data = EXCLUDED.data`,
+        [ids, uploadIds, datas]
+      );
+    }
+  }
+
+  async function batchUpsertSimple(client, table, items) {
+    if (!items || !items.length) return;
+    const CHUNK = 500;
+    for (let i = 0; i < items.length; i += CHUNK) {
+      const chunk = items.slice(i, i + CHUNK);
+      const ids = chunk.map(r => r.id);
+      const datas = chunk.map(r => r);
+      await client.query(
+        `INSERT INTO ${table} (id, data)
+         SELECT * FROM unnest($1::text[], $2::jsonb[])
+         ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data`,
+        [ids, datas]
+      );
+    }
+  }
+
+  async function batchUpsertUploads(client, uploads) {
+    if (!uploads || !uploads.length) return;
+    const CHUNK = 500;
+    for (let i = 0; i < uploads.length; i += CHUNK) {
+      const chunk = uploads.slice(i, i + CHUNK);
+      const ids = chunk.map(u => u.id);
+      const fileNames = chunk.map(u => u.fileName);
+      const uploadedAts = chunk.map(u => u.uploadedAt);
+      const rowCounts = chunk.map(u => u.rowCount);
+      const payloads = chunk.map(u => u);
+      await client.query(
+        `INSERT INTO uploads (id, file_name, uploaded_at, row_count, payload)
+         SELECT * FROM unnest($1::text[], $2::text[], $3::timestamptz[], $4::int[], $5::jsonb[])
+         ON CONFLICT (id) DO UPDATE
+         SET file_name = EXCLUDED.file_name,
+             uploaded_at = EXCLUDED.uploaded_at,
+             row_count = EXCLUDED.row_count,
+             payload = EXCLUDED.payload`,
+        [ids, fileNames, uploadedAts, rowCounts, payloads]
+      );
+    }
   }
 
   return {
@@ -100,7 +192,9 @@ function createPostgresStorage(databaseUrl) {
 
       return {
         users: users.rows.map((r) => ({ id: r.id, email: r.email, password: r.password, role: r.role })),
-        uploads: uploads.rows.map((r) => ({ id: r.id, fileName: r.file_name, uploadedAt: r.uploaded_at, rowCount: r.row_count })),
+        uploads: uploads.rows.map((r) => ({
+          id: r.id, fileName: r.file_name, uploadedAt: r.uploaded_at, rowCount: r.row_count
+        })),
         entries,
         issues,
         reviewRegistry,
@@ -113,33 +207,85 @@ function createPostgresStorage(databaseUrl) {
       const client = await pool.connect();
       try {
         await client.query('BEGIN');
-        await client.query('TRUNCATE uploads, entries, issues, review_registry, saved_rules, manual_adjustments');
 
-        for (const upload of db.uploads || []) {
-          await client.query(
-            'INSERT INTO uploads (id, file_name, uploaded_at, row_count, payload) VALUES ($1, $2, $3, $4, $5)',
-            [upload.id, upload.fileName || '', upload.uploadedAt || new Date().toISOString(), upload.rowCount || 0, upload]
-          );
+        // Uploads
+        const uploads = (db.uploads || []).filter(Boolean).map(u => ({
+          ...u,
+          id: u.id || crypto.randomUUID(),
+          fileName: u.fileName || '',
+          uploadedAt: u.uploadedAt || new Date().toISOString(),
+          rowCount: Number(u.rowCount || 0)
+        }));
+        if (uploads.length) {
+          await client.query('DELETE FROM uploads WHERE id <> ALL($1::text[])', [uploads.map(u => u.id)]);
+        } else {
+          await client.query('DELETE FROM uploads');
         }
+        await batchUpsertUploads(client, uploads);
 
-        for (const entry of db.entries || []) {
-          await client.query('INSERT INTO entries (id, upload_id, data) VALUES ($1, $2, $3)', [entry.id, entry.uploadId || '', entry]);
+        // Entries
+        const entries = (db.entries || []).filter(Boolean).map(e => ({
+          ...e, id: e.id || crypto.randomUUID()
+        }));
+        if (entries.length) {
+          await client.query('DELETE FROM entries WHERE id <> ALL($1::text[])', [entries.map(e => e.id)]);
+        } else {
+          await client.query('DELETE FROM entries');
         }
+        await batchUpsertEntries(client, entries);
 
-        for (const issue of db.issues || []) {
-          await client.query('INSERT INTO issues (id, upload_id, data) VALUES ($1, $2, $3)', [issue.id, issue.uploadId || null, issue]);
+        // Issues
+        const issues = (db.issues || []).filter(Boolean).map(i => ({
+          ...i, id: i.id || crypto.randomUUID()
+        }));
+        if (issues.length) {
+          await client.query('DELETE FROM issues WHERE id <> ALL($1::text[])', [issues.map(i => i.id)]);
+        } else {
+          await client.query('DELETE FROM issues');
         }
+        await batchUpsertIssues(client, issues);
 
-        for (const item of db.reviewRegistry || []) {
-          await client.query('INSERT INTO review_registry (id, data) VALUES ($1, $2)', [item.id, item]);
+        // Review Registry
+        const registry = (db.reviewRegistry || []).filter(Boolean).map(r => ({
+          ...r, id: r.id || crypto.randomUUID()
+        }));
+        if (registry.length) {
+          await client.query('DELETE FROM review_registry WHERE id <> ALL($1::text[])', [registry.map(r => r.id)]);
+        } else {
+          await client.query('DELETE FROM review_registry');
         }
+        await batchUpsertSimple(client, 'review_registry', registry);
 
-        for (const rule of db.savedRules || []) {
-          await client.query('INSERT INTO saved_rules (id, data) VALUES ($1, $2)', [rule.id, rule]);
+        // Saved Rules
+        const rules = (db.savedRules || []).filter(Boolean).map(r => ({
+          ...r, id: r.id || crypto.randomUUID()
+        }));
+        if (rules.length) {
+          await client.query('DELETE FROM saved_rules WHERE id <> ALL($1::text[])', [rules.map(r => r.id)]);
+        } else {
+          await client.query('DELETE FROM saved_rules');
         }
+        await batchUpsertSimple(client, 'saved_rules', rules);
 
-        for (const adjustment of db.manualAdjustments || []) {
-          await client.query('INSERT INTO manual_adjustments (id, data) VALUES ($1, $2)', [adjustment.id, adjustment]);
+        // Manual Adjustments — sempre trunca e reinserir
+        await client.query('TRUNCATE manual_adjustments');
+        const adjustments = (db.manualAdjustments || []).filter(Boolean).map(a => ({
+          ...a, id: a.id || crypto.randomUUID()
+        }));
+        if (adjustments.length) {
+          const ids = adjustments.map(a => a.id);
+          const datas = adjustments.map(a => a);
+          const CHUNK = 500;
+          for (let i = 0; i < adjustments.length; i += CHUNK) {
+            const cIds = ids.slice(i, i + CHUNK);
+            const cDatas = datas.slice(i, i + CHUNK);
+            await client.query(
+              `INSERT INTO manual_adjustments (id, data)
+               SELECT * FROM unnest($1::text[], $2::jsonb[])
+               ON CONFLICT (id) DO NOTHING`,
+              [cIds, cDatas]
+            );
+          }
         }
 
         await client.query('COMMIT');
