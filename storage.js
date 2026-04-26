@@ -295,6 +295,9 @@ function createPostgresStorage(databaseUrl) {
       } finally {
         client.release();
       }
+    },
+    getPool() {
+      return pool;
     }
   };
 }

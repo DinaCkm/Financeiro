@@ -877,9 +877,34 @@ function serveStatic(req, res) {
   return true;
 }
 
-function page(title, body, user) {
-  return `<!doctype html><html lang='pt-BR'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>${title} — CKM Financeiro</title><link rel='preconnect' href='https://fonts.googleapis.com'><link rel='stylesheet' href='https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap'><link rel='stylesheet' href='/public/style.css'></head><body>
-<header><h1>Painel <em>CKM</em> Financeiro</h1>${user ? `<nav><a href='/'>Home</a><a href='/upload'>Upload</a><a href='/pendencias'>Pré-análise</a><a href='/cadastros'>Cadastro Revisável</a><a href='/fatura'>Fatura Cartão</a><a href='/referencias'>Referências</a><a href='/historico'>Histórico</a><a href='/dashboard'>Dashboard</a><a href='/ia' style='background:#2563eb;color:#fff;border-radius:.375rem;padding:.2rem .6rem'>🤖 IA</a><a href='/relatorio' style='background:#7c3aed;color:#fff;border-radius:.375rem;padding:.2rem .6rem'>📄 Relatórios</a><a href='/logout' class='sair'>Sair</a></nav>` : ''}</header>
+function page(title, body, user, activePage) {
+  const navLinks = user ? [
+    ['/', 'Home', ''],
+    ['/upload', 'Upload', ''],
+    ['/pendencias', 'Pré-análise', ''],
+    ['/cadastros', 'Revisável', ''],
+    ['/fatura', 'Fatura', ''],
+    ['/historico', 'Histórico', ''],
+    ['/dashboard', 'Dashboard', ''],
+    ['/cadastros-mestres', '⚙ Cadastros', 'nav-cad'],
+    ['/contratos', '📋 Contratos', ''],
+    ['/contas', '💰 Contas', ''],
+    ['/conciliacao', '🏦 Conciliação', ''],
+    ['/ia', '🤖 IA', 'nav-ia'],
+    ['/relatorio', '📄 Relatórios', 'nav-rel'],
+    ['/logout', 'Sair', 'sair'],
+  ] : [];
+  const nav = navLinks.map(([href, label, cls]) =>
+    `<a href='${href}' class='${cls}${activePage === href ? ' active' : ''}'>${label}</a>`
+  ).join('');
+  return `<!doctype html><html lang='pt-BR'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>${title} — Eco do Bem Financeiro</title><link rel='preconnect' href='https://fonts.googleapis.com'><link rel='stylesheet' href='https://fonts.googleapis.com/css2?family=Poppins:wght@400;600;700&family=Inter:wght@400;500;600&family=Sora:wght@400;700&display=swap'><link rel='stylesheet' href='/public/style.css'></head><body>
+<header>
+  <a href='/' class='header-logo'>
+    <img src='/public/logo-branco.png' alt='Eco do Bem' onerror="this.style.display='none'">
+    <div class='header-logo-text'><span>Sistema</span><span>Financeiro</span></div>
+  </a>
+  ${user ? `<nav>${nav}</nav>` : ''}
+</header>
 <main>${body}</main></body></html>`;
 }
 
@@ -3637,6 +3662,833 @@ function renderHistoricoRel() {
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
     res.end(html);
     return;
+  }
+
+  // ============================================================
+  // CADASTROS MESTRES — /cadastros-mestres
+  // ============================================================
+  if (req.method === 'GET' && url.pathname === '/cadastros-mestres') {
+    const user = getSession(req);
+    if (!user) { res.writeHead(302, { Location: '/login' }); res.end(); return; }
+    let ccs = [], clientes = [], projetos = [], tipos = [], bancos = [];
+    try {
+      const pg = storage.getPool ? storage.getPool() : null;
+      if (pg) {
+        ccs      = (await pg.query('SELECT * FROM centros_de_custo ORDER BY tipo, nome')).rows;
+        clientes = (await pg.query('SELECT * FROM clientes ORDER BY nome')).rows;
+        projetos = (await pg.query('SELECT p.*, c.nome_curto as cliente_nome FROM projetos p LEFT JOIN clientes c ON p.cliente_id=c.id ORDER BY p.codigo')).rows;
+        tipos    = (await pg.query('SELECT * FROM tipos_lancamento ORDER BY natureza, nome')).rows;
+        bancos   = (await pg.query('SELECT * FROM bancos ORDER BY nome')).rows;
+      }
+    } catch(e) { console.error('[cadastros-mestres]', e.message); }
+
+    const tipoColors = { ESTRUTURA:'#5B2EFF', FINANCEIRO:'#00B8D9', OPERACIONAL:'#5ED38C', TRANSFERENCIA:'#f59e0b' };
+    const natColors  = { RECEITA:'#5ED38C', DESPESA:'#ef4444', IMPOSTO:'#f59e0b', FINANCEIRO:'#00B8D9', TRANSFERENCIA:'#808080' };
+
+    const renderCC = ccs.map(c => `
+      <tr>
+        <td><span class='badge' style='background:${tipoColors[c.tipo]||'#808080'}22;color:${tipoColors[c.tipo]||'#808080'}'>${c.tipo}</span></td>
+        <td><strong>${c.codigo}</strong></td>
+        <td>${c.nome}</td>
+        <td><span class='status-dot ${c.ativo?'ativo':'inativo'}'></span>${c.ativo?'Ativo':'Inativo'}</td>
+        <td><button class='btn btn-sm btn-outline' onclick="editCC('${c.id}','${c.codigo}','${c.nome.replace(/'/g,"\\'")  }','${c.tipo}',${c.ativo})">Editar</button></td>
+      </tr>`).join('');
+
+    const renderClientes = clientes.map(c => `
+      <tr>
+        <td><strong>${c.codigo||'-'}</strong></td>
+        <td>${c.nome}</td>
+        <td>${c.nome_curto||'-'}</td>
+        <td>${c.cnpj||'-'}</td>
+        <td><span class='status-dot ${c.ativo?'ativo':'inativo'}'></span>${c.ativo?'Ativo':'Inativo'}</td>
+        <td><button class='btn btn-sm btn-outline' onclick="editCliente('${c.id}','${c.codigo||''}','${c.nome.replace(/'/g,"\\'")  }','${(c.nome_curto||'').replace(/'/g,"\\'")  }','${c.cnpj||''}',${c.ativo})">Editar</button></td>
+      </tr>`).join('');
+
+    const renderProjetos = projetos.map(p => `
+      <tr>
+        <td><strong>${p.codigo}</strong></td>
+        <td>${p.nome}</td>
+        <td>${p.tipo||'-'}</td>
+        <td>${p.cliente_nome||'-'}</td>
+        <td><span class='status-dot ${p.ativo?'ativo':'inativo'}'></span>${p.ativo?'Ativo':'Inativo'}</td>
+        <td><button class='btn btn-sm btn-outline' onclick="editProjeto('${p.id}','${p.codigo}','${p.nome.replace(/'/g,"\\'")  }','${p.tipo||''}','${p.cliente_id||''}',${p.ativo})">Editar</button></td>
+      </tr>`).join('');
+
+    const renderTipos = tipos.map(t => `
+      <tr>
+        <td><span class='badge' style='background:${natColors[t.natureza]||'#808080'}22;color:${natColors[t.natureza]||'#808080'}'>${t.natureza}</span></td>
+        <td><strong>${t.codigo}</strong></td>
+        <td>${t.nome}</td>
+        <td><span class='status-dot ${t.ativo?'ativo':'inativo'}'></span>${t.ativo?'Ativo':'Inativo'}</td>
+      </tr>`).join('');
+
+    const renderBancos = bancos.map(b => `
+      <tr>
+        <td><strong>${b.codigo}</strong></td>
+        <td>${b.nome}</td>
+        <td>${b.agencia||'-'}</td>
+        <td>${b.conta||'-'}</td>
+        <td><span class='status-dot ${b.ativo?'ativo':'inativo'}'></span>${b.ativo?'Ativo':'Inativo'}</td>
+        <td><button class='btn btn-sm btn-outline' onclick="editBanco('${b.id}','${b.codigo}','${b.nome.replace(/'/g,"\\'")  }','${b.agencia||''}','${b.conta||''}',${b.ativo})">Editar</button></td>
+      </tr>`).join('');
+
+    const clienteOpts = clientes.map(c => `<option value='${c.id}'>${c.nome}</option>`).join('');
+
+    const body = `
+<h2 class='page-title'>⚙ Cadastros Mestres</h2>
+<div class='alert alert-info'>Gerencie aqui os dados de referência do sistema. Alterações aqui afetam automaticamente a classificação de novos lançamentos.</div>
+
+<div class='master-tabs'>
+  <button class='master-tab active' onclick="switchTab('cc')">Centros de Custo (${ccs.length})</button>
+  <button class='master-tab' onclick="switchTab('clientes')">Clientes (${clientes.length})</button>
+  <button class='master-tab' onclick="switchTab('projetos')">Projetos (${projetos.length})</button>
+  <button class='master-tab' onclick="switchTab('tipos')">Tipos de Lançamento (${tipos.length})</button>
+  <button class='master-tab' onclick="switchTab('bancos')">Bancos (${bancos.length})</button>
+</div>
+
+<!-- CENTROS DE CUSTO -->
+<div id='panel-cc' class='master-panel active'>
+  <div class='master-form' id='form-cc'>
+    <h3 id='form-cc-title'>➕ Novo Centro de Custo</h3>
+    <input type='hidden' id='cc-id'>
+    <div class='form-grid'>
+      <label>Código <input id='cc-codigo' placeholder='Ex: MARKETING'></label>
+      <label>Nome <input id='cc-nome' placeholder='Ex: Marketing e Comunicação'></label>
+      <label>Tipo
+        <select id='cc-tipo'>
+          <option value='ESTRUTURA'>Estrutura (overhead)</option>
+          <option value='OPERACIONAL'>Operacional (cliente/projeto)</option>
+          <option value='FINANCEIRO'>Financeiro (empréstimos, tarifas)</option>
+          <option value='TRANSFERENCIA'>Transferência entre contas</option>
+        </select>
+      </label>
+      <label>Status
+        <select id='cc-ativo'><option value='true'>Ativo</option><option value='false'>Inativo</option></select>
+      </label>
+    </div>
+    <div style='display:flex;gap:.75rem;flex-wrap:wrap'>
+      <button onclick='saveCC()'>💾 Salvar</button>
+      <button class='btn-outline' onclick='clearFormCC()'>Cancelar</button>
+    </div>
+  </div>
+  <section>
+    <h2>Centros de Custo cadastrados</h2>
+    <div style='overflow-x:auto'>
+    <table><thead><tr><th>Tipo</th><th>Código</th><th>Nome</th><th>Status</th><th></th></tr></thead>
+    <tbody id='tbody-cc'>${renderCC}</tbody></table></div>
+  </section>
+</div>
+
+<!-- CLIENTES -->
+<div id='panel-clientes' class='master-panel'>
+  <div class='master-form'>
+    <h3 id='form-cli-title'>➕ Novo Cliente</h3>
+    <input type='hidden' id='cli-id'>
+    <div class='form-grid'>
+      <label>Código <input id='cli-codigo' placeholder='Ex: SEBRAE_TO'></label>
+      <label>Nome completo <input id='cli-nome' placeholder='Ex: SEBRAE Tocantins'></label>
+      <label>Nome curto <input id='cli-curto' placeholder='Ex: SEBRAE-TO'></label>
+      <label>CNPJ <input id='cli-cnpj' placeholder='00.000.000/0001-00'></label>
+      <label>Status <select id='cli-ativo'><option value='true'>Ativo</option><option value='false'>Inativo</option></select></label>
+    </div>
+    <div style='display:flex;gap:.75rem;flex-wrap:wrap'>
+      <button onclick='saveCliente()'>💾 Salvar</button>
+      <button class='btn-outline' onclick='clearFormCli()'>Cancelar</button>
+    </div>
+  </div>
+  <section>
+    <h2>Clientes cadastrados</h2>
+    <div style='overflow-x:auto'>
+    <table><thead><tr><th>Código</th><th>Nome</th><th>Nome Curto</th><th>CNPJ</th><th>Status</th><th></th></tr></thead>
+    <tbody id='tbody-clientes'>${renderClientes}</tbody></table></div>
+  </section>
+</div>
+
+<!-- PROJETOS -->
+<div id='panel-projetos' class='master-panel'>
+  <div class='master-form'>
+    <h3 id='form-proj-title'>➕ Novo Projeto</h3>
+    <input type='hidden' id='proj-id'>
+    <div class='form-grid'>
+      <label>Código <input id='proj-codigo' placeholder='Ex: 4.16'></label>
+      <label>Nome <input id='proj-nome' placeholder='Ex: Coaching Executivo'></label>
+      <label>Tipo <input id='proj-tipo' placeholder='Ex: CONSULTORIA'></label>
+      <label>Cliente vinculado
+        <select id='proj-cliente'><option value=''>-- Nenhum --</option>${clienteOpts}</select>
+      </label>
+      <label>Status <select id='proj-ativo'><option value='true'>Ativo</option><option value='false'>Inativo</option></select></label>
+    </div>
+    <div style='display:flex;gap:.75rem;flex-wrap:wrap'>
+      <button onclick='saveProjeto()'>💾 Salvar</button>
+      <button class='btn-outline' onclick='clearFormProj()'>Cancelar</button>
+    </div>
+  </div>
+  <section>
+    <h2>Projetos cadastrados</h2>
+    <div style='overflow-x:auto'>
+    <table><thead><tr><th>Código</th><th>Nome</th><th>Tipo</th><th>Cliente</th><th>Status</th><th></th></tr></thead>
+    <tbody id='tbody-projetos'>${renderProjetos}</tbody></table></div>
+  </section>
+</div>
+
+<!-- TIPOS DE LANÇAMENTO -->
+<div id='panel-tipos' class='master-panel'>
+  <section>
+    <h2>Tipos de Lançamento</h2>
+    <div class='alert alert-info'>Os tipos de lançamento definem a natureza de cada movimentação financeira. Edição disponível em breve.</div>
+    <div style='overflow-x:auto'>
+    <table><thead><tr><th>Natureza</th><th>Código</th><th>Nome</th><th>Status</th></tr></thead>
+    <tbody>${renderTipos}</tbody></table></div>
+  </section>
+</div>
+
+<!-- BANCOS -->
+<div id='panel-bancos' class='master-panel'>
+  <div class='master-form'>
+    <h3 id='form-banco-title'>➕ Novo Banco</h3>
+    <input type='hidden' id='banco-id'>
+    <div class='form-grid'>
+      <label>Código <input id='banco-codigo' placeholder='Ex: NUBANK'></label>
+      <label>Nome <input id='banco-nome' placeholder='Ex: Nubank PJ'></label>
+      <label>Agência <input id='banco-agencia' placeholder='Ex: 0001'></label>
+      <label>Conta <input id='banco-conta' placeholder='Ex: 12345-6'></label>
+      <label>Status <select id='banco-ativo'><option value='true'>Ativo</option><option value='false'>Inativo</option></select></label>
+    </div>
+    <div style='display:flex;gap:.75rem;flex-wrap:wrap'>
+      <button onclick='saveBanco()'>💾 Salvar</button>
+      <button class='btn-outline' onclick='clearFormBanco()'>Cancelar</button>
+    </div>
+  </div>
+  <section>
+    <h2>Bancos cadastrados</h2>
+    <div style='overflow-x:auto'>
+    <table><thead><tr><th>Código</th><th>Nome</th><th>Agência</th><th>Conta</th><th>Status</th><th></th></tr></thead>
+    <tbody id='tbody-bancos'>${renderBancos}</tbody></table></div>
+  </section>
+</div>
+
+<script>
+function switchTab(tab) {
+  document.querySelectorAll('.master-tab').forEach((b,i) => {
+    const tabs = ['cc','clientes','projetos','tipos','bancos'];
+    b.classList.toggle('active', tabs[i] === tab);
+  });
+  document.querySelectorAll('.master-panel').forEach(p => p.classList.remove('active'));
+  document.getElementById('panel-' + tab).classList.add('active');
+}
+async function apiCall(method, url, body) {
+  const r = await fetch(url, { method, headers:{'Content-Type':'application/json'}, body: body ? JSON.stringify(body) : undefined });
+  const d = await r.json();
+  if (!d.ok) throw new Error(d.error || 'Erro');
+  return d;
+}
+function clearFormCC() {
+  document.getElementById('cc-id').value='';
+  document.getElementById('cc-codigo').value='';
+  document.getElementById('cc-nome').value='';
+  document.getElementById('cc-tipo').value='ESTRUTURA';
+  document.getElementById('cc-ativo').value='true';
+  document.getElementById('form-cc-title').textContent='➕ Novo Centro de Custo';
+}
+function editCC(id,codigo,nome,tipo,ativo) {
+  document.getElementById('cc-id').value=id;
+  document.getElementById('cc-codigo').value=codigo;
+  document.getElementById('cc-nome').value=nome;
+  document.getElementById('cc-tipo').value=tipo;
+  document.getElementById('cc-ativo').value=String(ativo);
+  document.getElementById('form-cc-title').textContent='✏ Editar Centro de Custo: '+nome;
+  document.getElementById('form-cc').scrollIntoView({behavior:'smooth'});
+}
+async function saveCC() {
+  const id=document.getElementById('cc-id').value;
+  const payload={codigo:document.getElementById('cc-codigo').value.trim().toUpperCase(),nome:document.getElementById('cc-nome').value.trim(),tipo:document.getElementById('cc-tipo').value,ativo:document.getElementById('cc-ativo').value==='true'};
+  if(!payload.codigo||!payload.nome){alert('Preencha código e nome');return;}
+  try{
+    await apiCall(id?'PUT':'POST','/api/mestres/centros-custo'+(id?'/'+id:''),payload);
+    location.reload();
+  }catch(e){alert(e.message);}
+}
+function clearFormCli() {
+  ['cli-id','cli-codigo','cli-nome','cli-curto','cli-cnpj'].forEach(id=>document.getElementById(id).value='');
+  document.getElementById('cli-ativo').value='true';
+  document.getElementById('form-cli-title').textContent='➕ Novo Cliente';
+}
+function editCliente(id,codigo,nome,curto,cnpj,ativo) {
+  document.getElementById('cli-id').value=id;
+  document.getElementById('cli-codigo').value=codigo;
+  document.getElementById('cli-nome').value=nome;
+  document.getElementById('cli-curto').value=curto;
+  document.getElementById('cli-cnpj').value=cnpj;
+  document.getElementById('cli-ativo').value=String(ativo);
+  document.getElementById('form-cli-title').textContent='✏ Editar Cliente: '+nome;
+  document.querySelector('[onclick="switchTab(\'clientes\')"]').click();
+  document.querySelector('#panel-clientes .master-form').scrollIntoView({behavior:'smooth'});
+}
+async function saveCliente() {
+  const id=document.getElementById('cli-id').value;
+  const payload={codigo:document.getElementById('cli-codigo').value.trim().toUpperCase(),nome:document.getElementById('cli-nome').value.trim(),nome_curto:document.getElementById('cli-curto').value.trim(),cnpj:document.getElementById('cli-cnpj').value.trim(),ativo:document.getElementById('cli-ativo').value==='true'};
+  if(!payload.nome){alert('Preencha o nome');return;}
+  try{
+    await apiCall(id?'PUT':'POST','/api/mestres/clientes'+(id?'/'+id:''),payload);
+    location.reload();
+  }catch(e){alert(e.message);}
+}
+function clearFormProj() {
+  ['proj-id','proj-codigo','proj-nome','proj-tipo'].forEach(id=>document.getElementById(id).value='');
+  document.getElementById('proj-cliente').value='';
+  document.getElementById('proj-ativo').value='true';
+  document.getElementById('form-proj-title').textContent='➕ Novo Projeto';
+}
+function editProjeto(id,codigo,nome,tipo,clienteId,ativo) {
+  document.getElementById('proj-id').value=id;
+  document.getElementById('proj-codigo').value=codigo;
+  document.getElementById('proj-nome').value=nome;
+  document.getElementById('proj-tipo').value=tipo;
+  document.getElementById('proj-cliente').value=clienteId;
+  document.getElementById('proj-ativo').value=String(ativo);
+  document.getElementById('form-proj-title').textContent='✏ Editar Projeto: '+nome;
+  document.querySelector('[onclick="switchTab(\'projetos\')"]').click();
+  document.querySelector('#panel-projetos .master-form').scrollIntoView({behavior:'smooth'});
+}
+async function saveProjeto() {
+  const id=document.getElementById('proj-id').value;
+  const payload={codigo:document.getElementById('proj-codigo').value.trim(),nome:document.getElementById('proj-nome').value.trim(),tipo:document.getElementById('proj-tipo').value.trim().toUpperCase()||null,cliente_id:document.getElementById('proj-cliente').value||null,ativo:document.getElementById('proj-ativo').value==='true'};
+  if(!payload.codigo||!payload.nome){alert('Preencha código e nome');return;}
+  try{
+    await apiCall(id?'PUT':'POST','/api/mestres/projetos'+(id?'/'+id:''),payload);
+    location.reload();
+  }catch(e){alert(e.message);}
+}
+function clearFormBanco() {
+  ['banco-id','banco-codigo','banco-nome','banco-agencia','banco-conta'].forEach(id=>document.getElementById(id).value='');
+  document.getElementById('banco-ativo').value='true';
+  document.getElementById('form-banco-title').textContent='➕ Novo Banco';
+}
+function editBanco(id,codigo,nome,agencia,conta,ativo) {
+  document.getElementById('banco-id').value=id;
+  document.getElementById('banco-codigo').value=codigo;
+  document.getElementById('banco-nome').value=nome;
+  document.getElementById('banco-agencia').value=agencia;
+  document.getElementById('banco-conta').value=conta;
+  document.getElementById('banco-ativo').value=String(ativo);
+  document.getElementById('form-banco-title').textContent='✏ Editar Banco: '+nome;
+  document.querySelector('[onclick="switchTab(\'bancos\')"]').click();
+  document.querySelector('#panel-bancos .master-form').scrollIntoView({behavior:'smooth'});
+}
+async function saveBanco() {
+  const id=document.getElementById('banco-id').value;
+  const payload={codigo:document.getElementById('banco-codigo').value.trim().toUpperCase(),nome:document.getElementById('banco-nome').value.trim(),agencia:document.getElementById('banco-agencia').value.trim()||null,conta:document.getElementById('banco-conta').value.trim()||null,ativo:document.getElementById('banco-ativo').value==='true'};
+  if(!payload.codigo||!payload.nome){alert('Preencha código e nome');return;}
+  try{
+    await apiCall(id?'PUT':'POST','/api/mestres/bancos'+(id?'/'+id:''),payload);
+    location.reload();
+  }catch(e){alert(e.message);}
+}
+</script>`;
+    const html = page('Cadastros Mestres', body, user, '/cadastros-mestres');
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+    res.end(html);
+    return;
+  }
+
+  // ── APIs de Cadastros Mestres ──
+  if (req.url.startsWith('/api/mestres/')) {
+    const user = getSession(req);
+    if (!user) { return json(res, 401, { error: 'Não autenticado' }); }
+    const pg = storage.getPool ? storage.getPool() : null;
+    if (!pg) { return json(res, 503, { error: 'Banco não disponível' }); }
+    const parts = url.pathname.split('/'); // ['','api','mestres','entidade','id?']
+    const entidade = parts[3];
+    const id = parts[4] || null;
+    let body = {};
+    if (['POST','PUT'].includes(req.method)) {
+      body = await new Promise((resolve) => {
+        let data = '';
+        req.on('data', c => data += c);
+        req.on('end', () => { try { resolve(JSON.parse(data)); } catch { resolve({}); } });
+      });
+    }
+    try {
+      if (entidade === 'centros-custo') {
+        if (req.method === 'POST') {
+          const r = await pg.query('INSERT INTO centros_de_custo (codigo,nome,tipo,ativo) VALUES ($1,$2,$3,$4) RETURNING id', [body.codigo, body.nome, body.tipo||'OPERACIONAL', body.ativo!==false]);
+          return json(res, 200, { ok: true, id: r.rows[0].id });
+        }
+        if (req.method === 'PUT' && id) {
+          await pg.query('UPDATE centros_de_custo SET codigo=$1,nome=$2,tipo=$3,ativo=$4,atualizado_em=NOW() WHERE id=$5', [body.codigo, body.nome, body.tipo, body.ativo!==false, id]);
+          return json(res, 200, { ok: true });
+        }
+        if (req.method === 'DELETE' && id) {
+          await pg.query('UPDATE centros_de_custo SET ativo=false WHERE id=$1', [id]);
+          return json(res, 200, { ok: true });
+        }
+        if (req.method === 'GET') {
+          const r = await pg.query('SELECT * FROM centros_de_custo ORDER BY tipo,nome');
+          return json(res, 200, { ok: true, data: r.rows });
+        }
+      }
+      if (entidade === 'clientes') {
+        if (req.method === 'POST') {
+          const r = await pg.query('INSERT INTO clientes (codigo,nome,nome_curto,cnpj,ativo) VALUES ($1,$2,$3,$4,$5) RETURNING id', [body.codigo||null, body.nome, body.nome_curto||null, body.cnpj||null, body.ativo!==false]);
+          return json(res, 200, { ok: true, id: r.rows[0].id });
+        }
+        if (req.method === 'PUT' && id) {
+          await pg.query('UPDATE clientes SET codigo=$1,nome=$2,nome_curto=$3,cnpj=$4,ativo=$5,atualizado_em=NOW() WHERE id=$6', [body.codigo||null, body.nome, body.nome_curto||null, body.cnpj||null, body.ativo!==false, id]);
+          return json(res, 200, { ok: true });
+        }
+        if (req.method === 'GET') {
+          const r = await pg.query('SELECT * FROM clientes ORDER BY nome');
+          return json(res, 200, { ok: true, data: r.rows });
+        }
+      }
+      if (entidade === 'projetos') {
+        if (req.method === 'POST') {
+          const r = await pg.query('INSERT INTO projetos (codigo,nome,tipo,cliente_id,ativo) VALUES ($1,$2,$3,$4,$5) RETURNING id', [body.codigo, body.nome, body.tipo||null, body.cliente_id||null, body.ativo!==false]);
+          return json(res, 200, { ok: true, id: r.rows[0].id });
+        }
+        if (req.method === 'PUT' && id) {
+          await pg.query('UPDATE projetos SET codigo=$1,nome=$2,tipo=$3,cliente_id=$4,ativo=$5,atualizado_em=NOW() WHERE id=$6', [body.codigo, body.nome, body.tipo||null, body.cliente_id||null, body.ativo!==false, id]);
+          return json(res, 200, { ok: true });
+        }
+        if (req.method === 'GET') {
+          const r = await pg.query('SELECT p.*, c.nome_curto as cliente_nome FROM projetos p LEFT JOIN clientes c ON p.cliente_id=c.id ORDER BY p.codigo');
+          return json(res, 200, { ok: true, data: r.rows });
+        }
+      }
+      if (entidade === 'bancos') {
+        if (req.method === 'POST') {
+          const r = await pg.query('INSERT INTO bancos (codigo,nome,agencia,conta,ativo) VALUES ($1,$2,$3,$4,$5) RETURNING id', [body.codigo, body.nome, body.agencia||null, body.conta||null, body.ativo!==false]);
+          return json(res, 200, { ok: true, id: r.rows[0].id });
+        }
+        if (req.method === 'PUT' && id) {
+          await pg.query('UPDATE bancos SET codigo=$1,nome=$2,agencia=$3,conta=$4,ativo=$5 WHERE id=$6', [body.codigo, body.nome, body.agencia||null, body.conta||null, body.ativo!==false, id]);
+          return json(res, 200, { ok: true });
+        }
+        if (req.method === 'GET') {
+          const r = await pg.query('SELECT * FROM bancos ORDER BY nome');
+          return json(res, 200, { ok: true, data: r.rows });
+        }
+      }
+    } catch(e) {
+      return json(res, 500, { error: e.message });
+    }
+    return json(res, 404, { error: 'Entidade não encontrada' });
+  }
+
+  // ============================================================
+  // CONTRATOS — /contratos
+  // ============================================================
+  if (req.method === 'GET' && url.pathname === '/contratos') {
+    const user = getSession(req);
+    if (!user) { res.writeHead(302, { Location: '/login' }); res.end(); return; }
+    let contratos = [], clientes = [], projetos = [];
+    try {
+      const pg = storage.getPool ? storage.getPool() : null;
+      if (pg) {
+        contratos = (await pg.query(`SELECT ct.*, cl.nome_curto as cliente_nome, pr.nome as projeto_nome FROM contratos ct LEFT JOIN clientes cl ON ct.cliente_id=cl.id LEFT JOIN projetos pr ON ct.projeto_id=pr.id ORDER BY ct.status, ct.data_fim`)).rows;
+        clientes  = (await pg.query('SELECT id, nome, nome_curto FROM clientes WHERE ativo=true ORDER BY nome')).rows;
+        projetos  = (await pg.query('SELECT id, codigo, nome FROM projetos WHERE ativo=true ORDER BY codigo')).rows;
+      }
+    } catch(e) { console.error('[contratos]', e.message); }
+
+    const statusColors = { ATIVO:'#5ED38C', ENCERRADO:'#808080', SUSPENSO:'#f59e0b', EM_NEGOCIACAO:'#00B8D9' };
+    const hoje = new Date();
+    const renderContratos = contratos.map(c => {
+      const inicio = c.data_inicio ? new Date(c.data_inicio) : null;
+      const fim    = c.data_fim    ? new Date(c.data_fim)    : null;
+      const duracao = (inicio && fim) ? Math.round((fim - inicio) / (1000*60*60*24*30)) : null;
+      const decorrido = (inicio && fim) ? Math.min(100, Math.round((hoje - inicio) / (fim - inicio) * 100)) : null;
+      const vencendo = fim && c.status === 'ATIVO' && (fim - hoje) < 60*24*60*60*1000;
+      return `<div class='contrato-card'>
+        <div class='contrato-badge'>📋</div>
+        <div class='contrato-info'>
+          <h4>${c.descricao || c.numero || 'Contrato #'+c.id} ${vencendo?'<span class="badge badge-amber">⚠ Vence em breve</span>':''}</h4>
+          <div style='font-size:.82rem;color:#808080;margin-bottom:.4rem'>${c.cliente_nome||'-'} · ${c.projeto_nome||'-'} · ${c.periodicidade||'MENSAL'}</div>
+          ${decorrido !== null ? `<div class='progress-bar'><div class='progress-bar-fill' style='width:${decorrido}%'></div></div><div style='font-size:.72rem;color:#808080;margin-top:.2rem'>${decorrido}% do período · ${c.data_inicio||'-'} → ${c.data_fim||'Indeterminado'}</div>` : ''}
+        </div>
+        <div style='text-align:right;flex-shrink:0'>
+          <div class='contrato-valor'>R$ ${Number(c.valor_total||0).toLocaleString('pt-BR',{minimumFractionDigits:2})}</div>
+          <div style='font-size:.78rem;color:#808080'>${c.valor_parcela ? 'Parcela: R$ '+Number(c.valor_parcela).toLocaleString('pt-BR',{minimumFractionDigits:2}) : ''}</div>
+          <span class='badge' style='background:${statusColors[c.status]||'#808080'}22;color:${statusColors[c.status]||'#808080'};margin-top:.4rem'>${c.status}</span>
+        </div>
+      </div>`;
+    }).join('') || '<p style="color:#808080;padding:1rem">Nenhum contrato cadastrado.</p>';
+
+    const clienteOpts = clientes.map(c => `<option value='${c.id}'>${c.nome_curto||c.nome}</option>`).join('');
+    const projetoOpts = projetos.map(p => `<option value='${p.id}'>${p.codigo} — ${p.nome}</option>`).join('');
+
+    const totalAtivo = contratos.filter(c=>c.status==='ATIVO').reduce((a,c)=>a+Number(c.valor_total||0),0);
+    const totalParcelas = contratos.filter(c=>c.status==='ATIVO').reduce((a,c)=>a+Number(c.valor_parcela||0),0);
+
+    const body = `
+<h2 class='page-title'>📋 Contratos de Clientes</h2>
+<div class='cards'>
+  <div class='card'><strong>Contratos Ativos</strong><span>${contratos.filter(c=>c.status==='ATIVO').length}</span></div>
+  <div class='card card-verde'><strong>Valor Total Ativo</strong><span class='pos' style='font-size:1.3rem'>R$ ${totalAtivo.toLocaleString('pt-BR',{minimumFractionDigits:2})}</span></div>
+  <div class='card card-teal'><strong>Receita Mensal Prevista</strong><span class='teal' style='font-size:1.3rem'>R$ ${totalParcelas.toLocaleString('pt-BR',{minimumFractionDigits:2})}</span></div>
+  <div class='card card-warning'><strong>Vencendo em 60 dias</strong><span class='neg'>${contratos.filter(c=>{const f=c.data_fim?new Date(c.data_fim):null;return f&&c.status==='ATIVO'&&(f-hoje)<60*24*60*60*1000;}).length}</span></div>
+</div>
+
+<section>
+  <h2>➕ Novo Contrato</h2>
+  <div class='form-grid'>
+    <label>Número / Referência <input id='ct-numero' placeholder='Ex: SEBRAE-TO-2025-001'></label>
+    <label>Cliente <select id='ct-cliente'><option value=''>-- Selecione --</option>${clienteOpts}</select></label>
+    <label>Projeto <select id='ct-projeto'><option value=''>-- Selecione --</option>${projetoOpts}</select></label>
+    <label>Descrição <input id='ct-descricao' placeholder='Ex: PDI do BEM — Ciclo 2025'></label>
+    <label>Valor Total (R$) <input id='ct-valor' type='number' step='0.01' placeholder='0,00'></label>
+    <label>Valor da Parcela (R$) <input id='ct-parcela' type='number' step='0.01' placeholder='0,00'></label>
+    <label>Data Início <input id='ct-inicio' type='date'></label>
+    <label>Data Fim <input id='ct-fim' type='date'></label>
+    <label>Periodicidade
+      <select id='ct-period'>
+        <option value='MENSAL'>Mensal</option>
+        <option value='QUINZENAL'>Quinzenal</option>
+        <option value='UNICO'>Único (pagamento único)</option>
+        <option value='POR_ENTREGA'>Por entrega</option>
+      </select>
+    </label>
+    <label>Status
+      <select id='ct-status'>
+        <option value='ATIVO'>Ativo</option>
+        <option value='EM_NEGOCIACAO'>Em Negociação</option>
+        <option value='SUSPENSO'>Suspenso</option>
+        <option value='ENCERRADO'>Encerrado</option>
+      </select>
+    </label>
+  </div>
+  <label style='margin-bottom:1rem'>Observações <textarea id='ct-obs' rows='2' placeholder='Informações adicionais...'></textarea></label>
+  <button onclick='saveContrato()'>💾 Salvar Contrato</button>
+</section>
+
+<section>
+  <h2>Contratos cadastrados</h2>
+  <div id='lista-contratos'>${renderContratos}</div>
+</section>
+
+<script>
+async function saveContrato() {
+  const payload = {
+    numero: document.getElementById('ct-numero').value.trim()||null,
+    cliente_id: document.getElementById('ct-cliente').value||null,
+    projeto_id: document.getElementById('ct-projeto').value||null,
+    descricao: document.getElementById('ct-descricao').value.trim()||null,
+    valor_total: parseFloat(document.getElementById('ct-valor').value)||0,
+    valor_parcela: parseFloat(document.getElementById('ct-parcela').value)||null,
+    data_inicio: document.getElementById('ct-inicio').value,
+    data_fim: document.getElementById('ct-fim').value||null,
+    periodicidade: document.getElementById('ct-period').value,
+    status: document.getElementById('ct-status').value,
+    observacoes: document.getElementById('ct-obs').value.trim()||null
+  };
+  if (!payload.data_inicio) { alert('Informe a data de início'); return; }
+  if (!payload.valor_total) { alert('Informe o valor total'); return; }
+  try {
+    const r = await fetch('/api/contratos', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload) });
+    const d = await r.json();
+    if (d.ok) location.reload();
+    else alert(d.error);
+  } catch(e) { alert(e.message); }
+}
+</script>`;
+    const html = page('Contratos', body, user, '/contratos');
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+    res.end(html);
+    return;
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/contratos') {
+    const user = getSession(req);
+    if (!user) return json(res, 401, { error: 'Não autenticado' });
+    const pg = storage.getPool ? storage.getPool() : null;
+    if (!pg) return json(res, 503, { error: 'Banco não disponível' });
+    const body = await new Promise((resolve) => { let d=''; req.on('data',c=>d+=c); req.on('end',()=>{try{resolve(JSON.parse(d));}catch{resolve({});}}); });
+    try {
+      const r = await pg.query(
+        'INSERT INTO contratos (numero,cliente_id,projeto_id,descricao,valor_total,valor_parcela,data_inicio,data_fim,periodicidade,status,observacoes) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id',
+        [body.numero||null, body.cliente_id||null, body.projeto_id||null, body.descricao||null, body.valor_total||0, body.valor_parcela||null, body.data_inicio, body.data_fim||null, body.periodicidade||'MENSAL', body.status||'ATIVO', body.observacoes||null]
+      );
+      return json(res, 200, { ok: true, id: r.rows[0].id });
+    } catch(e) { return json(res, 500, { error: e.message }); }
+  }
+
+  // ============================================================
+  // CONTAS A PAGAR/RECEBER — /contas
+  // ============================================================
+  if (req.method === 'GET' && url.pathname === '/contas') {
+    const user = getSession(req);
+    if (!user) { res.writeHead(302, { Location: '/login' }); res.end(); return; }
+    let contas = [], clientes = [], projetos = [], ccs = [], bancos = [];
+    try {
+      const pg = storage.getPool ? storage.getPool() : null;
+      if (pg) {
+        contas   = (await pg.query(`SELECT cp.*, cl.nome_curto as cliente_nome, pr.nome as projeto_nome, cc.nome as cc_nome, b.nome as banco_nome FROM contas_pagar_receber cp LEFT JOIN clientes cl ON cp.cliente_id=cl.id LEFT JOIN projetos pr ON cp.projeto_id=pr.id LEFT JOIN centros_de_custo cc ON cp.centro_custo_id=cc.id LEFT JOIN bancos b ON cp.banco_id=b.id WHERE cp.status IN ('PENDENTE','PARCIAL') ORDER BY cp.data_vencimento`)).rows;
+        clientes = (await pg.query('SELECT id, nome_curto, nome FROM clientes WHERE ativo=true ORDER BY nome')).rows;
+        projetos = (await pg.query('SELECT id, codigo, nome FROM projetos WHERE ativo=true ORDER BY codigo')).rows;
+        ccs      = (await pg.query('SELECT id, codigo, nome FROM centros_de_custo WHERE ativo=true ORDER BY tipo,nome')).rows;
+        bancos   = (await pg.query('SELECT id, codigo, nome FROM bancos WHERE ativo=true ORDER BY nome')).rows;
+      }
+    } catch(e) { console.error('[contas]', e.message); }
+
+    const hoje2 = new Date(); hoje2.setHours(0,0,0,0);
+    const totalPagar    = contas.filter(c=>c.tipo==='PAGAR').reduce((a,c)=>a+Number(c.valor||0),0);
+    const totalReceber  = contas.filter(c=>c.tipo==='RECEBER').reduce((a,c)=>a+Number(c.valor||0),0);
+    const vencidas      = contas.filter(c=>c.data_vencimento && new Date(c.data_vencimento)<hoje2).length;
+    const saldoProjetado = totalReceber - totalPagar;
+
+    const renderContas = contas.map(c => {
+      const venc = c.data_vencimento ? new Date(c.data_vencimento) : null;
+      const atrasado = venc && venc < hoje2;
+      const cor = c.tipo==='RECEBER' ? '#5ED38C' : '#ef4444';
+      return `<tr>
+        <td><span class='badge' style='background:${cor}22;color:${cor}'>${c.tipo}</span></td>
+        <td>${c.data_vencimento||'-'}</td>
+        <td>${c.descricao}</td>
+        <td style='font-weight:700;color:${cor}'>R$ ${Number(c.valor||0).toLocaleString('pt-BR',{minimumFractionDigits:2})}</td>
+        <td>${c.cliente_nome||'-'}</td>
+        <td>${c.cc_nome||'-'}</td>
+        <td>${atrasado?'<span class="badge badge-red">Vencida</span>':'<span class="badge badge-green">Pendente</span>'}</td>
+        <td>
+          <button class='btn btn-sm btn-verde' onclick='darBaixa(${c.id},${c.valor})'>✓ Baixar</button>
+        </td>
+      </tr>`;
+    }).join('') || '<tr><td colspan="8" style="color:#808080;padding:1rem">Nenhuma conta pendente.</td></tr>';
+
+    const clienteOpts2 = clientes.map(c => `<option value='${c.id}'>${c.nome_curto||c.nome}</option>`).join('');
+    const projetoOpts2 = projetos.map(p => `<option value='${p.id}'>${p.codigo} — ${p.nome}</option>`).join('');
+    const ccOpts       = ccs.map(c => `<option value='${c.id}'>${c.codigo} — ${c.nome}</option>`).join('');
+    const bancoOpts    = bancos.map(b => `<option value='${b.id}'>${b.nome}</option>`).join('');
+
+    const body = `
+<h2 class='page-title'>💰 Contas a Pagar / Receber</h2>
+<div class='cards'>
+  <div class='card card-danger'><strong>Total a Pagar</strong><span class='neg' style='font-size:1.3rem'>R$ ${totalPagar.toLocaleString('pt-BR',{minimumFractionDigits:2})}</span></div>
+  <div class='card card-verde'><strong>Total a Receber</strong><span class='pos' style='font-size:1.3rem'>R$ ${totalReceber.toLocaleString('pt-BR',{minimumFractionDigits:2})}</span></div>
+  <div class='card ${saldoProjetado>=0?'card-verde':'card-danger'}'><strong>Saldo Projetado</strong><span class='${saldoProjetado>=0?'pos':'neg'}' style='font-size:1.3rem'>R$ ${saldoProjetado.toLocaleString('pt-BR',{minimumFractionDigits:2})}</span></div>
+  <div class='card card-warning'><strong>Contas Vencidas</strong><span class='neg'>${vencidas}</span></div>
+</div>
+
+<section>
+  <h2>➕ Lançar Conta</h2>
+  <div class='form-grid'>
+    <label>Tipo
+      <select id='cp-tipo'><option value='PAGAR'>A Pagar</option><option value='RECEBER'>A Receber</option></select>
+    </label>
+    <label>Descrição <input id='cp-desc' placeholder='Ex: Aluguel escritório maio/2025'></label>
+    <label>Valor (R$) <input id='cp-valor' type='number' step='0.01' placeholder='0,00'></label>
+    <label>Vencimento <input id='cp-venc' type='date'></label>
+    <label>Competência <input id='cp-comp' type='date'></label>
+    <label>Cliente <select id='cp-cliente'><option value=''>-- Nenhum --</option>${clienteOpts2}</select></label>
+    <label>Projeto <select id='cp-projeto'><option value=''>-- Nenhum --</option>${projetoOpts2}</select></label>
+    <label>Centro de Custo <select id='cp-cc'><option value=''>-- Nenhum --</option>${ccOpts}</select></label>
+    <label>Banco <select id='cp-banco'><option value=''>-- Nenhum --</option>${bancoOpts}</select></label>
+  </div>
+  <label style='margin-bottom:1rem'>Observações <textarea id='cp-obs' rows='2'></textarea></label>
+  <button onclick='saveConta()'>💾 Salvar Conta</button>
+</section>
+
+<section>
+  <h2>Contas Pendentes</h2>
+  <div style='overflow-x:auto'>
+  <table><thead><tr><th>Tipo</th><th>Vencimento</th><th>Descrição</th><th>Valor</th><th>Cliente</th><th>Centro Custo</th><th>Status</th><th></th></tr></thead>
+  <tbody>${renderContas}</tbody></table></div>
+</section>
+
+<div id='modal-baixa' style='display:none;position:fixed;inset:0;background:rgba(26,10,94,.5);z-index:999;align-items:center;justify-content:center'>
+  <div style='background:#fff;border-radius:16px;padding:2rem;max-width:400px;width:90%;box-shadow:0 24px 48px rgba(26,10,94,.3)'>
+    <h3 style='font-family:Poppins,sans-serif;color:#1A0A5E;margin-bottom:1rem'>✓ Dar Baixa</h3>
+    <input type='hidden' id='baixa-id'>
+    <label style='margin-bottom:1rem'>Valor pago (R$) <input id='baixa-valor' type='number' step='0.01'></label>
+    <label style='margin-bottom:1rem'>Data do pagamento <input id='baixa-data' type='date'></label>
+    <label style='margin-bottom:1.5rem'>Banco utilizado <select id='baixa-banco'><option value=''>-- Selecione --</option>${bancoOpts}</select></label>
+    <div style='display:flex;gap:.75rem'>
+      <button onclick='confirmarBaixa()'>✓ Confirmar Baixa</button>
+      <button class='btn-outline' onclick='document.getElementById("modal-baixa").style.display="none"'>Cancelar</button>
+    </div>
+  </div>
+</div>
+
+<script>
+function darBaixa(id, valor) {
+  document.getElementById('baixa-id').value = id;
+  document.getElementById('baixa-valor').value = valor;
+  document.getElementById('baixa-data').value = new Date().toISOString().slice(0,10);
+  document.getElementById('modal-baixa').style.display = 'flex';
+}
+async function confirmarBaixa() {
+  const id = document.getElementById('baixa-id').value;
+  const payload = {
+    valor_pago: parseFloat(document.getElementById('baixa-valor').value),
+    data_pagamento: document.getElementById('baixa-data').value,
+    banco_id: document.getElementById('baixa-banco').value || null
+  };
+  try {
+    const r = await fetch('/api/contas/'+id+'/baixa', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload) });
+    const d = await r.json();
+    if (d.ok) location.reload();
+    else alert(d.error);
+  } catch(e) { alert(e.message); }
+}
+async function saveConta() {
+  const payload = {
+    tipo: document.getElementById('cp-tipo').value,
+    descricao: document.getElementById('cp-desc').value.trim(),
+    valor: parseFloat(document.getElementById('cp-valor').value),
+    data_vencimento: document.getElementById('cp-venc').value,
+    data_competencia: document.getElementById('cp-comp').value||null,
+    cliente_id: document.getElementById('cp-cliente').value||null,
+    projeto_id: document.getElementById('cp-projeto').value||null,
+    centro_custo_id: document.getElementById('cp-cc').value||null,
+    banco_id: document.getElementById('cp-banco').value||null,
+    observacoes: document.getElementById('cp-obs').value.trim()||null
+  };
+  if (!payload.descricao) { alert('Informe a descrição'); return; }
+  if (!payload.valor || payload.valor <= 0) { alert('Informe o valor'); return; }
+  if (!payload.data_vencimento) { alert('Informe o vencimento'); return; }
+  try {
+    const r = await fetch('/api/contas', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload) });
+    const d = await r.json();
+    if (d.ok) location.reload();
+    else alert(d.error);
+  } catch(e) { alert(e.message); }
+}
+</script>`;
+    const html = page('Contas a Pagar/Receber', body, user, '/contas');
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+    res.end(html);
+    return;
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/contas') {
+    const user = getSession(req);
+    if (!user) return json(res, 401, { error: 'Não autenticado' });
+    const pg = storage.getPool ? storage.getPool() : null;
+    if (!pg) return json(res, 503, { error: 'Banco não disponível' });
+    const body = await new Promise((resolve) => { let d=''; req.on('data',c=>d+=c); req.on('end',()=>{try{resolve(JSON.parse(d));}catch{resolve({});}}); });
+    try {
+      const r = await pg.query(
+        'INSERT INTO contas_pagar_receber (tipo,descricao,valor,data_vencimento,data_competencia,cliente_id,projeto_id,centro_custo_id,banco_id,observacoes,status) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,\'PENDENTE\') RETURNING id',
+        [body.tipo, body.descricao, body.valor, body.data_vencimento, body.data_competencia||null, body.cliente_id||null, body.projeto_id||null, body.centro_custo_id||null, body.banco_id||null, body.observacoes||null]
+      );
+      return json(res, 200, { ok: true, id: r.rows[0].id });
+    } catch(e) { return json(res, 500, { error: e.message }); }
+  }
+
+  if (req.method === 'POST' && url.pathname.startsWith('/api/contas/') && url.pathname.endsWith('/baixa')) {
+    const user = getSession(req);
+    if (!user) return json(res, 401, { error: 'Não autenticado' });
+    const pg = storage.getPool ? storage.getPool() : null;
+    if (!pg) return json(res, 503, { error: 'Banco não disponível' });
+    const id = url.pathname.split('/')[3];
+    const body = await new Promise((resolve) => { let d=''; req.on('data',c=>d+=c); req.on('end',()=>{try{resolve(JSON.parse(d));}catch{resolve({});}}); });
+    try {
+      await pg.query(
+        'UPDATE contas_pagar_receber SET status=\'PAGO\', valor_pago=$1, data_pagamento=$2, atualizado_em=NOW() WHERE id=$3',
+        [body.valor_pago, body.data_pagamento, id]
+      );
+      return json(res, 200, { ok: true });
+    } catch(e) { return json(res, 500, { error: e.message }); }
+  }
+
+  // ============================================================
+  // CONCILIAÇÃO BANCÁRIA — /conciliacao
+  // ============================================================
+  if (req.method === 'GET' && url.pathname === '/conciliacao') {
+    const user = getSession(req);
+    if (!user) { res.writeHead(302, { Location: '/login' }); res.end(); return; }
+    let bancos = [], historico = [];
+    try {
+      const pg = storage.getPool ? storage.getPool() : null;
+      if (pg) {
+        bancos    = (await pg.query('SELECT * FROM bancos WHERE ativo=true ORDER BY nome')).rows;
+        historico = (await pg.query('SELECT ce.*, b.nome as banco_nome FROM conciliacao_extratos ce LEFT JOIN bancos b ON ce.banco_id=b.id ORDER BY ce.data_upload DESC LIMIT 20')).rows;
+      }
+    } catch(e) { console.error('[conciliacao]', e.message); }
+
+    const bancoOpts2 = bancos.map(b => `<option value='${b.id}'>${b.nome}</option>`).join('');
+    const renderHist = historico.map(h => `
+      <tr>
+        <td>${h.banco_nome||'-'}</td>
+        <td>${h.data_extrato||'-'}</td>
+        <td>${new Date(h.data_upload).toLocaleString('pt-BR')}</td>
+        <td>${h.total_lancamentos||0}</td>
+        <td><span class='badge badge-green'>${h.total_conciliados||0} OK</span></td>
+        <td><span class='badge badge-amber'>${h.total_divergentes||0} divergentes</span></td>
+        <td><span class='badge badge-red'>${h.total_nao_lancados||0} não lançados</span></td>
+        <td>${h.saldo_extrato!=null?'R$ '+Number(h.saldo_extrato).toLocaleString('pt-BR',{minimumFractionDigits:2}):'-'}</td>
+        <td><a href='/conciliacao/detalhe?id=${h.id}' class='btn btn-sm btn-outline'>Ver detalhes</a></td>
+      </tr>`).join('') || '<tr><td colspan="9" style="color:#808080;padding:1rem">Nenhuma conciliação realizada ainda.</td></tr>';
+
+    const body = `
+<h2 class='page-title'>🏦 Conciliação Bancária</h2>
+<div class='alert alert-info'>Faça o upload do extrato bancário (OFX ou CSV) para conciliar automaticamente com os lançamentos do sistema. O sistema identifica o que está OK, o que diverge e o que não foi lançado.</div>
+
+<section>
+  <h2>📤 Upload de Extrato</h2>
+  <div class='form-grid'>
+    <label>Banco <select id='conc-banco'><option value=''>-- Selecione --</option>${bancoOpts2}</select></label>
+    <label>Formato do arquivo
+      <select id='conc-formato'>
+        <option value='OFX'>OFX (padrão bancário — recomendado)</option>
+        <option value='CSV'>CSV (exportação do internet banking)</option>
+        <option value='XLSX'>XLSX (planilha Excel)</option>
+      </select>
+    </label>
+  </div>
+  <div class='upload-area' onclick='document.getElementById("conc-file").click()'>
+    <div class='upload-icon'>🏦</div>
+    <p><strong>Clique para selecionar o extrato bancário</strong></p>
+    <p>Formatos aceitos: OFX, CSV, XLSX · Arraste e solte aqui</p>
+    <input type='file' id='conc-file' accept='.ofx,.csv,.xlsx,.xls' style='display:none' onchange='uploadExtrato(this)'>
+  </div>
+  <div id='conc-resultado' style='margin-top:1rem'></div>
+</section>
+
+<section>
+  <h2>📋 Histórico de Conciliações</h2>
+  <div style='overflow-x:auto'>
+  <table><thead><tr><th>Banco</th><th>Data Extrato</th><th>Upload</th><th>Total</th><th>Conciliados</th><th>Divergentes</th><th>Não Lançados</th><th>Saldo</th><th></th></tr></thead>
+  <tbody>${renderHist}</tbody></table></div>
+</section>
+
+<script>
+async function uploadExtrato(input) {
+  const file = input.files[0];
+  if (!file) return;
+  const bancoId = document.getElementById('conc-banco').value;
+  if (!bancoId) { alert('Selecione o banco antes de fazer o upload'); return; }
+  const formato = document.getElementById('conc-formato').value;
+  const div = document.getElementById('conc-resultado');
+  div.innerHTML = '<div class="alert alert-info">⏳ Processando extrato...</div>';
+  const fd = new FormData();
+  fd.append('arquivo', file);
+  fd.append('banco_id', bancoId);
+  fd.append('formato', formato);
+  try {
+    const r = await fetch('/api/conciliacao/upload', { method:'POST', body: fd });
+    const d = await r.json();
+    if (d.ok) {
+      div.innerHTML = '<div class="alert alert-success">\u2705 Extrato processado! ' + d.total + ' lan\u00e7amentos \u00b7 <strong>' + d.conciliados + ' conciliados</strong> \u00b7 ' + d.divergentes + ' divergentes \u00b7 ' + d.nao_lancados + ' n\u00e3o lan\u00e7ados. <a href="/conciliacao/detalhe?id=' + d.id + '" class="btn btn-sm" style="margin-left:.5rem">Ver detalhes</a></div>';
+    } else {
+      div.innerHTML = '<div class="alert alert-danger">❌ ' + d.error + '</div>';
+    }
+  } catch(e) {
+    div.innerHTML = '<div class="alert alert-danger">❌ Erro: ' + e.message + '</div>';
+  }
+}
+</script>`;
+    const html = page('Conciliação Bancária', body, user, '/conciliacao');
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+    res.end(html);
+    return;
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/conciliacao/upload') {
+    const user = getSession(req);
+    if (!user) return json(res, 401, { error: 'Não autenticado' });
+    // Processar upload do extrato
+    // Por ora, retorna uma resposta de placeholder até implementar o parser OFX
+    return json(res, 200, { ok: true, total: 0, conciliados: 0, divergentes: 0, nao_lancados: 0, id: 0, message: 'Parser OFX em implementação' });
   }
 
   res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
