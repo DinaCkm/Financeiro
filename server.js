@@ -2280,7 +2280,8 @@ Responda em português, de forma objetiva e direta, citando os dados específico
     const lancsFiltrados = db.entries.filter(e =>
       (e.dataISO||'') >= filtroInicio &&
       (e.dataISO||'') <= filtroFim &&
-      !e.isTransferenciaInterna
+      !e.isTransferenciaInterna &&
+      (e.centroCusto||'').toUpperCase().trim() !== 'SALDO ATUAL'
     );
     const totalReceitasFiltro = lancsFiltrados.filter(e=>(e.valor||0)>0).reduce((a,e)=>a+(e.valor||0),0);
     const totalDespesasFiltro = lancsFiltrados.filter(e=>(e.valor||0)<0).reduce((a,e)=>a+Math.abs(e.valor||0),0);
