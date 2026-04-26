@@ -38,9 +38,16 @@ const ALIAS_RULES = {
 // CCs que NUNCA devem aparecer como cliente no dashboard
 // São custos de estrutura (overhead) ou movimentações internas
 const FORBIDDEN_AS_CLIENT = [
-  'ESCRITÓRIO', 'SALÁRIOS', 'JURÍDICO', 'CONTÁBIL', 'TEF', 'MÚTUO',
-  'PRONAMPE', 'SALDO ATUAL', 'ADMINISTRATIVO', 'COMERCIAL', 'FINANCEIRO',
-  'FISCAL', 'OPERACIONAL', 'PRÓ-LABORE', 'RH', 'TI', 'IMPOSTOS',
+  // Com acento (planilhas antigas)
+  'ESCRITÓRIO', 'SALÁRIOS', 'JURÍDICO', 'CONTÁBIL', 'MÚTUO', 'PRÓ-LABORE',
+  // Sem acento (planilha CKM atual — códigos canônicos do banco)
+  'ESCRITORIO', 'SALARIOS', 'JURIDICO', 'CONTABIL', 'MUTUO', 'PRO-LABORE',
+  'SAL_PRO-LAB_PJ', 'TI_SUPORTE', 'ADM',
+  // Movimentações internas e financeiras
+  'TEF', 'TEF_CC', 'PRONAMPE', 'BANCO', 'IOF_CC',
+  // Genéricos que não são clientes
+  'SALDO ATUAL', 'ADMINISTRATIVO', 'COMERCIAL', 'FINANCEIRO',
+  'FISCAL', 'OPERACIONAL', 'RH', 'TI', 'IMPOSTOS',
   'MARKETING', 'INFRAESTRUTURA', 'TECNOLOGIA'
 ];
 
@@ -2313,6 +2320,60 @@ Responda em português, de forma objetiva e direta, citando os dados específico
       }
     });
 
+    // ── Buscar mapa de tipos dos CCs do PostgreSQL ──────────────────────────
+    // Monta: { 'JURIDICO': 'ESTRUTURA', 'BANRISUL': 'OPERACIONAL', ... }
+    let ccTipoMap = {};
+    try {
+      const pg = storage.getPool ? storage.getPool() : null;
+      if (pg) {
+        const ccRows = (await pg.query('SELECT codigo, tipo FROM centros_de_custo WHERE ativo = true')).rows;
+        ccRows.forEach(r => { ccTipoMap[r.codigo.toUpperCase()] = r.tipo; });
+      }
+    } catch(e) { console.error('[dashboard] ccTipoMap error:', e.message); }
+
+    // ── Árvore hierárquica: TIPO → CC → (OPERACIONAL: EMPRESA → PROJETO) ──
+    // Estrutura: arvore[tipo][cc] = { entradas, saidas, empresas: { empresa: { entradas, saidas, projetos: { proj: { entradas, saidas } } } } }
+    const TIPOS_ORDEM = ['OPERACIONAL', 'ESTRUTURA', 'FINANCEIRO', 'TRANSFERENCIA'];
+    const arvore = {};
+    TIPOS_ORDEM.forEach(t => { arvore[t] = {}; });
+
+    // Função para resolver tipo de um lançamento
+    function resolverTipoCC(e) {
+      const cc = (e.centroCusto || '').toUpperCase().trim();
+      // Primeiro: verificar no mapa do banco
+      if (ccTipoMap[cc]) return { tipo: ccTipoMap[cc], cc };
+      // Segundo: heurística por FORBIDDEN_AS_CLIENT
+      if (FORBIDDEN_AS_CLIENT.includes(cc)) return { tipo: 'ESTRUTURA', cc };
+      // Terceiro: se tem cliente operacional, é OPERACIONAL
+      const c = clienteEfetivo(e);
+      if (c !== 'SEM CLIENTE') return { tipo: 'OPERACIONAL', cc: c };
+      // Default: ESTRUTURA
+      return { tipo: 'ESTRUTURA', cc: cc || 'SEM CC' };
+    }
+
+    lancsFiltrados.forEach(e => {
+      const v = e.valor || 0;
+      const { tipo, cc } = resolverTipoCC(e);
+      if (tipo === 'TRANSFERENCIA') return; // ignora TEF
+      if (!arvore[tipo]) arvore[tipo] = {};
+      if (!arvore[tipo][cc]) arvore[tipo][cc] = { entradas: 0, saidas: 0, empresas: {} };
+      if (v > 0) arvore[tipo][cc].entradas += v;
+      else arvore[tipo][cc].saidas += Math.abs(v);
+
+      if (tipo === 'OPERACIONAL') {
+        const empresa = clienteEfetivo(e);
+        const projeto = projetoEfetivo(e);
+        if (!arvore[tipo][cc].empresas[empresa]) arvore[tipo][cc].empresas[empresa] = { entradas: 0, saidas: 0, projetos: {} };
+        if (v > 0) arvore[tipo][cc].empresas[empresa].entradas += v;
+        else arvore[tipo][cc].empresas[empresa].saidas += Math.abs(v);
+        if (projeto !== 'SEM PROJETO') {
+          if (!arvore[tipo][cc].empresas[empresa].projetos[projeto]) arvore[tipo][cc].empresas[empresa].projetos[projeto] = { entradas: 0, saidas: 0 };
+          if (v > 0) arvore[tipo][cc].empresas[empresa].projetos[projeto].entradas += v;
+          else arvore[tipo][cc].empresas[empresa].projetos[projeto].saidas += Math.abs(v);
+        }
+      }
+    });
+
     const fmtBRL = (v) => {
       const abs = Math.abs(v).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
       return (v < 0 ? '-' : '') + 'R$ ' + abs;
@@ -2390,24 +2451,123 @@ Responda em português, de forma objetiva e direta, citando os dados específico
 <a href='/ia?de=${filtroInicio}&ate=${filtroFim}' style='font-size:.8rem;padding:.25rem .6rem;background:#eff6ff;border:1px solid #bfdbfe;border-radius:.375rem;text-decoration:none;color:#1d4ed8'>🤖 Analisar com IA</a>
 </div></div>`;
 
+    // ── HTML da árvore hierárquica Resultado do Período ────────────────────
+    const tipoLabel = { OPERACIONAL: '\uD83D\uDCBC Operacional (Clientes)', ESTRUTURA: '\uD83C\uDFE0 Estrutura (Overhead)', FINANCEIRO: '\uD83C\uDFE6 Financeiro (Empréstimos/Banco)' };
+    const tipoColor = { OPERACIONAL: '#5ED38C', ESTRUTURA: '#5B2EFF', FINANCEIRO: '#00B8D9' };
+    const tipoDesc  = { OPERACIONAL: 'Receitas e despesas de projetos com clientes', ESTRUTURA: 'Gastos fixos: escritório, salários, jurídico, contabilidade etc.', FINANCEIRO: 'Empréstimos (Mútuo, Pronampe) e tarifas bancárias' };
+
+    const fmtSaldo = (ent, sai) => {
+      const s = ent - sai;
+      const cor = s >= 0 ? '#16a34a' : '#dc2626';
+      return `<span style='color:${cor};font-weight:700'>${fmtBRL(s)}</span>`;
+    };
+    const rowStyle = 'display:grid;grid-template-columns:1fr auto auto auto;gap:.5rem;align-items:center;padding:.35rem .5rem;border-radius:.25rem;font-size:.88rem';
+    const hdrStyle = 'display:grid;grid-template-columns:1fr auto auto auto;gap:.5rem;padding:.2rem .5rem;font-size:.75rem;color:#94a3b8;font-weight:600;text-transform:uppercase;letter-spacing:.04em';
+
+    let arvoreHTML = `<h3 style='margin-top:1.5rem'>\uD83D\uDCC8 Resultado do Período <span style='font-size:.8rem;color:#64748b;font-weight:400'>(${filtroInicio} a ${filtroFim})</span></h3>
+<p style='color:#64748b;font-size:.9rem;margin-bottom:1rem'>Entradas, saídas e saldo de cada grupo no período. Clique em um grupo para expandir os detalhes.</p>`;
+
+    for (const tipo of TIPOS_ORDEM) {
+      if (tipo === 'TRANSFERENCIA') continue;
+      const ccs = arvore[tipo];
+      if (!ccs || Object.keys(ccs).length === 0) continue;
+
+      // Totais do tipo
+      let tipoEnt = 0, tipoSai = 0;
+      Object.values(ccs).forEach(d => { tipoEnt += d.entradas; tipoSai += d.saidas; });
+
+      const cor = tipoColor[tipo] || '#808080';
+      arvoreHTML += `<details style='border:1px solid ${cor}33;border-radius:.5rem;margin-bottom:.75rem;background:#fff'>
+<summary style='cursor:pointer;padding:.75rem 1rem;background:${cor}11;border-radius:.5rem;list-style:none;display:flex;align-items:center;gap:.75rem;user-select:none'>
+  <span style='font-size:1.05rem;font-weight:700;color:${cor}'>${tipoLabel[tipo]||tipo}</span>
+  <span style='flex:1;font-size:.8rem;color:#64748b'>${tipoDesc[tipo]||''}</span>
+  <span style='font-size:.8rem;color:#16a34a;white-space:nowrap'>+${fmtBRL(tipoEnt)}</span>
+  <span style='font-size:.8rem;color:#dc2626;white-space:nowrap'>-${fmtBRL(tipoSai)}</span>
+  <span style='font-size:.9rem;font-weight:700;white-space:nowrap'>${fmtSaldo(tipoEnt,tipoSai)}</span>
+</summary>
+<div style='padding:.5rem .75rem'>`;
+
+      // Linha de cabeçalho das colunas
+      arvoreHTML += `<div style='${hdrStyle}'><span>Centro de Custo</span><span style='text-align:right'>Entradas</span><span style='text-align:right'>Saídas</span><span style='text-align:right'>Saldo</span></div>`;
+
+      // Cada CC dentro do tipo
+      for (const [cc, dados] of Object.entries(ccs).sort((a,b) => (b[1].entradas - b[1].saidas) - (a[1].entradas - a[1].saidas))) {
+        const temEmpresas = tipo === 'OPERACIONAL' && Object.keys(dados.empresas||{}).length > 0;
+        if (temEmpresas) {
+          // CC operacional: abre um sub-details para empresas
+          arvoreHTML += `<details style='margin:.2rem 0;border-left:3px solid ${cor}44;padding-left:.5rem'>
+<summary style='cursor:pointer;list-style:none;${rowStyle};background:#f8fafc;border-radius:.25rem'>
+  <span style='font-weight:600'>\u25B6 ${cc}</span>
+  <span style='text-align:right;color:#16a34a'>${fmtBRL(dados.entradas)}</span>
+  <span style='text-align:right;color:#dc2626'>${fmtBRL(dados.saidas)}</span>
+  ${fmtSaldo(dados.entradas,dados.saidas)}
+</summary>
+<div style='padding:.25rem 0 .25rem .75rem'>`;
+
+          for (const [empresa, empDados] of Object.entries(dados.empresas).sort((a,b) => (b[1].entradas-b[1].saidas)-(a[1].entradas-a[1].saidas))) {
+            const temProjetos = Object.keys(empDados.projetos||{}).length > 0;
+            if (temProjetos) {
+              arvoreHTML += `<details style='margin:.15rem 0'>
+<summary style='cursor:pointer;list-style:none;${rowStyle};color:#374151'>
+  <span>\u25B6 ${empresa}</span>
+  <span style='text-align:right;color:#16a34a;font-size:.82rem'>${fmtBRL(empDados.entradas)}</span>
+  <span style='text-align:right;color:#dc2626;font-size:.82rem'>${fmtBRL(empDados.saidas)}</span>
+  ${fmtSaldo(empDados.entradas,empDados.saidas)}
+</summary>
+<div style='padding:.15rem 0 .15rem 1rem'>`;
+              for (const [proj, pDados] of Object.entries(empDados.projetos).sort((a,b) => (b[1].entradas-b[1].saidas)-(a[1].entradas-a[1].saidas))) {
+                arvoreHTML += `<div style='${rowStyle};color:#64748b;font-size:.83rem'>
+  <span style='padding-left:.5rem'>\u2514 ${proj}</span>
+  <span style='text-align:right;color:#16a34a'>${fmtBRL(pDados.entradas)}</span>
+  <span style='text-align:right;color:#dc2626'>${fmtBRL(pDados.saidas)}</span>
+  ${fmtSaldo(pDados.entradas,pDados.saidas)}
+</div>`;
+              }
+              arvoreHTML += `</div></details>`;
+            } else {
+              arvoreHTML += `<div style='${rowStyle};color:#374151'>
+  <span>${empresa}</span>
+  <span style='text-align:right;color:#16a34a;font-size:.82rem'>${fmtBRL(empDados.entradas)}</span>
+  <span style='text-align:right;color:#dc2626;font-size:.82rem'>${fmtBRL(empDados.saidas)}</span>
+  ${fmtSaldo(empDados.entradas,empDados.saidas)}
+</div>`;
+            }
+          }
+          arvoreHTML += `</div></details>`;
+        } else {
+          // CC de estrutura/financeiro: linha simples
+          arvoreHTML += `<div style='${rowStyle};border-bottom:1px solid #f1f5f9'>
+  <span style='font-weight:500'>${cc}</span>
+  <span style='text-align:right;color:#16a34a'>${fmtBRL(dados.entradas)}</span>
+  <span style='text-align:right;color:#dc2626'>${fmtBRL(dados.saidas)}</span>
+  ${fmtSaldo(dados.entradas,dados.saidas)}
+</div>`;
+        }
+      }
+
+      // Linha de total do tipo
+      arvoreHTML += `<div style='${rowStyle};border-top:2px solid ${cor}44;margin-top:.35rem;font-weight:700;background:${cor}08'>
+  <span>TOTAL ${tipo}</span>
+  <span style='text-align:right;color:#16a34a'>${fmtBRL(tipoEnt)}</span>
+  <span style='text-align:right;color:#dc2626'>${fmtBRL(tipoSai)}</span>
+  ${fmtSaldo(tipoEnt,tipoSai)}
+</div>`;
+
+      arvoreHTML += `</div></details>`;
+    }
+
     // Conteúdo principal conforme visão selecionada
     const conteudoPrincipal = visao === 'fluxo'
-      ? `<h3>💰 Fluxo de Caixa Mês a Mês</h3>
+      ? `<h3>\uD83D\uDCB0 Fluxo de Caixa Mês a Mês</h3>
 <p style='color:#64748b;font-size:.9rem;margin-bottom:.75rem'>Dinheiro que <strong>realmente entrou e saiu</strong> no período. Não inclui transferências internas entre contas (TEF).</p>
 ${fluxoGrafico}${fluxoTabela}
 <div style='margin-top:1rem;padding:.75rem;background:#fffbeb;border:1px solid #fde68a;border-radius:.375rem;font-size:.85rem;color:#92400e'>
-⚠️ <strong>Fluxo de Caixa ≠ Lucro:</strong> Um mês com saldo negativo não significa prejuízo — pode ser que você pagou equipe de um projeto que ainda não faturou. Use a visão <a href='/dashboard?de=${filtroInicio}&ate=${filtroFim}&visao=resultado'>Resultado Econômico</a> para ver o lucro real por projeto.
+\u26A0\uFE0F <strong>Fluxo de Caixa \u2260 Lucro:</strong> Um mês com saldo negativo não significa prejuízo \u2014 pode ser que você pagou equipe de um projeto que ainda não faturou. Use a visão <a href='/dashboard?de=${filtroInicio}&ate=${filtroFim}&visao=resultado'>Resultado Econômico</a> para ver o lucro real por projeto.
 </div>`
-      : `<h3>📊 Resultado por Cliente <span style='font-size:.8rem;color:#64748b;font-weight:400'>(período: ${filtroInicio} a ${filtroFim})</span></h3>
-<ul>${topItems(byClienteFiltro).map(([k, v]) => `<li><a href='/dashboard/detalhe?view=cliente&chave=${encodeURIComponent(k)}'>${k}: ${fmtBRL(v)}</a></li>`).join('') || '<li>Sem dados no período.</li>'}</ul>
-<h3>📁 Resultado por Projeto <span style='font-size:.8rem;color:#64748b;font-weight:400'>(período: ${filtroInicio} a ${filtroFim})</span></h3>
-<ul>${topItems(byProjetoFiltro).map(([k, v]) => `<li><a href='/dashboard/detalhe?view=projeto&chave=${encodeURIComponent(k)}'>${k}: ${fmtBRL(v)}</a></li>`).join('') || '<li>Sem dados no período.</li>'}</ul>
+      : `${arvoreHTML}
 <div style='margin-top:1rem;padding:.75rem;background:#eff6ff;border:1px solid #bfdbfe;border-radius:.375rem;font-size:.85rem;color:#1e40af'>
-💡 <strong>Resultado Econômico:</strong> Mostra o lucro/prejuízo acumulado de cada cliente e projeto no período. Para ver como o dinheiro entrou e saiu mês a mês, use a visão <a href='/dashboard?de=${filtroInicio}&ate=${filtroFim}&visao=fluxo'>Fluxo de Caixa</a>.
-</div>
-<h3 style='margin-top:1.5rem'>🏠 Custos de Estrutura (overhead)</h3>
-<p style='color:#64748b;font-size:.9rem;margin-bottom:.75rem'>Gastos fixos não vinculados a clientes: escritório, salários, impostos e administração.</p>
-${estruturaHTML}`;
+\uD83D\uDCA1 <strong>Como ler:</strong> Clique em cada grupo para expandir. <strong>Operacional</strong> = receitas e custos de projetos com clientes. <strong>Estrutura</strong> = gastos fixos da empresa (escritório, salários, jurídico). <strong>Financeiro</strong> = empréstimos e tarifas bancárias. Para ver o fluxo mês a mês, use <a href='/dashboard?de=${filtroInicio}&ate=${filtroFim}&visao=fluxo'>Fluxo de Caixa</a>.
+</div>`;
 
     const html = page('Dashboard', `<section>
 <h2>Dashboard gerencial</h2>
