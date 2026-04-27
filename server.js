@@ -894,6 +894,7 @@ function page(title, body, user, activePage) {
     ['/pendencias', 'Pré-análise', ''],
     ['/cadastros', 'Revisável', ''],
     ['/fatura', 'Fatura', ''],
+    ['/lancamentos', '✏ Lançamentos', ''],
     ['/historico', 'Histórico', ''],
     ['/dashboard', 'Dashboard', ''],
     ['/cadastros-mestres', '⚙ Cadastros', 'nav-cad'],
@@ -2424,6 +2425,64 @@ Responda em português, de forma objetiva e direta, citando os dados específico
     }
   }
 
+
+  // POST /api/entries — criar novo lançamento manual
+  if (req.method === 'POST' && url.pathname === '/api/entries') {
+    const user = requireAuth(req, res, db);
+    if (!user) return;
+    const body = JSON.parse(await readBody(req) || '{}');
+    const id = crypto.randomUUID();
+    const now = new Date().toISOString();
+    // Normalizar valor conforme D/C
+    let valor = parseFloat(body.valor || 0);
+    const dc = (body.dc || (valor >= 0 ? 'C' : 'D')).toUpperCase();
+    if (dc === 'D') valor = -Math.abs(valor);
+    if (dc === 'C') valor = Math.abs(valor);
+    const entry = {
+      id,
+      data: body.data || now.slice(0, 10),
+      dataISO: body.data || now.slice(0, 10),
+      descricao: body.documento || body.descricao || '',
+      documento: body.documento || body.descricao || '',
+      descritivo: body.descritivo || '',
+      valor,
+      dc,
+      natureza: body.naturezaGerencial || body.natureza || 'Pendente de Classificação',
+      naturezaGerencial: body.naturezaGerencial || 'Pendente de Classificação',
+      grupoDespesa: body.grupoDespesa || '',
+      tipoDespesa: body.tipoDespesa || '',
+      centroCusto: body.centroCusto || '',
+      conta: body.conta || '',
+      cliente: body.favorecido || body.cliente || '',
+      favorecido: body.favorecido || body.cliente || '',
+      cpfCnpj: body.cpfCnpj || '',
+      parceiro: body.parceiro || '',
+      projeto: body.projeto || '',
+      status: body.status || 'AG',
+      origem: 'manual',
+      criadoEm: now,
+      criadoPor: user.email || 'sistema',
+    };
+    db.entries.push(entry);
+    registrarAuditoria(db, id, user.email || 'sistema', entry, {});
+    saveDb(db);
+    return json(res, 201, entry);
+  }
+
+
+  // DELETE /api/entries/:id — excluir lançamento
+  if (req.method === 'DELETE' && url.pathname.startsWith('/api/entries/') && !url.pathname.includes('/historico')) {
+    const user = requireAuth(req, res, db);
+    if (!user) return;
+    const id = url.pathname.split('/').pop();
+    const idx = db.entries.findIndex(e => e.id === id);
+    if (idx === -1) return json(res, 404, { error: 'Lançamento não encontrado' });
+    const [removed] = db.entries.splice(idx, 1);
+    registrarAuditoria(db, id, user.email || 'sistema', { excluido: true }, removed);
+    saveDb(db);
+    return json(res, 200, { ok: true });
+  }
+
   if (req.method === 'PATCH' && url.pathname.startsWith('/api/entries/')) {
     const id = url.pathname.split('/').pop();
     const entry = db.entries.find((e) => e.id === id);
@@ -3511,6 +3570,338 @@ async function excluirRef(tipo,nome){
   }
 
   // GET /historico — página global de auditoria (com paginação para evitar crash de memória)
+
+  // GET /lancamentos — Gestão de Lançamentos (novo, editar, pesquisar)
+  if (req.method === 'GET' && url.pathname === '/lancamentos') {
+    const user = requireAuth(req, res, db);
+    if (!user) return;
+
+    // Parâmetros de busca
+    const q = (url.searchParams.get('q') || '').toLowerCase().trim();
+    const qData = url.searchParams.get('data') || '';
+    const qDataFim = url.searchParams.get('data_fim') || '';
+    const qCC = (url.searchParams.get('cc') || '').toLowerCase().trim();
+    const qCliente = (url.searchParams.get('cliente') || '').toLowerCase().trim();
+    const qNat = url.searchParams.get('nat') || '';
+    const qDC = url.searchParams.get('dc') || '';
+    const qStatus = url.searchParams.get('status') || '';
+    const qCpf = (url.searchParams.get('cpf') || '').toLowerCase().trim();
+    const page_num = Math.max(1, parseInt(url.searchParams.get('p') || '1', 10));
+    const PAGE_SIZE = 50;
+
+    // Filtrar lançamentos
+    let entries = db.entries.filter(e => {
+      if (q) {
+        const txt = [e.descricao, e.documento, e.descritivo, e.cliente, e.favorecido, e.parceiro, e.projeto, e.centroCusto, e.cpfCnpj].join(' ').toLowerCase();
+        if (!txt.includes(q)) return false;
+      }
+      if (qData && (e.dataISO || '') < qData) return false;
+      if (qDataFim && (e.dataISO || '') > qDataFim) return false;
+      if (qCC && !(e.centroCusto || '').toLowerCase().includes(qCC)) return false;
+      if (qCliente && ![(e.favorecido||''), (e.cliente||''), (e.parceiro||'')].join(' ').toLowerCase().includes(qCliente)) return false;
+      if (qNat && (e.naturezaGerencial || e.natureza || '') !== qNat) return false;
+      if (qDC && (e.dc || (e.valor >= 0 ? 'C' : 'D')) !== qDC) return false;
+      if (qStatus && (e.status || '') !== qStatus) return false;
+      if (qCpf && !(e.cpfCnpj || '').toLowerCase().includes(qCpf)) return false;
+      return true;
+    }).sort((a, b) => (b.dataISO || '').localeCompare(a.dataISO || ''));
+
+    const total = entries.length;
+    const totalPages = Math.ceil(total / PAGE_SIZE) || 1;
+    const paginated = entries.slice((page_num - 1) * PAGE_SIZE, page_num * PAGE_SIZE);
+
+    // Datalists para autocomplete
+    const ccs = [...new Set(db.entries.map(e => e.centroCusto).filter(Boolean))].sort();
+    const clientes = [...new Set(db.entries.map(e => e.favorecido || e.cliente || e.parceiro).filter(Boolean))].sort();
+    const contas = [...new Set(db.entries.map(e => e.conta).filter(Boolean))].sort();
+    const projetos = [...new Set(db.entries.map(e => e.projeto).filter(Boolean))].sort();
+
+    const NATUREZAS = ['Receita Operacional','Custo Direto','Custo Indireto','Receita Financeira','Movimentação Financeira','Transferência Interna','Pendente de Classificação'];
+    const GRUPOS = ['','Pessoal','Sistemas e Tecnologia','Serviços Terceirizados','Despesas Financeiras','Despesas Administrativas','Receita de Contrato','Rendimentos Financeiros','Custo de Projeto'];
+    const TIPOS = ['','Salário / Pró-labore','Serviço PJ','Software / Licença','Hospedagem','Assessoria Contábil','Assessoria Jurídica','Assessoria de Marketing','Terceiros / Consultoria','Tarifa Bancária','Imposto / Tributo','Aluguel','Internet / Telefonia','Material de Escritório','Reembolso','Receita de Contrato','Rendimento Financeiro','Custo Operacional de Projeto','Outros'];
+    const STATUS_LISTA = ['PG','AG','RE','RT','TF','NT','ZZ','OK','RG','XF','AP','DE','MK','NR','BQ','CR','RD','importado','pendente','ok','cancelado','revisado'];
+
+    const natOpts = NATUREZAS.map(n => `<option value="${n}">${n}</option>`).join('');
+    const grupoOpts = GRUPOS.map(g => `<option value="${g}">${g || '-- Selecione --'}</option>`).join('');
+    const tipoOpts = TIPOS.map(t => `<option value="${t}">${t || '-- Selecione --'}</option>`).join('');
+    const statusOpts = STATUS_LISTA.map(s => `<option value="${s}">${s}</option>`).join('');
+    const dlCC = ccs.map(c => `<option value="${c}">`).join('');
+    const dlClientes = clientes.map(c => `<option value="${c}">`).join('');
+    const dlContas = contas.map(c => `<option value="${c}">`).join('');
+    const dlProjetos = projetos.map(c => `<option value="${c}">`).join('');
+
+    // Paginação
+    const paginacao = totalPages > 1 ? `<div style="display:flex;gap:.5rem;align-items:center;margin-top:1rem;flex-wrap:wrap">
+      ${page_num > 1 ? `<a href="?p=${page_num-1}&q=${encodeURIComponent(q)}&data=${qData}&data_fim=${qDataFim}&cc=${encodeURIComponent(qCC)}&cliente=${encodeURIComponent(qCliente)}&nat=${encodeURIComponent(qNat)}&dc=${qDC}&status=${qStatus}&cpf=${encodeURIComponent(qCpf)}" style="padding:.3rem .7rem;background:#e2e8f0;border-radius:6px;text-decoration:none;color:#475569">← Anterior</a>` : ''}
+      <span style="color:#64748b;font-size:.85rem">Página ${page_num} de ${totalPages} (${total} lançamentos)</span>
+      ${page_num < totalPages ? `<a href="?p=${page_num+1}&q=${encodeURIComponent(q)}&data=${qData}&data_fim=${qDataFim}&cc=${encodeURIComponent(qCC)}&cliente=${encodeURIComponent(qCliente)}&nat=${encodeURIComponent(qNat)}&dc=${qDC}&status=${qStatus}&cpf=${encodeURIComponent(qCpf)}" style="padding:.3rem .7rem;background:#e2e8f0;border-radius:6px;text-decoration:none;color:#475569">Próxima →</a>` : ''}
+    </div>` : `<div style="color:#64748b;font-size:.85rem;margin-top:.5rem">${total} lançamento(s) encontrado(s)</div>`;
+
+    // Linhas da tabela
+    const rows = paginated.map(e => {
+      const dcStr = e.dc || (e.valor >= 0 ? 'C' : 'D');
+      const dcCls = dcStr === 'C' ? 'color:#065f46;font-weight:700' : 'color:#991b1b;font-weight:700';
+      const val = Number(e.valor || 0);
+      const valStr = `R$ ${Math.abs(val).toLocaleString('pt-BR', {minimumFractionDigits:2})}`;
+      const valCls = val >= 0 ? 'color:#065f46' : 'color:#991b1b';
+      const nome = (e.favorecido || e.cliente || e.parceiro || '-').slice(0, 30);
+      const desc = (e.documento || e.descricao || '-').slice(0, 50);
+      const cc = (e.centroCusto || '-').slice(0, 15);
+      const nat = (e.naturezaGerencial || e.natureza || '-').slice(0, 20);
+      const status = e.status || '-';
+      const origem = e.origem === 'manual' ? '<span style="font-size:.65rem;background:#dbeafe;color:#1e40af;padding:.1rem .3rem;border-radius:4px">MANUAL</span>' : '';
+      return `<tr id="row-${e.id}" style="border-bottom:1px solid #f1f5f9;cursor:pointer" onclick="toggleEditLanc('${e.id}')">
+        <td style="white-space:nowrap;color:#64748b;font-size:.8rem">${e.dataISO || '-'}</td>
+        <td style="${dcCls};font-size:.78rem;text-align:center">${dcStr}</td>
+        <td style="color:#64748b;font-size:.78rem">${cc}</td>
+        <td style="font-size:.78rem">${nome} ${origem}</td>
+        <td style="font-size:.78rem;color:#475569" title="${(e.descritivo||e.descricao||'')}">${desc}</td>
+        <td style="${valCls};font-size:.8rem;text-align:right;font-weight:600">${valStr}</td>
+        <td style="font-size:.72rem;color:#94a3b8">${nat}</td>
+        <td style="font-size:.72rem;color:#94a3b8">${status}</td>
+        <td style="text-align:center"><button onclick="event.stopPropagation();excluirLanc('${e.id}')" style="background:#fee2e2;color:#991b1b;font-size:.7rem;padding:.2rem .4rem;box-shadow:none;border:1px solid #fca5a5">✕</button></td>
+      </tr>
+      <tr id="edit-lanc-${e.id}" style="display:none;background:#f8fafc">
+        <td colspan="9" style="padding:.75rem 1rem">
+          <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:.75rem">
+            <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Data</label>
+            <input id="el-data-${e.id}" value="${e.dataISO||''}" type="date" style="font-size:.8rem;padding:.3rem .5rem;width:100%"/></div>
+            <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">D/C</label>
+            <select id="el-dc-${e.id}" style="font-size:.8rem;padding:.3rem .5rem;width:100%">
+              <option value="C" ${dcStr==='C'?'selected':''}>C — Crédito (entrada)</option>
+              <option value="D" ${dcStr==='D'?'selected':''}>D — Débito (saída)</option>
+            </select></div>
+            <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Natureza Gerencial</label>
+            <select id="el-nat-${e.id}" style="font-size:.8rem;padding:.3rem .5rem;width:100%">${NATUREZAS.map(n=>`<option value="${n}" ${(e.naturezaGerencial||e.natureza||'')==n?'selected':''}>${n}</option>`).join('')}</select></div>
+            <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Grupo da Despesa</label>
+            <select id="el-grupo-${e.id}" style="font-size:.8rem;padding:.3rem .5rem;width:100%">${GRUPOS.map(g=>`<option value="${g}" ${(e.grupoDespesa||'')==g?'selected':''}>${g||'-- Selecione --'}</option>`).join('')}</select></div>
+            <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Tipo de Despesa</label>
+            <select id="el-tipo-${e.id}" style="font-size:.8rem;padding:.3rem .5rem;width:100%">${TIPOS.map(t=>`<option value="${t}" ${(e.tipoDespesa||'')==t?'selected':''}>${t||'-- Selecione --'}</option>`).join('')}</select></div>
+            <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Código (CC)</label>
+            <input id="el-cc-${e.id}" list="dl-cc-lanc" value="${e.centroCusto||''}" style="font-size:.8rem;padding:.3rem .5rem;width:100%"/></div>
+            <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Nome (Cliente / Fornecedor)</label>
+            <input id="el-cliente-${e.id}" list="dl-clientes-lanc" value="${e.favorecido||e.cliente||e.parceiro||''}" style="font-size:.8rem;padding:.3rem .5rem;width:100%"/></div>
+            <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">CPF / CNPJ</label>
+            <input id="el-cpf-${e.id}" value="${e.cpfCnpj||''}" placeholder="000.000.000-00" style="font-size:.8rem;padding:.3rem .5rem;width:100%"/></div>
+            <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Conta / Banco</label>
+            <input id="el-conta-${e.id}" list="dl-contas-lanc" value="${e.conta||''}" style="font-size:.8rem;padding:.3rem .5rem;width:100%"/></div>
+            <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Projeto</label>
+            <input id="el-proj-${e.id}" list="dl-projetos-lanc" value="${e.projeto||''}" style="font-size:.8rem;padding:.3rem .5rem;width:100%"/></div>
+            <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Valor (R$)</label>
+            <input id="el-valor-${e.id}" type="number" step="0.01" value="${Math.abs(val)}" style="font-size:.8rem;padding:.3rem .5rem;width:100%"/></div>
+            <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Status</label>
+            <select id="el-status-${e.id}" style="font-size:.8rem;padding:.3rem .5rem;width:100%">${STATUS_LISTA.map(s=>`<option value="${s}" ${(e.status||'')==s?'selected':''}>${s}</option>`).join('')}</select></div>
+            <div style="grid-column:span 2"><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Documento / Referência (NF, Recibo, Contrato)</label>
+            <input id="el-doc-${e.id}" value="${(e.documento||e.descricao||'').replace(/"/g,'&quot;')}" style="font-size:.8rem;padding:.3rem .5rem;width:100%"/></div>
+            <div style="grid-column:span 2"><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Descritivo (finalidade do gasto)</label>
+            <input id="el-descritivo-${e.id}" value="${(e.descritivo||'').replace(/"/g,'&quot;')}" placeholder="Ex: Serviço de hospedagem para manutenção da presença digital" style="font-size:.8rem;padding:.3rem .5rem;width:100%"/></div>
+          </div>
+          <div style="display:flex;gap:.5rem;margin-top:.75rem">
+            <button onclick="salvarLancEdit('${e.id}')" style="background:#059669;font-size:.8rem;padding:.4rem .9rem">✓ Salvar</button>
+            <button onclick="toggleEditLanc('${e.id}')" style="background:#e2e8f0;color:#475569;font-size:.8rem;padding:.4rem .9rem;box-shadow:none">Cancelar</button>
+          </div>
+        </td>
+      </tr>`;
+    }).join('');
+
+    const body = `
+<datalist id="dl-cc-lanc">${dlCC}</datalist>
+<datalist id="dl-clientes-lanc">${dlClientes}</datalist>
+<datalist id="dl-contas-lanc">${dlContas}</datalist>
+<datalist id="dl-projetos-lanc">${dlProjetos}</datalist>
+
+<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1.5rem;flex-wrap:wrap;gap:.75rem">
+  <h1 style="margin:0">✏ Gestão de Lançamentos</h1>
+  <button onclick="document.getElementById('form-novo').style.display=document.getElementById('form-novo').style.display==='none'?'block':'none'" style="background:#6d28d9;padding:.5rem 1.2rem">+ Novo Lançamento</button>
+</div>
+
+<!-- FORMULÁRIO DE NOVO LANÇAMENTO -->
+<div id="form-novo" style="display:none;background:#f8fafc;border:1px solid #e2e8f0;border-radius:12px;padding:1.5rem;margin-bottom:1.5rem">
+  <h3 style="margin:0 0 1rem;color:#1e293b">Novo Lançamento</h3>
+  <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:.75rem">
+    <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Data *</label>
+    <input id="novo-data" type="date" value="${new Date().toISOString().slice(0,10)}" style="font-size:.8rem;padding:.3rem .5rem;width:100%"/></div>
+    <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">D/C *</label>
+    <select id="novo-dc" style="font-size:.8rem;padding:.3rem .5rem;width:100%">
+      <option value="D">D — Débito (saída)</option>
+      <option value="C">C — Crédito (entrada)</option>
+    </select></div>
+    <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Natureza Gerencial *</label>
+    <select id="novo-nat" style="font-size:.8rem;padding:.3rem .5rem;width:100%">${natOpts}</select></div>
+    <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Grupo da Despesa</label>
+    <select id="novo-grupo" style="font-size:.8rem;padding:.3rem .5rem;width:100%">${grupoOpts}</select></div>
+    <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Tipo de Despesa</label>
+    <select id="novo-tipo" style="font-size:.8rem;padding:.3rem .5rem;width:100%">${tipoOpts}</select></div>
+    <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Código (CC) *</label>
+    <input id="novo-cc" list="dl-cc-lanc" placeholder="Ex: ESCRITORIO" style="font-size:.8rem;padding:.3rem .5rem;width:100%"/></div>
+    <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Nome (Cliente / Fornecedor)</label>
+    <input id="novo-cliente" list="dl-clientes-lanc" placeholder="Ex: VIVO, SEBRAE-AC" style="font-size:.8rem;padding:.3rem .5rem;width:100%"/></div>
+    <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">CPF / CNPJ</label>
+    <input id="novo-cpf" placeholder="000.000.000-00" style="font-size:.8rem;padding:.3rem .5rem;width:100%"/></div>
+    <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Conta / Banco</label>
+    <input id="novo-conta" list="dl-contas-lanc" placeholder="Ex: Itaú PJ" style="font-size:.8rem;padding:.3rem .5rem;width:100%"/></div>
+    <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Projeto</label>
+    <input id="novo-proj" list="dl-projetos-lanc" placeholder="Ex: BRB-PDL" style="font-size:.8rem;padding:.3rem .5rem;width:100%"/></div>
+    <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Valor (R$) *</label>
+    <input id="novo-valor" type="number" step="0.01" placeholder="0,00" style="font-size:.8rem;padding:.3rem .5rem;width:100%"/></div>
+    <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Status</label>
+    <select id="novo-status" style="font-size:.8rem;padding:.3rem .5rem;width:100%">${statusOpts}</select></div>
+    <div style="grid-column:span 2"><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Documento / Referência (NF, Recibo, Contrato)</label>
+    <input id="novo-doc" placeholder="Ex: NF 11921943 - Contrato 42156427" style="font-size:.8rem;padding:.3rem .5rem;width:100%"/></div>
+    <div style="grid-column:span 2"><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Descritivo (finalidade do gasto)</label>
+    <input id="novo-descritivo" placeholder="Ex: Serviço de hospedagem para manutenção da presença digital" style="font-size:.8rem;padding:.3rem .5rem;width:100%"/></div>
+  </div>
+  <div style="display:flex;gap:.5rem;margin-top:1rem">
+    <button onclick="criarLancamento()" style="background:#059669;padding:.5rem 1.2rem">✓ Salvar Lançamento</button>
+    <button onclick="document.getElementById('form-novo').style.display='none'" style="background:#e2e8f0;color:#475569;box-shadow:none">Cancelar</button>
+  </div>
+  <div id="novo-feedback" style="margin-top:.5rem;font-size:.85rem"></div>
+</div>
+
+<!-- FILTROS DE PESQUISA -->
+<form method="GET" action="/lancamentos" style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:12px;padding:1rem;margin-bottom:1rem">
+  <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:.5rem;align-items:end">
+    <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Busca geral</label>
+    <input name="q" value="${q}" placeholder="Nome, descrição, NF..." style="font-size:.8rem;padding:.3rem .5rem;width:100%"/></div>
+    <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Data início</label>
+    <input name="data" type="date" value="${qData}" style="font-size:.8rem;padding:.3rem .5rem;width:100%"/></div>
+    <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Data fim</label>
+    <input name="data_fim" type="date" value="${qDataFim}" style="font-size:.8rem;padding:.3rem .5rem;width:100%"/></div>
+    <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Centro de Custo</label>
+    <input name="cc" list="dl-cc-lanc" value="${qCC}" placeholder="Ex: ESCRITORIO" style="font-size:.8rem;padding:.3rem .5rem;width:100%"/></div>
+    <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Cliente / Fornecedor</label>
+    <input name="cliente" list="dl-clientes-lanc" value="${qCliente}" placeholder="Ex: SEBRAE, VIVO" style="font-size:.8rem;padding:.3rem .5rem;width:100%"/></div>
+    <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">CPF / CNPJ</label>
+    <input name="cpf" value="${qCpf}" placeholder="000.000.000-00" style="font-size:.8rem;padding:.3rem .5rem;width:100%"/></div>
+    <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Natureza</label>
+    <select name="nat" style="font-size:.8rem;padding:.3rem .5rem;width:100%">
+      <option value="">Todas</option>
+      ${NATUREZAS.map(n => `<option value="${n}" ${qNat===n?'selected':''}>${n}</option>`).join('')}
+    </select></div>
+    <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">D/C</label>
+    <select name="dc" style="font-size:.8rem;padding:.3rem .5rem;width:100%">
+      <option value="">Todos</option>
+      <option value="C" ${qDC==='C'?'selected':''}>C — Crédito (entrada)</option>
+      <option value="D" ${qDC==='D'?'selected':''}>D — Débito (saída)</option>
+    </select></div>
+    <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Status</label>
+    <select name="status" style="font-size:.8rem;padding:.3rem .5rem;width:100%">
+      <option value="">Todos</option>
+      ${STATUS_LISTA.map(s => `<option value="${s}" ${qStatus===s?'selected':''}>${s}</option>`).join('')}
+    </select></div>
+    <div style="display:flex;gap:.4rem;align-items:flex-end">
+      <button type="submit" style="background:#6d28d9;font-size:.8rem;padding:.4rem .8rem;flex:1">🔍 Pesquisar</button>
+      <a href="/lancamentos" style="background:#e2e8f0;color:#475569;font-size:.8rem;padding:.4rem .6rem;border-radius:6px;text-decoration:none">✕</a>
+    </div>
+  </div>
+</form>
+
+${paginacao}
+
+<!-- TABELA DE LANÇAMENTOS -->
+<div style="overflow-x:auto">
+<table style="width:100%;border-collapse:collapse">
+  <thead>
+    <tr style="background:#f1f5f9;font-size:.75rem;text-transform:uppercase;color:#64748b">
+      <th style="padding:.5rem .75rem;text-align:left">Data</th>
+      <th style="padding:.5rem .75rem;text-align:center">Tipo</th>
+      <th style="padding:.5rem .75rem;text-align:left">Código</th>
+      <th style="padding:.5rem .75rem;text-align:left">Nome</th>
+      <th style="padding:.5rem .75rem;text-align:left">Descritivo</th>
+      <th style="padding:.5rem .75rem;text-align:right">Valor</th>
+      <th style="padding:.5rem .75rem;text-align:left">Natureza</th>
+      <th style="padding:.5rem .75rem;text-align:left">Status</th>
+      <th style="padding:.5rem .75rem;text-align:center">Ação</th>
+    </tr>
+  </thead>
+  <tbody>${rows || '<tr><td colspan="9" style="text-align:center;padding:2rem;color:#94a3b8">Nenhum lançamento encontrado com os filtros aplicados.</td></tr>'}</tbody>
+</table>
+</div>
+${paginacao}
+
+<script>
+function toggleEditLanc(id) {
+  const row = document.getElementById('edit-lanc-' + id);
+  if (row) row.style.display = row.style.display === 'none' ? 'table-row' : 'none';
+}
+async function salvarLancEdit(id) {
+  const data = {
+    data: document.getElementById('el-data-'+id)?.value,
+    dataISO: document.getElementById('el-data-'+id)?.value,
+    dc: document.getElementById('el-dc-'+id)?.value,
+    natureza: document.getElementById('el-nat-'+id)?.value,
+    naturezaGerencial: document.getElementById('el-nat-'+id)?.value,
+    grupoDespesa: document.getElementById('el-grupo-'+id)?.value,
+    tipoDespesa: document.getElementById('el-tipo-'+id)?.value,
+    centroCusto: document.getElementById('el-cc-'+id)?.value,
+    cliente: document.getElementById('el-cliente-'+id)?.value,
+    favorecido: document.getElementById('el-cliente-'+id)?.value,
+    cpfCnpj: document.getElementById('el-cpf-'+id)?.value,
+    conta: document.getElementById('el-conta-'+id)?.value,
+    projeto: document.getElementById('el-proj-'+id)?.value,
+    valor: parseFloat(document.getElementById('el-valor-'+id)?.value || 0),
+    status: document.getElementById('el-status-'+id)?.value,
+    documento: document.getElementById('el-doc-'+id)?.value,
+    descricao: document.getElementById('el-doc-'+id)?.value,
+    descritivo: document.getElementById('el-descritivo-'+id)?.value,
+  };
+  if (data.valor !== undefined && data.dc === 'D') data.valor = -Math.abs(data.valor);
+  if (data.valor !== undefined && data.dc === 'C') data.valor = Math.abs(data.valor);
+  const resp = await fetch('/api/entries/' + id, {method:'PATCH', headers:{'content-type':'application/json'}, body: JSON.stringify(data)});
+  if (resp.ok) {
+    location.reload();
+  } else {
+    alert('Erro ao salvar. Tente novamente.');
+  }
+}
+async function criarLancamento() {
+  const data = {
+    data: document.getElementById('novo-data')?.value,
+    dc: document.getElementById('novo-dc')?.value,
+    naturezaGerencial: document.getElementById('novo-nat')?.value,
+    grupoDespesa: document.getElementById('novo-grupo')?.value,
+    tipoDespesa: document.getElementById('novo-tipo')?.value,
+    centroCusto: document.getElementById('novo-cc')?.value,
+    favorecido: document.getElementById('novo-cliente')?.value,
+    cpfCnpj: document.getElementById('novo-cpf')?.value,
+    conta: document.getElementById('novo-conta')?.value,
+    projeto: document.getElementById('novo-proj')?.value,
+    valor: parseFloat(document.getElementById('novo-valor')?.value || 0),
+    status: document.getElementById('novo-status')?.value,
+    documento: document.getElementById('novo-doc')?.value,
+    descritivo: document.getElementById('novo-descritivo')?.value,
+  };
+  if (!data.data || !data.valor || !data.centroCusto) {
+    document.getElementById('novo-feedback').innerHTML = '<span style="color:#dc2626">⚠ Preencha Data, Código (CC) e Valor.</span>';
+    return;
+  }
+  const resp = await fetch('/api/entries', {method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify(data)});
+  if (resp.ok) {
+    document.getElementById('novo-feedback').innerHTML = '<span style="color:#059669">✓ Lançamento criado com sucesso!</span>';
+    setTimeout(() => location.reload(), 1200);
+  } else {
+    document.getElementById('novo-feedback').innerHTML = '<span style="color:#dc2626">Erro ao criar. Tente novamente.</span>';
+  }
+}
+async function excluirLanc(id) {
+  if (!confirm('Excluir este lançamento? Esta ação não pode ser desfeita.')) return;
+  const resp = await fetch('/api/entries/' + id, {method:'DELETE'});
+  if (resp.ok) {
+    const row = document.getElementById('row-' + id);
+    const editRow = document.getElementById('edit-lanc-' + id);
+    if (row) row.remove();
+    if (editRow) editRow.remove();
+  } else {
+    alert('Erro ao excluir.');
+  }
+}
+</script>`;
+
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+    res.end(buildPage(user, '✏ Lançamentos', body, '/lancamentos'));
+    return;
+  }
+
   if (req.method === 'GET' && url.pathname === '/historico') {
     if (!user) { res.writeHead(302, { Location: '/login' }); res.end(); return; }
     const PAGE_SIZE = 100;
