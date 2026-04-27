@@ -1015,19 +1015,18 @@ function reviewCards(list, allEntries) {
           style='${congelado ? 'opacity:.55;background:#f8fafc;cursor:default' : 'cursor:pointer'}'
           ${congelado ? '' : `onclick="toggleEntryEdit('${eId}')" title='Clique para editar este lançamento'`}>
           <td style='white-space:nowrap;font-size:.8rem;${!congelado&&!(e.dataISO||e.data)?'color:#dc2626;font-weight:700':''}'>${e.dataISO || e.data || (congelado?'-':'⚠ sem data')}</td>
-          <td style='font-size:.8rem;${!congelado&&!e.descricao?'color:#dc2626;font-weight:700':''}'>${e.descricao || (congelado?'-':'⚠ sem descrição')}</td>
-          <td style='white-space:nowrap;${!congelado&&(e.valor||0)===0?'color:#dc2626;font-weight:700':valColor};font-size:.8rem'>R$ ${Number(e.valor || 0).toFixed(2)}</td>
           <td style='${dcColor};font-weight:700;font-size:.8rem;text-align:center'>${dcLabel}</td>
-          <td style='font-size:.8rem;${!congelado&&(!e.natureza||e.natureza==='Pendente')?'color:#dc2626;font-weight:700;background:#fff5f5':''}'>${e.natureza || '-'}</td>
           <td style='font-size:.8rem;${!congelado&&!e.centroCusto?'color:#dc2626;font-weight:700;background:#fff5f5':''}'>${e.centroCusto || '-'}</td>
-          <td style='font-size:.8rem;color:#64748b'>${e.conta || '-'}</td>
           <td style='font-size:.8rem;${!congelado&&!(e.cliente||e.parceiro)?'color:#dc2626;font-weight:700;background:#fff5f5':''}'>${e.cliente || e.parceiro || '-'}</td>
+          <td style='font-size:.8rem;${!congelado&&!e.descricao?'color:#dc2626;font-weight:700':''}'>${e.descricao || (congelado?'-':'⚠ sem descrição')}</td>
+          <td style='font-size:.8rem;${!congelado&&(!e.natureza||e.natureza==='Pendente')?'color:#dc2626;font-weight:700;background:#fff5f5':''}'>${e.natureza || '-'}</td>
+          <td style='white-space:nowrap;${!congelado&&(e.valor||0)===0?'color:#dc2626;font-weight:700':valColor};font-size:.8rem;text-align:right'>R$ ${Number(e.valor || 0).toFixed(2)}</td>
           <td style='font-size:.8rem;color:#94a3b8'>${e.projeto || '-'}</td>
           <td style='font-size:.8rem'>${e.status || '-'}</td>
           <td style='font-size:.75rem;white-space:nowrap'>${congelado ? '<span style="color:#94a3b8;font-size:.7rem">🔒 histórico</span>' : '&#9998; <span style="color:#1d4ed8">editar</span>'}</td>
         </tr>
         <tr class='entry-edit-row' id='edit-${eId}' style='display:none;background:${congelado?'#f8fafc':'#f0f9ff'}'>
-          <td colspan='11' style='padding:.75rem 1rem'>
+          <td colspan='10' style='padding:.75rem 1rem'>
             <div style='background:#fff;border:1px solid ${congelado?'#e2e8f0':'#bfdbfe'};border-radius:8px;padding:1rem'>
               ${congelado
                 ? `<p style='font-size:.8rem;color:#64748b;margin:0'>&#128274; Este lançamento é <strong>histórico</strong> (anterior a ${CORTE_DATA}) e está congelado. Ele entra apenas no saldo acumulado e não pode ser editado.</p>`
@@ -1083,7 +1082,7 @@ function reviewCards(list, allEntries) {
                     + "<select id='ef-nat-"+eId+"' style='font-size:.8rem;padding:.3rem .5rem;"+(isPendNat?'border:2px solid #ef4444;background:#fff5f5':'')+"'>"+natOpts2+"</select>"
                     + "</div>"
                     + "<div>"
-                    + "<label style='font-size:.72rem;font-weight:700;"+lv(ccVal)+";text-transform:uppercase'>"+warn(ccVal)+"Centro de Custo</label>"
+                    + "<label style='font-size:.72rem;font-weight:700;"+lv(ccVal)+";text-transform:uppercase'>"+warn(ccVal)+"Código (CC)</label>"
                     + "<input id='ef-cc-"+eId+"' list='dl-cc' value='"+ccVal+"' placeholder='Selecione ou digite...' style='font-size:.8rem;padding:.3rem .5rem;"+fv(ccVal)+"'/>"
                     + "</div>"
                     + "<div>"
@@ -1091,7 +1090,7 @@ function reviewCards(list, allEntries) {
                     + "<input id='ef-conta-"+eId+"' list='dl-contas' value='"+contaVal+"' placeholder='Selecione ou digite...' style='font-size:.8rem;padding:.3rem .5rem'/>"
                     + "</div>"
                     + "<div>"
-                    + "<label style='font-size:.72rem;font-weight:700;"+lvMotivo(clienteVal,clienteEMotivo)+";text-transform:uppercase'>"+(clienteEMotivo?'\u26a0 \u2190 PENDENTE DE CLASSIFICA\u00c7\u00c3O ':warn(clienteVal))+"Cliente / Parceiro</label>"
+                    + "<label style='font-size:.72rem;font-weight:700;"+lvMotivo(clienteVal,clienteEMotivo)+";text-transform:uppercase'>"+(clienteEMotivo?'\u26a0 \u2190 PENDENTE DE CLASSIFICA\u00c7\u00c3O ':warn(clienteVal))+"Nome (Cliente / Fornecedor)</label>"
                     + "<input id='ef-cliente-"+eId+"' list='dl-clientes' value='"+clienteVal+"' placeholder='Selecione ou digite...' style='font-size:.8rem;padding:.3rem .5rem;"+fvMotivo(clienteVal,clienteEMotivo)+"'/>"
                     + "</div>"
                     + "<div>"
@@ -1121,13 +1120,12 @@ function reviewCards(list, allEntries) {
           <table style='min-width:1000px;font-size:.8rem'>
             <thead><tr>
               <th style='white-space:nowrap'>Data</th>
-              <th>Histórico</th>
-              <th style='white-space:nowrap'>Valor</th>
-              <th>D/C</th>
+              <th style='white-space:nowrap'>Tipo</th>
+              <th>Código</th>
+              <th>Nome</th>
+              <th>Descritivo</th>
               <th>Natureza</th>
-              <th>Centro Custo</th>
-              <th>Conta</th>
-              <th>Cliente/Parceiro</th>
+              <th style='text-align:right'>Valor</th>
               <th>Projeto</th>
               <th>Status</th>
               <th></th>
@@ -1406,7 +1404,7 @@ function entriesTable(entries) {
     <td>${e.natureza || '-'}</td>
     <td>${e.status || '-'}</td>
   </tr>`).join('');
-  return `<table><thead><tr><th>Data</th><th>Descrição</th><th>Valor</th><th>Cliente</th><th>Projeto</th><th>Parceiro</th><th>Natureza</th><th>Status</th></tr></thead><tbody>${rows || '<tr><td colspan="8">Sem lançamentos no recorte.</td></tr>'}</tbody></table>`;
+  return `<table><thead><tr><th>Data</th><th>Tipo</th><th>Código</th><th>Nome</th><th>Descritivo</th><th>Natureza</th><th style="text-align:right">Valor</th></tr></thead><tbody>${rows || '<tr><td colspan="7">Sem lançamentos no recorte.</td></tr>'}</tbody></table>`;
 }
 
 const server = http.createServer(async (req, res) => {
@@ -2931,13 +2929,16 @@ function openDrawer(view, de, ate) {
           const saldoAcumCls = (e.saldoAcum || 0) >= 0 ? 'drawer-val-pos' : 'drawer-val-neg';
           return '<tr><td style="white-space:nowrap;color:#64748b">' + (e.dataISO||'-') + '</td><td title="' + (e.descricao||'') + '">' + desc + '</td><td class="' + tipoCls + '" style="font-size:.78rem;font-weight:600">' + tipoLabel + '</td><td class="' + cls + '">' + val + '</td><td class="' + saldoAcumCls + '" style="font-size:.78rem">Saldo: ' + saldoAcumStr + '</td></tr>';
         }
-        const cc = (e.centroCusto || e.cliente || '-').slice(0, 20);
-        return '<tr><td style="white-space:nowrap;color:#64748b">' + (e.dataISO||'-') + '</td><td title="' + (e.descricao||'') + '">' + desc + '</td><td style="color:#64748b;font-size:.78rem">' + cc + '</td><td class="' + cls + '">' + val + '</td></tr>';
+        const cc = (e.centroCusto || '-').slice(0, 15);
+        const nome = (e.cliente || e.parceiro || '-').slice(0, 20);
+        const dcStr = e.dc || (e.valor >= 0 ? 'C' : 'D');
+        const dcCls = dcStr === 'C' ? 'color:#065f46;font-weight:700' : 'color:#991b1b;font-weight:700';
+        return '<tr><td style="white-space:nowrap;color:#64748b">' + (e.dataISO||'-') + '</td><td style="' + dcCls + ';font-size:.78rem;text-align:center">' + dcStr + '</td><td style="color:#64748b;font-size:.78rem">' + cc + '</td><td style="font-size:.78rem">' + nome + '</td><td title="' + (e.descricao||'') + '">' + desc + '</td><td class="' + cls + '">' + val + '</td></tr>';
       }).join('');
       if (isMutuo) {
         body.innerHTML = '<table><thead><tr><th>Data</th><th>Descrição</th><th>Tipo</th><th style="text-align:right">Valor</th><th style="text-align:right">Saldo devedor</th></tr></thead><tbody>' + rows + '</tbody></table>';
       } else {
-        body.innerHTML = '<table><thead><tr><th>Data</th><th>Descrição</th><th>Centro</th><th style="text-align:right">Valor</th></tr></thead><tbody>' + rows + '</tbody></table>';
+        body.innerHTML = '<table><thead><tr><th>Data</th><th>Tipo</th><th>Código</th><th>Nome</th><th>Descritivo</th><th style="text-align:right">Valor</th></tr></thead><tbody>' + rows + '</tbody></table>';
       }
     })
     .catch(err => {
@@ -3219,7 +3220,7 @@ function renderResultado(data) {
   div.innerHTML = '<h3 style="margin-bottom:.75rem">Itens extraídos da fatura (' + data.itens.length + ')</h3>' +
     '<p style="font-size:.82rem;color:var(--gray-600);margin-bottom:.75rem">Itens em amarelo foram deixados como <strong>Pendente</strong> pela IA. Revise e ajuste antes de confirmar.</p>' +
     '<div style="overflow-x:auto;margin-bottom:1rem"><table style="min-width:800px"><thead><tr>' +
-    '<th>Data</th><th>Descrição</th><th>Valor</th><th>Natureza</th><th>Centro Custo</th><th>Projeto</th><th>Obs. IA</th>' +
+    '<th>Data</th><th>Tipo</th><th>Código</th><th>Nome</th><th>Descritivo</th><th>Natureza</th><th style="text-align:right">Valor</th><th>Projeto</th><th>Obs. IA</th>' +
     '</tr></thead><tbody>' + rows + '</tbody></table></div>' +
     '<div style="background:#fef2f2;border:1px solid #fecaca;border-radius:8px;padding:.75rem 1rem;margin-bottom:1rem">' +
     '<strong style="font-size:.85rem;color:#991b1b">⚠ Atenção:</strong> <span style="font-size:.82rem;color:#7f1d1d">Ao confirmar, o lançamento original de R$ ' + Number(data.valorOriginal||0).toFixed(2) + ' será <strong>removido</strong> e substituído pelos ' + data.itens.length + ' itens acima. Esta ação não pode ser desfeita.</span>' +
@@ -5115,7 +5116,7 @@ async function saveContrato() {
 <section>
   <h2>Contas Pendentes</h2>
   <div style='overflow-x:auto'>
-  <table><thead><tr><th>Tipo</th><th>Vencimento</th><th>Descrição</th><th>Valor</th><th>Cliente</th><th>Centro Custo</th><th>Status</th><th></th></tr></thead>
+  <table><thead><tr><th>Tipo</th><th>Vencimento</th><th>Código</th><th>Nome</th><th>Descritivo</th><th style="text-align:right">Valor</th><th>Status</th><th></th></tr></thead>
   <tbody>${renderContas}</tbody></table></div>
 </section>
 
