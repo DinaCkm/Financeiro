@@ -1004,11 +1004,12 @@ function reviewCards(list, allEntries) {
       const dcColor = dcLabel === 'C' ? 'color:#065f46' : 'color:#991b1b';
       const eId = e.id;
       const congelado = isHistorico(e);
-      const natOpts = ['Receita Operacional','Despesa Direta','Despesa Indireta','Despesa Administrativa',
-        'Despesa Financeira','Movimentação Financeira Não Operacional','Transferência','Pendente']
-        .map((n) => `<option value='${n}' ${n === (e.natureza||'Pendente') ? 'selected' : ''}>${n}</option>`).join('');
-      const statusOpts = ['ok','pendente','cancelado','revisado']
-        .map((s) => `<option value='${s}' ${s === (e.status||'ok') ? 'selected' : ''}>${s}</option>`).join('');
+      const NATUREZAS_GERENCIAIS = ['Receita Operacional','Custo Direto','Custo Indireto','Receita Financeira','Movimentação Financeira','Transferência Interna','Pendente de Classificação'];
+      const natOpts = NATUREZAS_GERENCIAIS
+        .map((n) => `<option value='${n}' ${n === (e.naturezaGerencial||e.natureza||'Pendente de Classificação') ? 'selected' : ''}>${n}</option>`).join('');
+      const STATUS_LISTA = ['PG','AG','RE','RT','TF','NT','ZZ','OK','RG','XF','AP','DE','MK','NR','BQ','CR','RD','importado','pendente','ok','cancelado','revisado'];
+      const statusOpts = STATUS_LISTA
+        .map((s) => `<option value='${s}' ${s === (e.status||'PG') ? 'selected' : ''}>${s}</option>`).join('');
 
       return `
         <tr class='entry-view-row' id='view-${eId}'
@@ -1055,16 +1056,24 @@ function reviewCards(list, allEntries) {
                   var lv = function(v){ return (!v||v==='-'||v==='0.00') ? 'color:#dc2626;font-weight:700' : 'color:#64748b'; };
                   var lvMotivo = function(v, isMotivo){ return isMotivo ? 'color:#dc2626;font-weight:700' : lv(v); };
                   var warn = function(v){ return (!v||v==='-'||v==='0.00') ? '⚠ ' : ''; };
-                  var natOpts2 = ['Receita Operacional','Despesa Direta','Despesa Indireta','Despesa Administrativa',
-                    'Despesa Financeira','Movimentação Financeira Não Operacional','Transferência','Pendente']
-                    .map(function(n){ return "<option value='"+n+"' "+(n===(e.natureza||'Pendente')?'selected':'')+">"+n+"</option>"; }).join('');
+                  var NATS_GER = ['Receita Operacional','Custo Direto','Custo Indireto','Receita Financeira','Movimentação Financeira','Transferência Interna','Pendente de Classificação'];
+                  var natOpts2 = NATS_GER
+                    .map(function(n){ return "<option value='"+n+"' "+(n===(e.naturezaGerencial||e.natureza||'Pendente de Classificação')?'selected':'')+">"+n+"</option>"; }).join('');
+                  var GRUPOS_DESP = ['','Pessoal','Sistemas e Tecnologia','Serviços Terceirizados','Despesas Financeiras','Despesas Administrativas','Receita de Contrato','Rendimentos Financeiros','Custo de Projeto'];
+                  var grupoOpts = GRUPOS_DESP.map(function(g){ return "<option value='"+g+"' "+(g===(e.grupoDespesa||'')?'selected':'')+">"+(g||'-- Selecione --')+"</option>"; }).join('');
+                  var TIPOS_DESP = ['','Salário / Pró-labore','Serviço PJ','Software / Licença','Hospedagem','Assessoria Contábil','Assessoria Jurídica','Assessoria de Marketing','Terceiros / Consultoria','Tarifa Bancária','Imposto / Tributo','Aluguel','Internet / Telefonia','Material de Escritório','Reembolso','Receita de Contrato','Rendimento Financeiro','Custo Operacional de Projeto','Outros'];
+                  var tipoDesp = TIPOS_DESP.map(function(t){ return "<option value='"+t+"' "+(t===(e.tipoDespesa||'')?'selected':'')+">"+(t||'-- Selecione --')+"</option>"; }).join('');
                   return "<div>"
                     + "<label style='font-size:.72rem;font-weight:700;"+lv(dataVal)+";text-transform:uppercase'>"+warn(dataVal)+"Data</label>"
                     + "<input id='ef-data-"+eId+"' value='"+dataVal+"' placeholder='YYYY-MM-DD' style='font-size:.8rem;padding:.3rem .5rem;"+fv(dataVal)+"'/>"
                     + "</div>"
                     + "<div style='grid-column:span 2'>"
-                    + "<label style='font-size:.72rem;font-weight:700;"+lv(descVal)+";text-transform:uppercase'>"+warn(descVal)+"Histórico / Descrição</label>"
-                    + "<input id='ef-desc-"+eId+"' value='"+descVal+"' placeholder='Descrição do lançamento' style='font-size:.8rem;padding:.3rem .5rem;"+fv(descVal)+"'/>"
+                    + "<label style='font-size:.72rem;font-weight:700;"+lv(descVal)+";text-transform:uppercase'>"+warn(descVal)+"Documento / Referência (NF, Recibo, Contrato)</label>"
+                    + "<input id='ef-doc-"+eId+"' value='"+(e.documento||descVal)+"' placeholder='Ex: NF 11921943 - Contrato 42156427' style='font-size:.8rem;padding:.3rem .5rem;"+fv(descVal)+"'/>"
+                    + "</div>"
+                    + "<div style='grid-column:span 2'>"
+                    + "<label style='font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase'>Descritivo (finalidade do gasto)</label>"
+                    + "<input id='ef-descritivo-"+eId+"' value='"+(e.descritivo||'')+"' placeholder='Ex: Serviço de hospedagem de site para manutenção da presença digital' style='font-size:.8rem;padding:.3rem .5rem'/>"
                     + "</div>"
                     + "<div>"
                     + "<label style='font-size:.72rem;font-weight:700;"+(valorVal==='0.00'?'color:#dc2626;font-weight:700':'color:#64748b')+";text-transform:uppercase'>"+(valorVal==='0.00'?'⚠ ':'')+"Valor (R$)</label>"
@@ -1082,6 +1091,14 @@ function reviewCards(list, allEntries) {
                     + "<select id='ef-nat-"+eId+"' style='font-size:.8rem;padding:.3rem .5rem;"+(isPendNat?'border:2px solid #ef4444;background:#fff5f5':'')+"'>"+natOpts2+"</select>"
                     + "</div>"
                     + "<div>"
+                    + "<label style='font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase'>Grupo da Despesa</label>"
+                    + "<select id='ef-grupo-"+eId+"' style='font-size:.8rem;padding:.3rem .5rem'>"+grupoOpts+"</select>"
+                    + "</div>"
+                    + "<div>"
+                    + "<label style='font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase'>Tipo de Despesa</label>"
+                    + "<select id='ef-tipo-desp-"+eId+"' style='font-size:.8rem;padding:.3rem .5rem'>"+tipoDesp+"</select>"
+                    + "</div>"
+                    + "<div>"
                     + "<label style='font-size:.72rem;font-weight:700;"+lv(ccVal)+";text-transform:uppercase'>"+warn(ccVal)+"Código (CC)</label>"
                     + "<input id='ef-cc-"+eId+"' list='dl-cc' value='"+ccVal+"' placeholder='Selecione ou digite...' style='font-size:.8rem;padding:.3rem .5rem;"+fv(ccVal)+"'/>"
                     + "</div>"
@@ -1092,6 +1109,10 @@ function reviewCards(list, allEntries) {
                     + "<div>"
                     + "<label style='font-size:.72rem;font-weight:700;"+lvMotivo(clienteVal,clienteEMotivo)+";text-transform:uppercase'>"+(clienteEMotivo?'\u26a0 \u2190 PENDENTE DE CLASSIFICA\u00c7\u00c3O ':warn(clienteVal))+"Nome (Cliente / Fornecedor)</label>"
                     + "<input id='ef-cliente-"+eId+"' list='dl-clientes' value='"+clienteVal+"' placeholder='Selecione ou digite...' style='font-size:.8rem;padding:.3rem .5rem;"+fvMotivo(clienteVal,clienteEMotivo)+"'/>"
+                    + "</div>"
+                    + "<div>"
+                    + "<label style='font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase'>CPF / CNPJ</label>"
+                    + "<input id='ef-cpfcnpj-"+eId+"' value='"+(e.cpfCnpj||'')+"' placeholder='000.000.000-00 ou 00.000.000/0001-00' style='font-size:.8rem;padding:.3rem .5rem'/>"
                     + "</div>"
                     + "<div>"
                     + "<label style='font-size:.72rem;font-weight:700;"+lvMotivo(projVal,projetoEMotivo)+";text-transform:uppercase'>"+(projetoEMotivo?'\u26a0 \u2190 PENDENTE DE CLASSIFICA\u00c7\u00c3O ':'')+'Projeto <span style=\'font-weight:400;font-size:.7rem\'>(opcional)</span></label>'
@@ -1943,10 +1964,18 @@ async function salvarLancamento(eId){
     valor: parseFloat(document.getElementById('ef-valor-'+eId)?.value)||undefined,
     dc: document.getElementById('ef-dc-'+eId)?.value||undefined,
     natureza: document.getElementById('ef-nat-'+eId)?.value||undefined,
+    naturezaGerencial: document.getElementById('ef-nat-'+eId)?.value||undefined,
+    grupoDespesa: document.getElementById('ef-grupo-'+eId)?.value||undefined,
+    tipoDespesa: document.getElementById('ef-tipo-desp-'+eId)?.value||undefined,
     centroCusto: document.getElementById('ef-cc-'+eId)?.value||undefined,
     conta: document.getElementById('ef-conta-'+eId)?.value||undefined,
     cliente: document.getElementById('ef-cliente-'+eId)?.value||undefined,
+    favorecido: document.getElementById('ef-cliente-'+eId)?.value||undefined,
+    cpfCnpj: document.getElementById('ef-cpfcnpj-'+eId)?.value||undefined,
     projeto: document.getElementById('ef-proj-'+eId)?.value||undefined,
+    documento: document.getElementById('ef-doc-'+eId)?.value||undefined,
+    descricao: document.getElementById('ef-doc-'+eId)?.value||undefined,
+    descritivo: document.getElementById('ef-descritivo-'+eId)?.value||undefined,
     status: document.getElementById('ef-status-'+eId)?.value||undefined
   };
   // Ajustar sinal do valor conforme D/C
@@ -1997,7 +2026,7 @@ async function verHistoricoLancamento(eId){
   try{
     const resp=await fetch('/api/entries/'+eId+'/historico');
     const log=await resp.json();
-    const LABELS={cliente:'Cliente',projeto:'Projeto',parceiro:'Parceiro',centroCusto:'Centro de Custo',natureza:'Natureza',categoria:'Categoria',detalhe:'Detalhe',conta:'Conta',formaPagamento:'Forma Pgto',status:'Status',descricao:'Descrição',valor:'Valor',dc:'D/C',data:'Data'};
+    const LABELS={cliente:'Nome (Cliente/Fornecedor)',favorecido:'Favorecido',projeto:'Projeto',parceiro:'Parceiro',centroCusto:'Código (CC)',natureza:'Natureza (legado)',naturezaGerencial:'Natureza Gerencial',grupoDespesa:'Grupo da Despesa',tipoDespesa:'Tipo de Despesa',cpfCnpj:'CPF/CNPJ',documento:'Documento/Referência',descritivo:'Descritivo',categoria:'Categoria',detalhe:'Detalhe',conta:'Conta',formaPagamento:'Forma Pgto',status:'Status',descricao:'Histórico (legado)',valor:'Valor',dc:'D/C',data:'Data'};
     const formatTs=ts=>{const d=new Date(ts);return d.toLocaleDateString('pt-BR')+' '+d.toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'});};
     const content=document.getElementById('hist-content-'+eId);
     if(!log.length){ content.innerHTML='<em style="color:#94a3b8">Nenhuma alteração registrada para este lançamento.</em>'; return; }
@@ -2400,7 +2429,7 @@ Responda em português, de forma objetiva e direta, citando os dados específico
     const entry = db.entries.find((e) => e.id === id);
     if (!entry) return json(res, 404, { error: 'Lançamento não encontrado' });
     const changes = JSON.parse(await readBody(req) || '{}');
-    const editable = ['cliente', 'projeto', 'natureza', 'centroCusto', 'parceiro', 'categoria', 'detalhe', 'conta', 'formaPagamento', 'status', 'data', 'dataISO', 'descricao', 'valor', 'dc'];
+    const editable = ['cliente', 'projeto', 'natureza', 'centroCusto', 'parceiro', 'categoria', 'detalhe', 'conta', 'formaPagamento', 'status', 'data', 'dataISO', 'descricao', 'valor', 'dc', 'naturezaGerencial', 'grupoDespesa', 'tipoDespesa', 'cpfCnpj', 'documento', 'descritivo', 'favorecido'];
     // Capturar estado anterior antes de aplicar as mudanças
     const entryAntes = {};
     editable.forEach((k) => { entryAntes[k] = entry[k]; });
