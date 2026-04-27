@@ -2959,7 +2959,7 @@ function openDrawer(view, de, ate) {
           return '<tr><td style="white-space:nowrap;color:#64748b">' + (e.dataISO||'-') + '</td><td title="' + (e.descricao||'') + '">' + desc + '</td><td class="' + tipoCls + '" style="font-size:.78rem;font-weight:600">' + tipoLabel + '</td><td class="' + cls + '">' + val + '</td><td class="' + saldoAcumCls + '" style="font-size:.78rem">Saldo: ' + saldoAcumStr + '</td></tr>';
         }
         const cc = (e.centroCusto || '-').slice(0, 15);
-        const nome = (e.cliente || e.parceiro || '-').slice(0, 20);
+        const nome = (e.favorecido || e.cliente || e.parceiro || '-').slice(0, 25);
         const dcStr = e.dc || (e.valor >= 0 ? 'C' : 'D');
         const dcCls = dcStr === 'C' ? 'color:#065f46;font-weight:700' : 'color:#991b1b;font-weight:700';
         return '<tr><td style="white-space:nowrap;color:#64748b">' + (e.dataISO||'-') + '</td><td style="' + dcCls + ';font-size:.78rem;text-align:center">' + dcStr + '</td><td style="color:#64748b;font-size:.78rem">' + cc + '</td><td style="font-size:.78rem">' + nome + '</td><td title="' + (e.descricao||'') + '">' + desc + '</td><td class="' + cls + '">' + val + '</td></tr>';
@@ -3070,6 +3070,7 @@ ${conteudoPrincipal}
         descricao: (e.descricao || e.historico || '').slice(0, 80),
         centroCusto: (e.centroCusto || '').slice(0, 30),
         cliente: clienteEfetivo(e).slice(0, 30),
+        favorecido: (e.favorecido || e.cliente || e.parceiro || '').slice(0, 30),
         projeto: projetoEfetivo(e).slice(0, 30),
         valor: fmtV(e.valor),
         natureza: (e.natureza || '').slice(0, 20),
@@ -4615,8 +4616,8 @@ function renderHistoricoRel() {
       <label>Nome <input id='cc-nome' placeholder='Ex: Marketing e Comunicação'></label>
       <label>Tipo
         <select id='cc-tipo'>
-          <option value='ESTRUTURA'>Estrutura (overhead)</option>
-          <option value='OPERACIONAL'>Operacional (cliente/projeto)</option>
+          <option value='ESTRUTURA'>Estrutura (Custo Indireto)</option>
+          <option value='OPERACIONAL'>Operacional (Custo Direto / Receita)</option>
           <option value='FINANCEIRO'>Financeiro (empréstimos, tarifas)</option>
           <option value='TRANSFERENCIA'>Transferência entre contas</option>
         </select>
