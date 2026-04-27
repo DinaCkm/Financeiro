@@ -133,12 +133,12 @@ header nav a {
 
 header nav a:hover { background: rgba(255,255,255,.12); color: var(--branco); }
 header nav a.active { background: rgba(91,46,255,.5); color: var(--branco); }
-header nav a.nav-ia { background: var(--roxo); color: var(--branco) !important; }
-header nav a.nav-ia:hover { background: #4a22e0; }
-header nav a.nav-rel { background: var(--teal); color: var(--branco) !important; }
-header nav a.nav-rel:hover { background: #0099b8; }
-header nav a.nav-cad { background: var(--verde); color: var(--roxo-deep) !important; font-weight: 600; }
-header nav a.nav-cad:hover { background: #4dc07a; }
+header nav a.nav-ia { color: var(--branco) !important; }
+header nav a.nav-ia:hover, header nav a.nav-ia.active { background: var(--roxo) !important; }
+header nav a.nav-rel { color: var(--branco) !important; }
+header nav a.nav-rel:hover, header nav a.nav-rel.active { background: var(--teal) !important; }
+header nav a.nav-cad { font-weight: 600; }
+header nav a.nav-cad:hover, header nav a.nav-cad.active { background: var(--verde) !important; color: var(--roxo-deep) !important; }
 header nav a.sair { color: #fca5a5; }
 header nav a.sair:hover { background: rgba(239,68,68,.15); color: #fca5a5; }
 
