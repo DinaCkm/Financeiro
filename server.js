@@ -3982,9 +3982,9 @@ async function excluirLanc(id) {
 }
 </script>`;
 
+    const html = page('✏ Lançamentos', body, user, '/lancamentos');
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-    res.end(buildPage(user, '✏ Lançamentos', body, '/lancamentos'));
-    return;
+    return res.end(html);
   }
 
   if (req.method === 'GET' && url.pathname === '/historico') {
