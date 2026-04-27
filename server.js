@@ -2162,7 +2162,7 @@ async function perguntarIA(cardId){
       const { OpenAI } = require('openai');
       const openai = new OpenAI();
       const completion = await openai.chat.completions.create({
-        model: 'gpt-4.1-mini',
+        model: 'gemini-2.5-flash',
         messages: [{ role: 'user', content: prompt }],
         temperature: 0.2,
         max_tokens: 300
@@ -2231,7 +2231,7 @@ Responda em português, de forma objetiva e direta, citando os dados específico
       const { OpenAI } = require('openai');
       const openai = new OpenAI();
       const completion = await openai.chat.completions.create({
-        model: 'gpt-4.1-mini',
+        model: 'gemini-2.5-flash',
         messages: [{ role: 'user', content: prompt }],
         temperature: 0.1,
         max_tokens: 600
@@ -3165,7 +3165,7 @@ Regras:
       const { OpenAI } = require('openai');
       const openai = new OpenAI();
       const completion = await openai.chat.completions.create({
-        model: 'gpt-4.1-mini',
+        model: 'gemini-2.5-flash',
         messages: [{ role: 'user', content: prompt }],
         temperature: 0.1,
         max_tokens: 4000
@@ -3704,7 +3704,7 @@ Responda seguindo OBRIGATORIAMENTE a estrutura:
       const { OpenAI } = require('openai');
       const openai = new OpenAI();
       const completion = await openai.chat.completions.create({
-        model: 'gpt-4.1-mini',
+        model: 'gemini-2.5-flash',
         messages: [
           { role: 'system', content: systemPrompt },
           { role: 'user', content: userPrompt }
@@ -4025,7 +4025,7 @@ Gere o relatório mensal completo seguindo a estrutura definida.`;
       const { OpenAI } = require('openai');
       const openai = new OpenAI();
       const completion = await openai.chat.completions.create({
-        model: 'gpt-4.1-mini',
+        model: 'gemini-2.5-flash',
         messages: [
           { role: 'system', content: systemPrompt },
           { role: 'user', content: userPrompt }
