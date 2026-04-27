@@ -3622,6 +3622,7 @@ async function excluirRef(tipo,nome){
         if (nat && nat !== 'Pendente de Classificação') return false;
       }
       if (qInc === 'sem_cpf' && (e.cpfCnpj || '').trim()) return false;
+      if (qInc === 'a_confirmar' && !e.pendente_confirmacao) return false;
       return true;
     }).sort((a, b) => (b.dataISO || '').localeCompare(a.dataISO || ''));
 
@@ -3640,6 +3641,7 @@ async function excluirRef(tipo,nome){
       return !nat || nat === 'Pendente de Classificação';
     }).length;
     const cntSemCpf = allEntries.filter(e => !(e.cpfCnpj || '').trim()).length;
+    const cntAConfirmar = allEntries.filter(e => !!e.pendente_confirmacao).length;
     const totalPages = Math.ceil(total / PAGE_SIZE) || 1;
     const paginated = entries.slice((page_num - 1) * PAGE_SIZE, page_num * PAGE_SIZE);
 
@@ -3694,12 +3696,13 @@ async function excluirRef(tipo,nome){
       const status = e.status || '-';
       const origem = e.origem === 'manual' ? '<span style="font-size:.65rem;background:#dbeafe;color:#1e40af;padding:.1rem .3rem;border-radius:4px">MANUAL</span>' : '';
       const incBadge = temInconsistencia ? `<span title="${inconsistencias.map(i=>({sem_cc:'Sem CC',sem_nome:'Sem Cliente/Fornecedor/Prestador',sem_projeto:'Sem projeto',sem_natureza:'Sem natureza'}[i]||i)).join(', ')}" style="font-size:.6rem;background:#fee2e2;color:#991b1b;padding:.1rem .3rem;border-radius:4px;cursor:help">⚠ ${inconsistencias.length}</span>` : '';
-      const rowBg = temInconsistencia ? 'background:#fffbeb' : '';
+      const confirmarBadge = e.pendente_confirmacao ? `<span title="${(e.motivo_confirmacao||'Aguardando confirmação').replace(/"/g,'&quot;')}" style="font-size:.6rem;background:#fef3c7;color:#92400e;padding:.1rem .3rem;border-radius:4px;cursor:help">🕐 Confirmar</span>` : '';
+      const rowBg = e.pendente_confirmacao ? 'background:#fffbeb;border-left:3px solid #f59e0b' : (temInconsistencia ? 'background:#fffbeb' : '');
       return `<tr id="row-${e.id}" style="border-bottom:1px solid #f1f5f9;cursor:pointer;${rowBg}" onclick="toggleEditLanc('${e.id}', ${incJson})">
         <td style="white-space:nowrap;color:#64748b;font-size:.8rem">${e.dataISO || '-'}</td>
         <td style="${dcCls};font-size:.78rem;text-align:center">${dcStr}</td>
         <td style="color:#64748b;font-size:.78rem">${cc}</td>
-        <td style="font-size:.78rem">${nome} ${origem} ${incBadge}</td>
+        <td style="font-size:.78rem">${nome} ${origem} ${incBadge} ${confirmarBadge}</td>
         <td style="font-size:.78rem;color:#475569" title="${(e.descritivo||e.descricao||'')}">${desc}</td>
         <td style="${valCls};font-size:.8rem;text-align:right;font-weight:600">${valStr}</td>
         <td style="font-size:.72rem;color:#94a3b8">${natLabel}</td>
@@ -3811,6 +3814,7 @@ async function excluirRef(tipo,nome){
   <a href="/lancamentos?inc=sem_projeto" style="font-size:.75rem;padding:.3rem .7rem;background:${qInc==='sem_projeto'?'#dc2626':'#fee2e2'};color:${qInc==='sem_projeto'?'#fff':'#991b1b'};border-radius:6px;text-decoration:none;font-weight:600">⚠ Sem Projeto (${cntSemProjeto})</a>
   <a href="/lancamentos?inc=sem_natureza" style="font-size:.75rem;padding:.3rem .7rem;background:${qInc==='sem_natureza'?'#dc2626':'#fee2e2'};color:${qInc==='sem_natureza'?'#fff':'#991b1b'};border-radius:6px;text-decoration:none;font-weight:600">⚠ Sem Natureza (${cntSemNatureza})</a>
   <a href="/lancamentos?inc=sem_cpf" style="font-size:.75rem;padding:.3rem .7rem;background:${qInc==='sem_cpf'?'#dc2626':'#fee2e2'};color:${qInc==='sem_cpf'?'#fff':'#991b1b'};border-radius:6px;text-decoration:none;font-weight:600">⚠ Sem CPF/CNPJ (${cntSemCpf})</a>
+  ${cntAConfirmar > 0 ? `<a href="/lancamentos?inc=a_confirmar" style="font-size:.75rem;padding:.3rem .7rem;background:${qInc==='a_confirmar'?'#d97706':'#fef3c7'};color:${qInc==='a_confirmar'?'#fff':'#92400e'};border-radius:6px;text-decoration:none;font-weight:600">🕐 A Confirmar (${cntAConfirmar})</a>` : ''}
   ${qInc ? '<a href="/lancamentos" style="font-size:.75rem;padding:.3rem .7rem;background:#e2e8f0;color:#475569;border-radius:6px;text-decoration:none">✕ Limpar filtro</a>' : ''}
 </div>
 
