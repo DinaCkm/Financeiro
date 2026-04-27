@@ -2682,7 +2682,6 @@ ${periodoHTML}
 <div class='card card-clickable card-teal' onclick="openDrawer('a_receber','${filtroInicio}','${filtroFim}')"><strong>A receber</strong><span class='pos'>${fmtBRL(metrics.contasReceber)}</span></div>
 <div class='card card-clickable card-warning' onclick="openDrawer('saldo_mutuo','${filtroInicio}','${filtroFim}')"><strong>Saldo de mútuo</strong><span class='${metrics.saldoMutuo>=0?"pos":"neg"}'>${fmtBRL(metrics.saldoMutuo)}</span></div>
 <div class='card card-clickable' style='background:${saldoFiltro>=0?"#f0fdf4":"#fef2f2"}' onclick="openDrawer('saldo_periodo','${filtroInicio}','${filtroFim}')"><strong>Saldo do período</strong><span style='color:${saldoFiltro>=0?"#16a34a":"#dc2626"}'>${fmtBRL(saldoFiltro)}</span></div>
-<div class='card card-clickable card-danger' onclick="openDrawer('estrutura_total','${filtroInicio}','${filtroFim}')"><strong>Estrutura (período)</strong><span class='neg'>${fmtBRL(-Object.values(byEstruturaFiltro).filter(v=>v<0).reduce((a,v)=>a+Math.abs(v),0))}</span></div>
 </div>
 <!-- Drawer overlay e painel -->
 <div class='drawer-overlay' id='drawerOverlay' onclick='closeDrawer()'></div>
