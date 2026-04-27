@@ -902,6 +902,7 @@ function page(title, body, user, activePage) {
     ['/conciliacao', '🏦 Conciliação', ''],
     ['/ia', '🤖 IA', 'nav-ia'],
     ['/relatorio', '📄 Relatórios', 'nav-rel'],
+    ['/extrato', '📊 Extrato CC', ''],
     ['/logout', 'Sair', 'sair'],
   ] : [];
   const nav = navLinks.map(([href, label, cls]) =>
@@ -1743,6 +1744,7 @@ ${groups.map((g) => `<h3>${g.title}</h3><ul>${openIssues.filter((i) => i.code ==
       </p>
     </div>
     <button onclick='revisarEmLote()' style='background:var(--gray-600)'>&#10003;&nbsp; Marcar visíveis como revisado</button>
+    <button onclick='auditarComIA()' id='btn-auditar' style='background:#7c3aed'>&#129302;&nbsp; Auditar com IA</button>
   </div>
 
   <form method='get' action='/cadastros' style='display:flex;flex-wrap:wrap;gap:.75rem;align-items:flex-end;background:var(--gray-50);border:1px solid var(--gray-200);border-radius:10px;padding:1rem;margin-bottom:1.25rem'>
@@ -1846,6 +1848,19 @@ async function consolidarAlias(){const sourceName=document.getElementById('alias
 async function vincularProjetoCliente(){const projectName=document.getElementById('projectName').value;const clientName=document.getElementById('clientName').value;await fetch('/api/review/link-project',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({projectName,clientName,applyRule:true})});location.reload();}
 async function reclassificar(tipo){const idField=tipo.includes('Estrutura')?'toEstrutura':'toFinanceiro';const nome=document.getElementById(idField).value;await fetch('/api/review/reclassify',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({nome,tipoFinal:tipo,applyRule:true})});location.reload();}
 async function revisarEmLote(){const ids=[...document.querySelectorAll('#review-list [data-id]')].map(r=>r.getAttribute('data-id'));await fetch('/api/review/bulk-review',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({ids,statusRevisao:'revisado'})});location.reload();}
+async function auditarComIA(){
+  const btn=document.getElementById('btn-auditar');
+  btn.disabled=true;btn.textContent='&#129302; Auditando... aguarde';
+  try{
+    const resp=await fetch('/api/review/auditoria-ia',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({})});
+    const data=await resp.json();
+    if(data.error){alert('Erro: '+data.error);return;}
+    const msg='Auditoria concluída!\n\n✅ Classificados automaticamente: '+data.classificados+'\n⚠️ Precisam de revisão manual: '+data.manuais+'\n\nA página será recarregada.';
+    alert(msg);
+    location.reload();
+  }catch(e){alert('Erro na auditoria: '+e.message);}
+  finally{btn.disabled=false;btn.textContent='&#129302; Auditar com IA';}
+}
 const TYPE_GUIDE_JS={
   'Cliente':'Empresa ou pessoa que contrata e paga pelos servi\u00e7os da CKM. Ex: BRB, SEBRAE.',
   'Projeto':'Contrato ou frente de trabalho espec\u00edfica vinculada a um cliente. Ex: BRB-PDL, SEBRAE 10\u00ba CICLO.',
@@ -2189,6 +2204,132 @@ async function perguntarIA(cardId){
       console.error('[IA sugerir]', err.message);
       return json(res, 500, { error: 'Erro ao consultar IA', detail: err.message });
     }
+  }
+
+
+  if (req.method === 'POST' && url.pathname === '/api/review/auditoria-ia') {
+    if (!requireAuth(req, res, db)) return;
+
+    // Pegar apenas os pendentes que têm lançamentos ativos
+    const pendentes = db.reviewRegistry.filter(r => {
+      if (r.statusRevisao === 'revisado') return false;
+      if (r.tipoFinal && r.tipoFinal !== 'Pendente de Classificação') return false;
+      const nome = normalizeName(r.nomeOficial);
+      const linked = (db.entries || []).filter(e =>
+        normalizeName(e.cliente) === nome ||
+        normalizeName(e.projeto) === nome ||
+        normalizeName(e.parceiro) === nome
+      );
+      return linked.some(isAtivo);
+    });
+
+    if (pendentes.length === 0) {
+      return json(res, 200, { classificados: 0, manuais: 0, detalhes: [] });
+    }
+
+    const tipos = ['Cliente','Projeto','Prestador de Serviço','Fornecedor','Estrutura Interna','Financeiro / Não Operacional','Conta / Cartão'];
+
+    // Regras rápidas sem IA (padrões conhecidos)
+    const REGRAS_RAPIDAS = [
+      { regex: /BANCO|ITAÚ|ITAU|BRADESCO|CAIXA|SICOOB|SANTANDER|NUBANK|INTER|BB |BANCO DO BRASIL|BANRISUL|BANESE/, tipo: 'Conta / Cartão' },
+      { regex: /MÚTUO|MUTUO|EMPRÉSTIMO|EMPRESTIMO|PRONAMPE|FINANCIAMENTO/, tipo: 'Financeiro / Não Operacional' },
+      { regex: /SALÁRIO|SALARIO|PRÓ.LABORE|PRO.LABORE|FOLHA|FÉRIAS|FERIAS|13º|RESCISÃO|RESCISAO/, tipo: 'Estrutura Interna' },
+      { regex: /ALUGUEL|LOCAÇÃO|LOCACAO|CONDOMÍNIO|CONDOMINIO|IPTU|INTERNET|TELEFONE|ENERGIA|ÁGUA|AGUA|LIMPEZA/, tipo: 'Fornecedor' },
+      { regex: /PEDÁGIO|PEDAGIO|VELOE|SEMPARAR|CONECTCAR|COMBUSTÍVEL|COMBUSTIVEL|TAG /, tipo: 'Fornecedor' },
+      { regex: /GOOGLE|MICROSOFT|ADOBE|DROPBOX|ZOOM|SLACK|NOTION|GITHUB|HOSTINGER|GODADDY/, tipo: 'Fornecedor' },
+      { regex: /SEBRAE|BRB|BANESE|BANRISUL|METRÔ|METRO|CPTM|COFEN|EMBRAPII|CESAMA|UFPE|TCU|IGDRH|SOROCABA/, tipo: 'Cliente' },
+    ];
+
+    let classificados = 0;
+    let manuais = 0;
+    const detalhes = [];
+    const paraIA = [];
+
+    // Primeira passagem: regras rápidas
+    for (const item of pendentes) {
+      const nome = item.nomeOficial.toUpperCase();
+      const nome2 = normalizeName(item.nomeOficial);
+      const linked = (db.entries || []).filter(e =>
+        normalizeName(e.cliente) === nome2 ||
+        normalizeName(e.projeto) === nome2 ||
+        normalizeName(e.parceiro) === nome2
+      );
+      const allText = [nome, ...linked.map(e => (e.descricao||'').toUpperCase()), ...linked.map(e => (e.centroCusto||'').toUpperCase())].join(' ');
+
+      let tipoEncontrado = null;
+      for (const regra of REGRAS_RAPIDAS) {
+        if (regra.regex.test(allText)) {
+          tipoEncontrado = regra.tipo;
+          break;
+        }
+      }
+
+      if (tipoEncontrado) {
+        item.tipoFinal = tipoEncontrado;
+        item.statusRevisao = 'revisado';
+        classificados++;
+        detalhes.push({ nome: item.nomeOficial, tipo: tipoEncontrado, metodo: 'regra' });
+      } else {
+        paraIA.push({ item, linked });
+      }
+    }
+
+    // Segunda passagem: IA para os que não foram classificados por regras
+    // Limitar a 30 para não sobrecarregar
+    const loteIA = paraIA.slice(0, 30);
+    if (loteIA.length > 0) {
+      try {
+        const { OpenAI } = require('openai');
+        const openai = new OpenAI();
+
+        // Montar contexto de exemplos já revisados
+        const revisados = db.reviewRegistry.filter(r => r.statusRevisao === 'revisado' && r.tipoFinal && r.tipoFinal !== 'Pendente de Classificação').slice(0, 50);
+        const exemplosCtx = revisados.map(r => '"' + r.nomeOficial + '" → ' + r.tipoFinal).join('\n');
+
+        const listaParaIA = loteIA.map(({ item, linked }) => {
+          const amostras = linked.slice(0, 3).map(e => (e.descricao||'-') + ' (CC: ' + (e.centroCusto||'-') + ')').join('; ');
+          return '- "' + item.nomeOficial + '": ' + (amostras || 'sem lançamentos');
+        }).join('\n');
+
+        const prompt = 'Você é um assistente financeiro da empresa CKM Consultoria. Classifique cada nome abaixo em um dos tipos: ' + tipos.join(', ') + '.\n\nExemplos de cadastros já classificados na empresa:\n' + exemplosCtx + '\n\nNomes para classificar:\n' + listaParaIA + '\n\nResponda APENAS em JSON válido, array com objetos {"nome": "...", "tipo": "...", "confianca": "alta|media|baixa"}.\nUse "baixa" quando não tiver certeza. Retorne exatamente ' + loteIA.length + ' objetos, na mesma ordem.';
+
+        const completion = await openai.chat.completions.create({
+          model: 'gemini-2.5-flash',
+          messages: [{ role: 'user', content: prompt }],
+          temperature: 0.1,
+          max_tokens: 2000
+        });
+
+        const raw = (completion.choices[0]?.message?.content || '').trim();
+        // Extrair JSON do response (pode vir com markdown)
+        const jsonMatch = raw.match(/\[[\s\S]*\]/);
+        if (jsonMatch) {
+          const resultados = JSON.parse(jsonMatch[0]);
+          for (let i = 0; i < loteIA.length; i++) {
+            const { item } = loteIA[i];
+            const res_ia = resultados[i];
+            if (res_ia && tipos.includes(res_ia.tipo) && res_ia.confianca !== 'baixa') {
+              item.tipoFinal = res_ia.tipo;
+              item.statusRevisao = 'revisado';
+              classificados++;
+              detalhes.push({ nome: item.nomeOficial, tipo: res_ia.tipo, metodo: 'ia', confianca: res_ia.confianca });
+            } else {
+              manuais++;
+              detalhes.push({ nome: item.nomeOficial, tipo: res_ia?.tipo || '?', metodo: 'manual', confianca: res_ia?.confianca || 'baixa' });
+            }
+          }
+        }
+      } catch (err) {
+        console.error('[auditoria-ia]', err.message);
+        manuais += loteIA.length;
+      }
+    }
+
+    // Os que não foram para IA (além do lote de 30)
+    manuais += paraIA.length - loteIA.length;
+
+    saveDb(db);
+    return json(res, 200, { classificados, manuais, detalhes });
   }
 
   if (req.method === 'POST' && url.pathname === '/api/review/save-rule') {
@@ -4162,6 +4303,192 @@ function renderHistoricoRel() {
     ).join('');
 }
 </script>`, user, '/relatorio');
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+    res.end(html);
+    return;
+  }
+
+  // ============================================================
+  // EXTRATO POR CENTRO DE CUSTO — /extrato
+  // ============================================================
+  if (req.method === 'GET' && url.pathname === '/extrato') {
+    const user = requireAuth(req, res, db); if (!user) return;
+
+    const qCC  = (url.searchParams.get('cc') || '').trim();
+    const qDe  = (url.searchParams.get('de') || '').trim();
+    const qAte = (url.searchParams.get('ate') || '').trim();
+    const qQ   = (url.searchParams.get('q') || '').trim().toLowerCase();
+    const qNat = (url.searchParams.get('nat') || '').trim();
+    const qDC  = (url.searchParams.get('dc') || '').trim();
+
+    let filtrados = (db.entries || []).filter(e => {
+      if (e.isTransferenciaInterna) return false;
+      const cc = (e.centroCusto || 'SEM CC').toUpperCase();
+      if (qCC && !cc.includes(qCC.toUpperCase())) return false;
+      const data = e.dataISO || e.data || '';
+      if (qDe && data < qDe) return false;
+      if (qAte && data > qAte) return false;
+      if (qNat && (e.natureza || '') !== qNat) return false;
+      if (qDC && (e.dc || (e.valor >= 0 ? 'C' : 'D')) !== qDC) return false;
+      if (qQ) {
+        const txt = [(e.descricao||''),(e.cliente||''),(e.parceiro||''),(e.projeto||''),(e.centroCusto||'')].join(' ').toLowerCase();
+        if (!txt.includes(qQ)) return false;
+      }
+      return true;
+    });
+
+    filtrados.sort((a, b) => {
+      const ccA = (a.centroCusto || 'SEM CC').toUpperCase();
+      const ccB = (b.centroCusto || 'SEM CC').toUpperCase();
+      if (ccA !== ccB) return ccA.localeCompare(ccB, 'pt-BR');
+      return (a.dataISO || a.data || '').localeCompare(b.dataISO || b.data || '');
+    });
+
+    const grupos = new Map();
+    for (const e of filtrados) {
+      const cc = (e.centroCusto || 'SEM CC').toUpperCase();
+      if (!grupos.has(cc)) grupos.set(cc, []);
+      grupos.get(cc).push(e);
+    }
+
+    const fmtBRL = (v) => {
+      const abs = Math.abs(v);
+      return (v < 0 ? '-\u00a0' : '') + 'R\u00a0' + abs.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    };
+
+    const naturezas = [...new Set((db.entries||[]).map(e => e.natureza||'').filter(Boolean))].sort();
+    const ccList    = [...new Set((db.entries||[]).map(e => (e.centroCusto||'SEM CC').toUpperCase()).filter(Boolean))].sort();
+
+    let totalGeral = 0;
+    let totalEntradas = 0;
+    let totalSaidas = 0;
+    let tabelaHTML = '';
+
+    for (const [cc, itens] of grupos) {
+      const subtotal = itens.reduce((s, e) => s + (e.valor || 0), 0);
+      const entradas = itens.filter(e => (e.valor || 0) > 0).reduce((s, e) => s + e.valor, 0);
+      const saidas   = itens.filter(e => (e.valor || 0) < 0).reduce((s, e) => s + e.valor, 0);
+      totalGeral    += subtotal;
+      totalEntradas += entradas;
+      totalSaidas   += saidas;
+      const subColor = subtotal >= 0 ? 'color:#065f46;font-weight:700' : 'color:#991b1b;font-weight:700';
+
+      const linhas = itens.map(e => {
+        const dc = e.dc || (e.valor >= 0 ? 'C' : 'D');
+        const dcColor = dc === 'C' ? 'color:#065f46;font-weight:700' : 'color:#991b1b;font-weight:700';
+        const valColor = (e.valor || 0) >= 0 ? 'color:#065f46' : 'color:#991b1b';
+        const nome = e.cliente || e.parceiro || e.projeto || '-';
+        const nomeEsc = nome.replace(/'/g, '&#39;').replace(/"/g, '&quot;');
+        const descEsc = (e.descricao || '-').replace(/'/g, '&#39;').replace(/"/g, '&quot;');
+        return `<tr>
+          <td style='white-space:nowrap;font-size:.8rem'>${e.dataISO || e.data || '-'}</td>
+          <td style='${dcColor};font-size:.8rem;text-align:center'>${dc}</td>
+          <td style='font-size:.78rem;color:#64748b'>${e.centroCusto || '-'}</td>
+          <td style='font-size:.8rem;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap' title='${nomeEsc}'>${nome}</td>
+          <td style='font-size:.8rem;max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap' title='${descEsc}'>${e.descricao || '-'}</td>
+          <td style='font-size:.78rem;color:#64748b'>${e.natureza || '-'}</td>
+          <td style='${valColor};font-size:.8rem;text-align:right;white-space:nowrap'>${fmtBRL(e.valor || 0)}</td>
+        </tr>`;
+      }).join('');
+
+      tabelaHTML += `
+      <tr style='background:#f1f5f9;border-top:2px solid #cbd5e1'>
+        <td colspan='6' style='font-weight:700;font-size:.82rem;padding:.5rem .75rem;color:#1e40af'>&#128193; ${cc} <span style='font-weight:400;font-size:.75rem;color:#64748b'>(${itens.length} lan\u00e7amento${itens.length!==1?'s':''})</span></td>
+        <td style='${subColor};text-align:right;padding:.5rem .75rem;font-size:.82rem'>${fmtBRL(subtotal)}</td>
+      </tr>
+      ${linhas}
+      <tr style='background:#f8fafc;border-bottom:2px solid #cbd5e1'>
+        <td colspan='5' style='font-size:.75rem;color:#64748b;padding:.35rem .75rem;text-align:right'>Subtotal ${cc}:</td>
+        <td style='font-size:.75rem;color:#059669;text-align:right;padding:.35rem .75rem'>Entradas: ${fmtBRL(entradas)}</td>
+        <td style='${subColor};text-align:right;padding:.35rem .75rem;font-size:.8rem'>${fmtBRL(subtotal)}</td>
+      </tr>`;
+    }
+
+    const totalColor = totalGeral >= 0 ? '#065f46' : '#991b1b';
+    const ccOptsHTML = ccList.map(c => `<option value='${c.replace(/'/g,"&#39;")}'>`).join('');
+    const natOptsHTML = naturezas.map(n => `<option value='${n}' ${qNat===n?'selected':''}>${n}</option>`).join('');
+
+    const html = page('Extrato por Centro de Custo', `
+<section>
+  <div style='display:flex;align-items:center;gap:1rem;margin-bottom:1rem;flex-wrap:wrap'>
+    <h2 style='margin:0'>&#128202; Extrato por Centro de Custo</h2>
+    <span style='font-size:.82rem;color:var(--gray-400)'>${filtrados.length} lan\u00e7amento(s) &bull; ${grupos.size} centro(s) de custo</span>
+  </div>
+
+  <form method='get' action='/extrato' style='display:flex;flex-wrap:wrap;gap:.6rem;align-items:flex-end;background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:1rem;margin-bottom:1.25rem'>
+    <label style='flex:2;min-width:160px'>Centro de Custo
+      <input list='dl-cc-ext' name='cc' value='${qCC.replace(/"/g,'&quot;')}' placeholder='Todos os CCs...' />
+      <datalist id='dl-cc-ext'>${ccOptsHTML}</datalist>
+    </label>
+    <label style='flex:1;min-width:120px'>Data in\u00edcio
+      <input type='date' name='de' value='${qDe}' />
+    </label>
+    <label style='flex:1;min-width:120px'>Data fim
+      <input type='date' name='ate' value='${qAte}' />
+    </label>
+    <label style='flex:1;min-width:110px'>D/C
+      <select name='dc'>
+        <option value=''>Todos</option>
+        <option value='C' ${qDC==='C'?'selected':''}>C &mdash; Entradas</option>
+        <option value='D' ${qDC==='D'?'selected':''}>D &mdash; Sa\u00eddas</option>
+      </select>
+    </label>
+    <label style='flex:2;min-width:160px'>Natureza
+      <select name='nat'>
+        <option value=''>Todas</option>
+        ${natOptsHTML}
+      </select>
+    </label>
+    <label style='flex:3;min-width:200px'>Busca livre
+      <input name='q' value='${qQ.replace(/"/g,'&quot;')}' placeholder='Descri\u00e7\u00e3o, cliente, parceiro...' />
+    </label>
+    <div style='display:flex;gap:.4rem;align-items:flex-end'>
+      <button type='submit'>&#128269;&nbsp; Filtrar</button>
+      <a href='/extrato' style='padding:.45rem .9rem;background:#f1f5f9;border:1px solid #e2e8f0;border-radius:8px;text-decoration:none;font-size:.85rem;color:#475569'>Limpar</a>
+    </div>
+  </form>
+
+  <div style='display:flex;gap:1rem;flex-wrap:wrap;margin-bottom:1.25rem'>
+    <div style='flex:1;min-width:140px;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;padding:.75rem 1rem'>
+      <div style='font-size:.78rem;color:#64748b'>Total Entradas</div>
+      <div style='font-size:1.1rem;font-weight:700;color:#065f46'>${fmtBRL(totalEntradas)}</div>
+    </div>
+    <div style='flex:1;min-width:140px;background:#fef2f2;border:1px solid #fecaca;border-radius:8px;padding:.75rem 1rem'>
+      <div style='font-size:.78rem;color:#64748b'>Total Sa\u00eddas</div>
+      <div style='font-size:1.1rem;font-weight:700;color:#991b1b'>${fmtBRL(totalSaidas)}</div>
+    </div>
+    <div style='flex:1;min-width:140px;background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;padding:.75rem 1rem'>
+      <div style='font-size:.78rem;color:#64748b'>Resultado</div>
+      <div style='font-size:1.1rem;font-weight:700;color:${totalColor}'>${fmtBRL(totalGeral)}</div>
+    </div>
+    <div style='flex:1;min-width:140px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:.75rem 1rem'>
+      <div style='font-size:.78rem;color:#64748b'>Centros de Custo</div>
+      <div style='font-size:1.1rem;font-weight:700;color:#1e40af'>${grupos.size}</div>
+    </div>
+  </div>
+
+  <div style='overflow-x:auto'>
+  <table style='width:100%;border-collapse:collapse;font-size:.85rem'>
+    <thead><tr style='background:#1e40af;color:#fff'>
+      <th style='padding:.55rem .75rem;text-align:left;white-space:nowrap'>Data</th>
+      <th style='padding:.55rem .75rem;text-align:center'>D/C</th>
+      <th style='padding:.55rem .75rem;text-align:left'>C\u00f3digo CC</th>
+      <th style='padding:.55rem .75rem;text-align:left'>Nome</th>
+      <th style='padding:.55rem .75rem;text-align:left'>Descritivo</th>
+      <th style='padding:.55rem .75rem;text-align:left'>Natureza</th>
+      <th style='padding:.55rem .75rem;text-align:right'>Valor</th>
+    </tr></thead>
+    <tbody>
+      ${tabelaHTML || '<tr><td colspan="7" style="text-align:center;padding:2rem;color:#94a3b8">Nenhum lan\u00e7amento encontrado com os filtros selecionados.</td></tr>'}
+      <tr style='background:#1e293b;color:#fff;border-top:3px solid #0f172a'>
+        <td colspan='5' style='padding:.6rem .75rem;font-weight:700;font-size:.85rem'>TOTAL GERAL (${filtrados.length} lan\u00e7amentos)</td>
+        <td style='padding:.6rem .75rem;font-size:.82rem;color:#86efac;text-align:right'>Entradas: ${fmtBRL(totalEntradas)}</td>
+        <td style='padding:.6rem .75rem;font-weight:700;font-size:.9rem;text-align:right;color:${totalGeral>=0?'#86efac':'#fca5a5'}'>${fmtBRL(totalGeral)}</td>
+      </tr>
+    </tbody>
+  </table>
+  </div>
+</section>`, user, '/extrato');
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
     res.end(html);
     return;
