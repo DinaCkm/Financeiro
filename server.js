@@ -2443,8 +2443,13 @@ Responda em português, de forma objetiva e direta, citando os dados específico
     const dc = (body.dc || (valor >= 0 ? 'C' : 'D')).toUpperCase();
     if (dc === 'D') valor = -Math.abs(valor);
     if (dc === 'C') valor = Math.abs(valor);
+    // Número sequencial permanente
+    if (!db.meta) db.meta = {};
+    db.meta.ultimoNumLanc = (db.meta.ultimoNumLanc || 0) + 1;
+    const numLanc = db.meta.ultimoNumLanc;
     const entry = {
       id,
+      numLanc,
       data: body.data || now.slice(0, 10),
       dataISO: body.data || now.slice(0, 10),
       descricao: body.documento || body.descricao || '',
@@ -2484,8 +2489,22 @@ Responda em português, de forma objetiva e direta, citando os dados específico
     if (idx === -1) return json(res, 404, { error: 'Lançamento não encontrado' });
     const [removed] = db.entries.splice(idx, 1);
     registrarAuditoria(db, id, user.email || 'sistema', { excluido: true }, removed);
+    // Registrar no histórico de exclusões com número permanente
+    if (!db.historicoExclusoes) db.historicoExclusoes = [];
+    db.historicoExclusoes.push({
+      numLanc: removed.numLanc || null,
+      entryId: id,
+      excluidoEm: new Date().toISOString(),
+      excluidoPor: user.email || 'sistema',
+      dataLanc: removed.dataISO || removed.data || '',
+      valor: removed.valor || 0,
+      centroCusto: removed.centroCusto || '',
+      favorecido: removed.favorecido || removed.cliente || removed.parceiro || '',
+      descricao: removed.documento || removed.descricao || '',
+      naturezaGerencial: removed.naturezaGerencial || removed.natureza || ''
+    });
     saveDb(db);
-    return json(res, 200, { ok: true });
+    return json(res, 200, { ok: true, numLanc: removed.numLanc });
   }
 
   if (req.method === 'PATCH' && url.pathname.startsWith('/api/entries/')) {
@@ -3698,12 +3717,13 @@ async function excluirRef(tipo,nome){
       const incBadge = temInconsistencia ? `<span title="${inconsistencias.map(i=>({sem_cc:'Sem CC',sem_nome:'Sem Cliente/Fornecedor/Prestador',sem_projeto:'Sem projeto',sem_natureza:'Sem natureza'}[i]||i)).join(', ')}" style="font-size:.6rem;background:#fee2e2;color:#991b1b;padding:.1rem .3rem;border-radius:4px;cursor:help">⚠ ${inconsistencias.length}</span>` : '';
       const confirmarBadge = e.pendente_confirmacao ? `<span title="${(e.motivo_confirmacao||'Aguardando confirmação').replace(/"/g,'&quot;')}" style="font-size:.6rem;background:#fef3c7;color:#92400e;padding:.1rem .3rem;border-radius:4px;cursor:help">🕐 Confirmar</span>` : '';
       const rowBg = e.pendente_confirmacao ? 'background:#fffbeb;border-left:3px solid #f59e0b' : (temInconsistencia ? 'background:#fffbeb' : '');
+      const numStr = e.numLanc ? `<span style="font-size:.65rem;color:#94a3b8;font-family:monospace">#${String(e.numLanc).padStart(6,'0')}</span>` : '';
       return `<tr id="row-${e.id}" style="border-bottom:1px solid #f1f5f9;cursor:pointer;${rowBg}" onclick="toggleEditLanc('${e.id}', ${incJson})">
-        <td style="white-space:nowrap;color:#64748b;font-size:.8rem">${e.dataISO || '-'}</td>
+        <td style="white-space:nowrap;color:#64748b;font-size:.8rem">${e.dataISO || '-'} ${numStr}</td>
         <td style="${dcCls};font-size:.78rem;text-align:center">${dcStr}</td>
         <td style="color:#64748b;font-size:.78rem">${cc}</td>
         <td style="font-size:.78rem">${nome} ${origem} ${incBadge} ${confirmarBadge}</td>
-        <td style="font-size:.78rem;color:#475569" title="${(e.descritivo||e.descricao||'')}">${desc}</td>
+        <td style="font-size:.78rem;color:#475569" title="${(e.descritivo||e.descricao||'')}">${ desc}</td>
         <td style="${valCls};font-size:.8rem;text-align:right;font-weight:600">${valStr}</td>
         <td style="font-size:.72rem;color:#94a3b8">${natLabel}</td>
         <td style="font-size:.72rem;color:#94a3b8">${status}</td>
@@ -4055,6 +4075,42 @@ async function excluirLanc(id) {
       ${currentPage < totalPages ? `<a href='${buildPageUrl(totalPages)}' style='padding:.3rem .7rem;border:1px solid var(--gray-200);border-radius:6px;font-size:.82rem;text-decoration:none;color:var(--gray-700)'>Última &raquo;</a>` : ''}
     </div>`;
 
+    // Seção de exclusões
+    const exclusoes = (db.historicoExclusoes || []).slice().sort((a,b) => (b.excluidoEm||'').localeCompare(a.excluidoEm||''));
+    const rowsExclusoes = exclusoes.slice(0, 200).map(r => {
+      const numStr = r.numLanc ? `<strong style='font-family:monospace;color:#dc2626'>#${String(r.numLanc).padStart(6,'0')}</strong>` : '<em style="color:#94a3b8">sem nº</em>';
+      const d = new Date(r.excluidoEm);
+      const tsStr = d.toLocaleDateString('pt-BR') + ' ' + d.toLocaleTimeString('pt-BR', {hour:'2-digit',minute:'2-digit'});
+      return `<tr style='border-bottom:1px solid #fee2e2'>
+        <td style='font-size:.78rem;white-space:nowrap;padding:.4rem .6rem'>${tsStr}</td>
+        <td style='padding:.4rem .6rem'>${numStr}</td>
+        <td style='font-size:.78rem;padding:.4rem .6rem;color:#64748b'>${r.dataLanc||'-'}</td>
+        <td style='font-size:.78rem;padding:.4rem .6rem'>${r.favorecido||'-'}</td>
+        <td style='font-size:.78rem;padding:.4rem .6rem;color:#64748b'>${r.centroCusto||'-'}</td>
+        <td style='font-size:.78rem;padding:.4rem .6rem;color:#991b1b;font-weight:600'>R$ ${Math.abs(r.valor||0).toLocaleString('pt-BR',{minimumFractionDigits:2})}</td>
+        <td style='font-size:.78rem;padding:.4rem .6rem;color:#64748b'>${r.excluidoPor||'-'}</td>
+      </tr>`;
+    }).join('');
+    const secaoExclusoes = exclusoes.length > 0 ? `
+<section style='margin-top:2rem'>
+  <h2 style='margin:0 0 .5rem;color:#dc2626'>🗑 Histórico de Exclusões (${exclusoes.length})</h2>
+  <p style='font-size:.85rem;color:#94a3b8;margin-bottom:1rem'>Lançamentos excluídos permanentemente. O número (#) é fixo e nunca é reutilizado.</p>
+  <div style='overflow-x:auto'>
+  <table style='width:100%;border-collapse:collapse;font-size:.85rem'>
+    <thead><tr style='background:#fee2e2;color:#991b1b'>
+      <th style='padding:.5rem .6rem;text-align:left'>Excluído em</th>
+      <th style='padding:.5rem .6rem;text-align:left'>Nº Lançamento</th>
+      <th style='padding:.5rem .6rem;text-align:left'>Data</th>
+      <th style='padding:.5rem .6rem;text-align:left'>Cliente / Fornecedor / Prestador</th>
+      <th style='padding:.5rem .6rem;text-align:left'>Centro de Custo</th>
+      <th style='padding:.5rem .6rem;text-align:right'>Valor</th>
+      <th style='padding:.5rem .6rem;text-align:left'>Excluído por</th>
+    </tr></thead>
+    <tbody>${rowsExclusoes}</tbody>
+  </table>
+  </div>
+</section>` : '';
+
     const html = page('Histórico de Alterações', `
 <section>
   <div style='display:flex;align-items:center;gap:1rem;margin-bottom:1rem;flex-wrap:wrap'>
@@ -4083,7 +4139,8 @@ async function excluirLanc(id) {
   </table>
   </div>
   ${pagination}
-</section>`, user, '/historico');
+</section>
+${secaoExclusoes}`, user, '/historico');
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
     return res.end(html);
   }
