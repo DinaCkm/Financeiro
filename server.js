@@ -2603,13 +2603,12 @@ Responda em português, de forma objetiva e direta, citando os dados específico
     }
 
     // ── Gerar HTML do Resultado por Ano ──
-    let arvoreHTML = `<h3 style='margin-top:1.5rem'>\uD83D\uDCC8 Resultado Total por Ano</h3>
-<p style='color:#64748b;font-size:.9rem;margin-bottom:1rem'>Todos os lançamentos da planilha, separados por ano. Clique em um ano para expandir.</p>`;
-
     // Totais gerais (todos os anos)
     let totalGeralEnt = 0, totalGeralSai = 0;
     const anosOrdenados = Object.keys(porAno).sort();
 
+    // Pré-calcular totais por ano
+    const anoTotais = {};
     for (const ano of anosOrdenados) {
       const anoData = porAno[ano];
       let anoEnt = 0, anoSai = 0;
@@ -2619,40 +2618,76 @@ Responda em português, de forma objetiva e direta, citando os dados específico
       });
       totalGeralEnt += anoEnt;
       totalGeralSai += anoSai;
-      const anoSaldo = anoEnt - anoSai;
-      const anoCor = anoSaldo >= 0 ? '#16a34a' : '#dc2626';
-      const isUltimoAno = ano === anosOrdenados[anosOrdenados.length - 1];
-      arvoreHTML += `<details style='border:2px solid #e2e8f0;border-radius:.6rem;margin-bottom:.75rem;background:#f8fafc' ${isUltimoAno ? 'open' : ''}>
-<summary style='cursor:pointer;padding:.75rem 1rem;background:#f1f5f9;border-radius:.6rem;list-style:none;display:flex;align-items:center;gap:.75rem;user-select:none'>
-  <span style='font-size:1.1rem;font-weight:800;color:#1e293b'>\uD83D\uDCC5 ${ano}</span>
+      anoTotais[ano] = { ent: anoEnt, sai: anoSai, saldo: anoEnt - anoSai };
+    }
+    const totalGeralSaldo = totalGeralEnt - totalGeralSai;
+
+    // Tabela resumo por ano (sempre visível)
+    let tabelaAnos = `
+<table style='width:100%;border-collapse:collapse;font-size:.9rem;margin-bottom:.5rem'>
+  <thead>
+    <tr style='background:#1e293b;color:#fff'>
+      <th style='padding:.5rem .75rem;text-align:left;border-radius:.375rem 0 0 0'>ANO</th>
+      <th style='padding:.5rem .75rem;text-align:right;color:#86efac'>ENTRADAS</th>
+      <th style='padding:.5rem .75rem;text-align:right;color:#fca5a5'>SAÍDAS</th>
+      <th style='padding:.5rem .75rem;text-align:right;border-radius:0 .375rem 0 0'>SALDO</th>
+    </tr>
+  </thead>
+  <tbody>`;
+    for (const ano of anosOrdenados) {
+      const { ent, sai, saldo } = anoTotais[ano];
+      const cor = saldo >= 0 ? '#16a34a' : '#dc2626';
+      const bg = saldo >= 0 ? '#f0fdf4' : '#fef2f2';
+      tabelaAnos += `
+    <tr style='background:${bg};border-bottom:1px solid #e2e8f0;cursor:pointer' onclick="this.closest('table').nextElementSibling.querySelector('#det-${ano}').open=!this.closest('table').nextElementSibling.querySelector('#det-${ano}').open" title='Clique para expandir ${ano}'>
+      <td style='padding:.45rem .75rem;font-weight:700;color:#1e293b'>📅 ${ano}</td>
+      <td style='padding:.45rem .75rem;text-align:right;color:#16a34a'>+${fmtBRL(ent)}</td>
+      <td style='padding:.45rem .75rem;text-align:right;color:#dc2626'>-${fmtBRL(sai)}</td>
+      <td style='padding:.45rem .75rem;text-align:right;font-weight:800;color:${cor}'>${fmtBRL(saldo)}</td>
+    </tr>`;
+    }
+    tabelaAnos += `
+    <tr style='background:#1e293b;color:#fff;font-weight:800'>
+      <td style='padding:.5rem .75rem;border-radius:0 0 0 .375rem'>🏆 TOTAL GERAL</td>
+      <td style='padding:.5rem .75rem;text-align:right;color:#86efac'>+${fmtBRL(totalGeralEnt)}</td>
+      <td style='padding:.5rem .75rem;text-align:right;color:#fca5a5'>-${fmtBRL(totalGeralSai)}</td>
+      <td style='padding:.5rem .75rem;text-align:right;font-weight:800;color:${totalGeralSaldo >= 0 ? '#86efac' : '#fca5a5'};border-radius:0 0 .375rem 0'>${fmtBRL(totalGeralSaldo)}</td>
+    </tr>
+  </tbody>
+</table>`;
+
+    // Detalhes expansíveis por ano (abaixo da tabela)
+    let detalhesAnos = `<div>`;
+    for (const ano of anosOrdenados) {
+      const { ent, sai, saldo } = anoTotais[ano];
+      const anoCor = saldo >= 0 ? '#16a34a' : '#dc2626';
+      detalhesAnos += `<details id='det-${ano}' style='border:1px solid #e2e8f0;border-radius:.5rem;margin-bottom:.5rem;background:#f8fafc'>
+<summary style='cursor:pointer;padding:.6rem 1rem;background:#f1f5f9;border-radius:.5rem;list-style:none;display:flex;align-items:center;gap:.75rem;user-select:none'>
+  <span style='font-weight:800;color:#1e293b'>📅 ${ano} — detalhes</span>
   <span style='flex:1'></span>
-  <span style='font-size:.85rem;color:#16a34a;white-space:nowrap'>+${fmtBRL(anoEnt)}</span>
-  <span style='font-size:.85rem;color:#dc2626;white-space:nowrap'>-${fmtBRL(anoSai)}</span>
-  <span style='font-size:.95rem;font-weight:800;white-space:nowrap;color:${anoCor}'>${fmtBRL(anoSaldo)}</span>
+  <span style='font-size:.85rem;color:#16a34a'>+${fmtBRL(ent)}</span>
+  <span style='font-size:.85rem;color:#dc2626'>-${fmtBRL(sai)}</span>
+  <span style='font-size:.9rem;font-weight:800;color:${anoCor}'>${fmtBRL(saldo)}</span>
 </summary>
 <div style='padding:.6rem .75rem'>`;
       for (const tipo of TIPOS_ORDEM) {
         if (tipo === 'TRANSFERENCIA') continue;
         const cor = tipoColor[tipo] || '#808080';
-        arvoreHTML += renderTipoBloco(tipo, anoData[tipo], cor);
+        detalhesAnos += renderTipoBloco(tipo, porAno[ano][tipo], cor);
       }
-      arvoreHTML += `<div style='${rowStyle};border-top:2px solid #cbd5e1;margin-top:.5rem;font-weight:800;background:#e2e8f0;border-radius:.25rem'>
+      detalhesAnos += `<div style='${rowStyle};border-top:2px solid #cbd5e1;margin-top:.5rem;font-weight:800;background:#e2e8f0;border-radius:.25rem'>
   <span>TOTAL ${ano}</span>
-  <span style='text-align:right;color:#16a34a'>${fmtBRL(anoEnt)}</span>
-  <span style='text-align:right;color:#dc2626'>${fmtBRL(anoSai)}</span>
-  <span style='text-align:right;font-weight:800;color:${anoCor}'>${fmtBRL(anoSaldo)}</span>
-</div>`;
-      arvoreHTML += `</div></details>`;
+  <span style='text-align:right;color:#16a34a'>${fmtBRL(ent)}</span>
+  <span style='text-align:right;color:#dc2626'>${fmtBRL(sai)}</span>
+  <span style='text-align:right;font-weight:800;color:${anoCor}'>${fmtBRL(saldo)}</span>
+</div></div></details>`;
     }
+    detalhesAnos += `</div>`;
 
-    // Linha de total geral (todos os anos)
-    const totalGeralSaldo = totalGeralEnt - totalGeralSai;
-    arvoreHTML += `<div style='${rowStyle};border:2px solid #1e293b;border-radius:.5rem;margin-top:.5rem;font-weight:800;background:#1e293b;color:#fff;padding:.6rem 1rem'>
-  <span style='color:#fff'>\uD83C\uDFC6 TOTAL GERAL (TODOS OS ANOS)</span>
-  <span style='text-align:right;color:#86efac'>${fmtBRL(totalGeralEnt)}</span>
-  <span style='text-align:right;color:#fca5a5'>${fmtBRL(totalGeralSai)}</span>
-  <span style='text-align:right;font-weight:800;color:${totalGeralSaldo >= 0 ? '#86efac' : '#fca5a5'}'>${fmtBRL(totalGeralSaldo)}</span>
-</div>`;
+    let arvoreHTML = `<h3 style='margin-top:1.5rem'>📈 Resultado Total por Ano</h3>
+<p style='color:#64748b;font-size:.9rem;margin-bottom:1rem'>Todos os lançamentos da planilha, separados por ano. Clique em uma linha para ver o detalhamento.</p>
+${tabelaAnos}
+${detalhesAnos}`;
 
     // Conteúdo principal conforme visão selecionada
     const conteudoPrincipal = visao === 'fluxo'
