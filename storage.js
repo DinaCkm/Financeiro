@@ -78,6 +78,12 @@ function createPostgresStorage(databaseUrl) {
         data JSONB NOT NULL,
         created_at TIMESTAMPTZ DEFAULT now()
       );
+      CREATE TABLE IF NOT EXISTS sessions (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        expires_at TIMESTAMPTZ NOT NULL,
+        created_at TIMESTAMPTZ DEFAULT now()
+      );
     `);
   }
 
@@ -298,6 +304,31 @@ function createPostgresStorage(databaseUrl) {
     },
     getPool() {
       return pool;
+    },
+    async sessionGet(sid) {
+      const r = await pool.query(
+        'SELECT user_id, expires_at FROM sessions WHERE id = $1',
+        [sid]
+      );
+      if (!r.rows.length) return null;
+      const row = r.rows[0];
+      if (new Date(row.expires_at) <= new Date()) {
+        await pool.query('DELETE FROM sessions WHERE id = $1', [sid]);
+        return null;
+      }
+      return { userId: row.user_id, expiresAt: new Date(row.expires_at).getTime() };
+    },
+    async sessionSet(sid, userId, ttlSeconds) {
+      const expiresAt = new Date(Date.now() + ttlSeconds * 1000).toISOString();
+      await pool.query(
+        `INSERT INTO sessions (id, user_id, expires_at)
+         VALUES ($1, $2, $3)
+         ON CONFLICT (id) DO UPDATE SET user_id = $2, expires_at = $3`,
+        [sid, userId, expiresAt]
+      );
+    },
+    async sessionDelete(sid) {
+      await pool.query('DELETE FROM sessions WHERE id = $1', [sid]);
     }
   };
 }

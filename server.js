@@ -271,6 +271,9 @@ function currentUser(req, db) {
 
   // Sliding session: renova validade quando o usuário segue ativo.
   sessions.set(sid, { userId, expiresAt: now + SESSION_TTL_SECONDS * 1000 });
+  if (storage.sessionSet) {
+    storage.sessionSet(sid, userId, SESSION_TTL_SECONDS).catch(() => {});
+  }
   return db.users.find((u) => u.id === userId) || null;
 }
 
@@ -1433,14 +1436,23 @@ const server = http.createServer(async (req, res) => {
       saveDb(db);
     }
     const sid = crypto.randomUUID();
-    sessions.set(sid, { userId: user.id, expiresAt: Date.now() + SESSION_TTL_SECONDS * 1000 });
+    const sessExpiry = Date.now() + SESSION_TTL_SECONDS * 1000;
+    sessions.set(sid, { userId: user.id, expiresAt: sessExpiry });
+    // Persistir sessão no PostgreSQL para sobreviver a reinicializações
+    if (storage.sessionSet) {
+      storage.sessionSet(sid, user.id, SESSION_TTL_SECONDS).catch(e => console.warn('[session] Erro ao salvar sessão:', e.message));
+    }
     res.writeHead(302, { 'Set-Cookie': buildSessionCookie(req, sid), Location: '/' });
     res.end();
     return;
   }
 
   if (req.method === 'GET' && url.pathname === '/logout') {
-    sessions.delete(parseCookies(req).sid);
+    const logoutSid = parseCookies(req).sid;
+    sessions.delete(logoutSid);
+    if (logoutSid && storage.sessionDelete) {
+      storage.sessionDelete(logoutSid).catch(e => console.warn('[session] Erro ao deletar sessão:', e.message));
+    }
     res.writeHead(302, { 'Set-Cookie': buildSessionCookie(req, '', 0), Location: '/login' });
     res.end();
     return;
@@ -5090,6 +5102,21 @@ async function boot() {
         fs.writeFileSync(DB_PATH, JSON.stringify(pgDb, null, 2));
         // Persistir limpeza de volta ao PostgreSQL
         await storage.saveDb(pgDb).catch(e => console.error('[boot] Erro ao salvar limpeza:', e.message));
+        // Carregar sessões ativas do PostgreSQL para o Map() em memória
+        try {
+          const pg = storage.getPool ? storage.getPool() : null;
+          if (pg) {
+            const sessRows = await pg.query(
+              'SELECT id, user_id, expires_at FROM sessions WHERE expires_at > NOW()'
+            );
+            for (const row of sessRows.rows) {
+              sessions.set(row.id, { userId: row.user_id, expiresAt: new Date(row.expires_at).getTime() });
+            }
+            console.log(`[boot] ${sessRows.rows.length} sessão(ões) ativa(s) restaurada(s) do PostgreSQL.`);
+          }
+        } catch (se) {
+          console.warn('[boot] Não foi possível restaurar sessões:', se.message);
+        }
         bootReady = true;
         console.log(`[boot] Sincronizado: ${pgDb.entries.length} lançamentos, ${pgDb.reviewRegistry.length} cadastros, ${pgDb.savedRules.length} regras`);
       } catch (err) {
