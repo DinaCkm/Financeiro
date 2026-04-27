@@ -2331,11 +2331,9 @@ Responda em português, de forma objetiva e direta, citando os dados específico
       }
     } catch(e) { console.error('[dashboard] ccTipoMap error:', e.message); }
 
-    // ── Árvore hierárquica: TIPO → CC → (OPERACIONAL: EMPRESA → PROJETO) ──
-    // Estrutura: arvore[tipo][cc] = { entradas, saidas, empresas: { empresa: { entradas, saidas, projetos: { proj: { entradas, saidas } } } } }
+    // ── Resultado Total por Ano: usa TODOS os lançamentos (não apenas o filtro) ──
+    // Estrutura: porAno[ano][tipo][empresa|cc] = { entradas, saidas, projetos: { proj: { entradas, saidas, parceiros: {} } } }
     const TIPOS_ORDEM = ['OPERACIONAL', 'ESTRUTURA', 'FINANCEIRO', 'TRANSFERENCIA'];
-    const arvore = {};
-    TIPOS_ORDEM.forEach(t => { arvore[t] = {}; });
 
     // Função para normalizar CC removendo acentos (para busca no ccTipoMap)
     function normCC(s) {
@@ -2343,54 +2341,72 @@ Responda em português, de forma objetiva e direta, citando os dados específico
     }
 
     // Função para resolver tipo de um lançamento
-    // Retorna: { tipo: 'OPERACIONAL'|'ESTRUTURA'|'FINANCEIRO'|'TRANSFERENCIA', cc: string }
     function resolverTipoCC(e) {
       const ccRaw = (e.centroCusto || '').trim();
       const ccUp  = ccRaw.toUpperCase();
       const ccNorm = normCC(ccRaw);
-
-      // Primeiro: verificar no mapa do banco (com e sem acento)
       if (ccTipoMap[ccUp])   return { tipo: ccTipoMap[ccUp],   cc: ccRaw };
       if (ccTipoMap[ccNorm]) return { tipo: ccTipoMap[ccNorm], cc: ccRaw };
-
-      // Segundo: heurística por FORBIDDEN_AS_CLIENT
       if (FORBIDDEN_AS_CLIENT.includes(ccUp) || FORBIDDEN_AS_CLIENT.includes(ccNorm))
         return { tipo: 'ESTRUTURA', cc: ccRaw };
-
-      // Terceiro: se tem cliente operacional, é OPERACIONAL
       const c = clienteEfetivo(e);
       if (c !== 'SEM CLIENTE') return { tipo: 'OPERACIONAL', cc: ccRaw };
-
-      // Default: ESTRUTURA
       return { tipo: 'ESTRUTURA', cc: ccRaw || 'SEM CC' };
     }
 
-    lancsFiltrados.forEach(e => {
-      const v = e.valor || 0;
-      const { tipo, cc } = resolverTipoCC(e);
-      if (tipo === 'TRANSFERENCIA') return; // ignora TEF
-      if (!arvore[tipo]) arvore[tipo] = {};
+    // Todos os lançamentos (sem filtro de data), exceto TEF e SALDO ATUAL
+    const todosLancs = db.entries.filter(e =>
+      !e.isTransferenciaInterna &&
+      (e.centroCusto||'').toUpperCase().trim() !== 'SALDO ATUAL'
+    );
 
+    const porAno = {}; // { '2021': { OPERACIONAL: {}, ESTRUTURA: {}, FINANCEIRO: {} }, ... }
+
+    todosLancs.forEach(e => {
+      const v = e.valor || 0;
+      const ano = (e.dataISO||'????').substring(0, 4);
+      const { tipo, cc } = resolverTipoCC(e);
+      if (tipo === 'TRANSFERENCIA') return;
+      if (!porAno[ano]) {
+        porAno[ano] = {};
+        TIPOS_ORDEM.forEach(t => { porAno[ano][t] = {}; });
+      }
       if (tipo === 'OPERACIONAL') {
-        // Para OPERACIONAL: árvore é EMPRESA → PROJETO → PARCEIRO
         const empresa = clienteEfetivo(e);
         const projeto = projetoEfetivo(e);
         const parceiro = (e.parceiro || '').trim() || 'SEM PARCEIRO';
+        if (!porAno[ano][tipo][empresa]) porAno[ano][tipo][empresa] = { entradas: 0, saidas: 0, projetos: {} };
+        if (v > 0) porAno[ano][tipo][empresa].entradas += v;
+        else porAno[ano][tipo][empresa].saidas += Math.abs(v);
+        const projKey = projeto !== 'SEM PROJETO' ? projeto : '(sem projeto)';
+        if (!porAno[ano][tipo][empresa].projetos[projKey]) porAno[ano][tipo][empresa].projetos[projKey] = { entradas: 0, saidas: 0, parceiros: {} };
+        if (v > 0) porAno[ano][tipo][empresa].projetos[projKey].entradas += v;
+        else porAno[ano][tipo][empresa].projetos[projKey].saidas += Math.abs(v);
+        if (!porAno[ano][tipo][empresa].projetos[projKey].parceiros[parceiro]) porAno[ano][tipo][empresa].projetos[projKey].parceiros[parceiro] = { entradas: 0, saidas: 0 };
+        if (v > 0) porAno[ano][tipo][empresa].projetos[projKey].parceiros[parceiro].entradas += v;
+        else porAno[ano][tipo][empresa].projetos[projKey].parceiros[parceiro].saidas += Math.abs(v);
+      } else {
+        if (!porAno[ano][tipo][cc]) porAno[ano][tipo][cc] = { entradas: 0, saidas: 0 };
+        if (v > 0) porAno[ano][tipo][cc].entradas += v;
+        else porAno[ano][tipo][cc].saidas += Math.abs(v);
+      }
+    });
+
+    // Manter arvore vazia para compatibilidade (não usada mais)
+    const arvore = {};
+    TIPOS_ORDEM.forEach(t => { arvore[t] = {}; });
+    lancsFiltrados.forEach(e => {
+      const v = e.valor || 0;
+      const { tipo, cc } = resolverTipoCC(e);
+      if (tipo === 'TRANSFERENCIA') return;
+      if (!arvore[tipo]) arvore[tipo] = {};
+      if (tipo === 'OPERACIONAL') {
+        const empresa = clienteEfetivo(e);
         if (!arvore[tipo][empresa]) arvore[tipo][empresa] = { entradas: 0, saidas: 0, projetos: {} };
         if (v > 0) arvore[tipo][empresa].entradas += v;
         else arvore[tipo][empresa].saidas += Math.abs(v);
-        // Nível projeto
-        const projKey = projeto !== 'SEM PROJETO' ? projeto : '(sem projeto)';
-        if (!arvore[tipo][empresa].projetos[projKey]) arvore[tipo][empresa].projetos[projKey] = { entradas: 0, saidas: 0, parceiros: {} };
-        if (v > 0) arvore[tipo][empresa].projetos[projKey].entradas += v;
-        else arvore[tipo][empresa].projetos[projKey].saidas += Math.abs(v);
-        // Nível parceiro
-        if (!arvore[tipo][empresa].projetos[projKey].parceiros[parceiro]) arvore[tipo][empresa].projetos[projKey].parceiros[parceiro] = { entradas: 0, saidas: 0 };
-        if (v > 0) arvore[tipo][empresa].projetos[projKey].parceiros[parceiro].entradas += v;
-        else arvore[tipo][empresa].projetos[projKey].parceiros[parceiro].saidas += Math.abs(v);
       } else {
-        // Para ESTRUTURA e FINANCEIRO: nível CC simples
-        if (!arvore[tipo][cc]) arvore[tipo][cc] = { entradas: 0, saidas: 0, empresas: {} };
+        if (!arvore[tipo][cc]) arvore[tipo][cc] = { entradas: 0, saidas: 0 };
         if (v > 0) arvore[tipo][cc].entradas += v;
         else arvore[tipo][cc].saidas += Math.abs(v);
       }
@@ -2486,40 +2502,10 @@ Responda em português, de forma objetiva e direta, citando os dados específico
     const rowStyle = 'display:grid;grid-template-columns:1fr auto auto auto;gap:.5rem;align-items:center;padding:.35rem .5rem;border-radius:.25rem;font-size:.88rem';
     const hdrStyle = 'display:grid;grid-template-columns:1fr auto auto auto;gap:.5rem;padding:.2rem .5rem;font-size:.75rem;color:#94a3b8;font-weight:600;text-transform:uppercase;letter-spacing:.04em';
 
-    let arvoreHTML = `<h3 style='margin-top:1.5rem'>\uD83D\uDCC8 Resultado do Período <span style='font-size:.8rem;color:#64748b;font-weight:400'>(${filtroInicio} a ${filtroFim})</span></h3>
-<p style='color:#64748b;font-size:.9rem;margin-bottom:1rem'>Entradas, saídas e saldo de cada grupo no período. Clique em um grupo para expandir os detalhes.</p>`;
-
-    for (const tipo of TIPOS_ORDEM) {
-      if (tipo === 'TRANSFERENCIA') continue;
-      const ccs = arvore[tipo];
-      if (!ccs || Object.keys(ccs).length === 0) continue;
-
-      // Totais do tipo
-      let tipoEnt = 0, tipoSai = 0;
-      Object.values(ccs).forEach(d => { tipoEnt += d.entradas; tipoSai += d.saidas; });
-
-      const cor = tipoColor[tipo] || '#808080';
-      arvoreHTML += `<details style='border:1px solid ${cor}33;border-radius:.5rem;margin-bottom:.75rem;background:#fff'>
-<summary style='cursor:pointer;padding:.75rem 1rem;background:${cor}11;border-radius:.5rem;list-style:none;display:flex;align-items:center;gap:.75rem;user-select:none'>
-  <span style='font-size:1.05rem;font-weight:700;color:${cor}'>${tipoLabel[tipo]||tipo}</span>
-  <span style='flex:1;font-size:.8rem;color:#64748b'>${tipoDesc[tipo]||''}</span>
-  <span style='font-size:.8rem;color:#16a34a;white-space:nowrap'>+${fmtBRL(tipoEnt)}</span>
-  <span style='font-size:.8rem;color:#dc2626;white-space:nowrap'>-${fmtBRL(tipoSai)}</span>
-  <span style='font-size:.9rem;font-weight:700;white-space:nowrap'>${fmtSaldo(tipoEnt,tipoSai)}</span>
-</summary>
-<div style='padding:.5rem .75rem'>`;
-
-      // Linha de cabeçalho das colunas
-      const hdrLabel = tipo === 'OPERACIONAL' ? 'Empresa / Cliente' : 'Centro de Custo';
-      arvoreHTML += `<div style='${hdrStyle}'><span>${hdrLabel}</span><span style='text-align:right'>Entradas</span><span style='text-align:right'>Saídas</span><span style='text-align:right'>Saldo</span></div>`;
-
-      // Cada item dentro do tipo
-      for (const [chave, dados] of Object.entries(ccs).sort((a,b) => (b[1].entradas - b[1].saidas) - (a[1].entradas - a[1].saidas))) {
-        if (tipo === 'OPERACIONAL') {
-          // OPERACIONAL: chave = empresa, dados.projetos = { proj: { entradas, saidas, parceiros: { p: {entradas,saidas} } } }
-          const projEntries = Object.entries(dados.projetos||{}).sort((a,b) => (b[1].entradas-b[1].saidas)-(a[1].entradas-a[1].saidas));
-          // Tabela com subtotais por projeto
-          let tabelaProj = `<div style='overflow-x:auto'><table style='width:100%;border-collapse:collapse;font-size:.85rem'>
+    // ── Função auxiliar para renderizar tabela de projetos/parceiros de uma empresa ──
+    function renderTabelaEmpresa(dados, cor) {
+      const projEntries = Object.entries(dados.projetos||{}).sort((a,b) => (b[1].entradas-b[1].saidas)-(a[1].entradas-a[1].saidas));
+      let tabelaProj = `<div style='overflow-x:auto'><table style='width:100%;border-collapse:collapse;font-size:.85rem'>
 <thead><tr style='background:#f1f5f9'>
   <th style='text-align:left;padding:.35rem .6rem;border-bottom:2px solid #e2e8f0'>Projeto</th>
   <th style='text-align:left;padding:.35rem .6rem;border-bottom:2px solid #e2e8f0'>Parceiro</th>
@@ -2527,64 +2513,79 @@ Responda em português, de forma objetiva e direta, citando os dados específico
   <th style='text-align:right;padding:.35rem .6rem;border-bottom:2px solid #e2e8f0;color:#dc2626'>Saídas</th>
   <th style='text-align:right;padding:.35rem .6rem;border-bottom:2px solid #e2e8f0'>Saldo</th>
 </tr></thead><tbody>`;
-          for (const [proj, pDados] of projEntries) {
-            const parcEntries = Object.entries(pDados.parceiros||{}).sort((a,b) => (b[1].entradas-b[1].saidas)-(a[1].entradas-a[1].saidas));
-            const firstParceiro = parcEntries[0];
-            // Primeira linha do projeto (com rowspan implícito via primeira linha)
-            if (parcEntries.length > 0) {
-              for (let pi = 0; pi < parcEntries.length; pi++) {
-                const [parc, parDados] = parcEntries[pi];
-                const parSaldo = parDados.entradas - parDados.saidas;
-                const parCor = parSaldo >= 0 ? '#16a34a' : '#dc2626';
-                if (pi === 0) {
-                  tabelaProj += `<tr style='border-bottom:1px solid #f1f5f9'>
+      for (const [proj, pDados] of projEntries) {
+        const parcEntries = Object.entries(pDados.parceiros||{}).sort((a,b) => (b[1].entradas-b[1].saidas)-(a[1].entradas-a[1].saidas));
+        if (parcEntries.length > 0) {
+          for (let pi = 0; pi < parcEntries.length; pi++) {
+            const [parc, parDados] = parcEntries[pi];
+            const parSaldo = parDados.entradas - parDados.saidas;
+            const parCor = parSaldo >= 0 ? '#16a34a' : '#dc2626';
+            if (pi === 0) {
+              tabelaProj += `<tr style='border-bottom:1px solid #f1f5f9'>
   <td style='padding:.35rem .6rem;font-weight:600;vertical-align:top' rowspan='${parcEntries.length + 1}'>${proj}</td>
   <td style='padding:.35rem .6rem'>${parc}</td>
   <td style='padding:.35rem .6rem;text-align:right;color:#16a34a'>${fmtBRL(parDados.entradas)}</td>
   <td style='padding:.35rem .6rem;text-align:right;color:#dc2626'>${fmtBRL(parDados.saidas)}</td>
   <td style='padding:.35rem .6rem;text-align:right;font-weight:600;color:${parCor}'>${fmtBRL(parSaldo)}</td>
 </tr>`;
-                } else {
-                  tabelaProj += `<tr style='border-bottom:1px solid #f1f5f9'>
+            } else {
+              tabelaProj += `<tr style='border-bottom:1px solid #f1f5f9'>
   <td style='padding:.35rem .6rem'>${parc}</td>
   <td style='padding:.35rem .6rem;text-align:right;color:#16a34a'>${fmtBRL(parDados.entradas)}</td>
   <td style='padding:.35rem .6rem;text-align:right;color:#dc2626'>${fmtBRL(parDados.saidas)}</td>
   <td style='padding:.35rem .6rem;text-align:right;font-weight:600;color:${parCor}'>${fmtBRL(parSaldo)}</td>
 </tr>`;
-                }
-              }
             }
-            // Subtotal do projeto
-            const projSaldo = pDados.entradas - pDados.saidas;
-            const projCor = projSaldo >= 0 ? '#16a34a' : '#dc2626';
-            tabelaProj += `<tr style='background:#f8fafc;border-bottom:2px solid #e2e8f0'>
+          }
+        }
+        const projSaldo = pDados.entradas - pDados.saidas;
+        const projCor = projSaldo >= 0 ? '#16a34a' : '#dc2626';
+        tabelaProj += `<tr style='background:#f8fafc;border-bottom:2px solid #e2e8f0'>
   <td style='padding:.3rem .6rem;font-size:.8rem;color:#64748b;font-style:italic'>Subtotal ${proj}</td>
   <td style='padding:.3rem .6rem;text-align:right;color:#16a34a;font-weight:700'>${fmtBRL(pDados.entradas)}</td>
   <td style='padding:.3rem .6rem;text-align:right;color:#dc2626;font-weight:700'>${fmtBRL(pDados.saidas)}</td>
   <td style='padding:.3rem .6rem;text-align:right;font-weight:700;color:${projCor}'>${fmtBRL(projSaldo)}</td>
 </tr>`;
-          }
-          // Total do cliente
-          const cliSaldo = dados.entradas - dados.saidas;
-          const cliCor = cliSaldo >= 0 ? '#16a34a' : '#dc2626';
-          tabelaProj += `<tr style='background:${cor}11;border-top:2px solid ${cor}44;font-weight:700'>
-  <td style='padding:.4rem .6rem' colspan='2'>TOTAL ${chave}</td>
+      }
+      const cliSaldo = dados.entradas - dados.saidas;
+      const cliCor = cliSaldo >= 0 ? '#16a34a' : '#dc2626';
+      tabelaProj += `<tr style='background:${cor}11;border-top:2px solid ${cor}44;font-weight:700'>
+  <td style='padding:.4rem .6rem' colspan='2'>TOTAL</td>
   <td style='padding:.4rem .6rem;text-align:right;color:#16a34a'>${fmtBRL(dados.entradas)}</td>
   <td style='padding:.4rem .6rem;text-align:right;color:#dc2626'>${fmtBRL(dados.saidas)}</td>
   <td style='padding:.4rem .6rem;text-align:right;color:${cliCor}'>${fmtBRL(cliSaldo)}</td>
 </tr></tbody></table></div>`;
-          arvoreHTML += `<details style='margin:.2rem 0;border-left:3px solid ${cor}44;padding-left:.5rem'>
+      return tabelaProj;
+    }
+
+    // ── Função para renderizar um bloco de TIPO dentro de um ano ──
+    function renderTipoBloco(tipo, ccs, cor) {
+      if (!ccs || Object.keys(ccs).length === 0) return '';
+      let tipoEnt = 0, tipoSai = 0;
+      Object.values(ccs).forEach(d => { tipoEnt += d.entradas; tipoSai += d.saidas; });
+      let html = `<details style='border:1px solid ${cor}22;border-radius:.4rem;margin-bottom:.5rem;background:#fff'>
+<summary style='cursor:pointer;padding:.6rem .85rem;background:${cor}0d;border-radius:.4rem;list-style:none;display:flex;align-items:center;gap:.6rem;user-select:none'>
+  <span style='font-size:.95rem;font-weight:700;color:${cor}'>${tipoLabel[tipo]||tipo}</span>
+  <span style='flex:1;font-size:.75rem;color:#64748b'>${tipoDesc[tipo]||''}</span>
+  <span style='font-size:.8rem;color:#16a34a;white-space:nowrap'>+${fmtBRL(tipoEnt)}</span>
+  <span style='font-size:.8rem;color:#dc2626;white-space:nowrap'>-${fmtBRL(tipoSai)}</span>
+  <span style='font-size:.85rem;font-weight:700;white-space:nowrap'>${fmtSaldo(tipoEnt,tipoSai)}</span>
+</summary>
+<div style='padding:.4rem .6rem'>`;
+      const hdrLabel2 = tipo === 'OPERACIONAL' ? 'Empresa / Cliente' : 'Centro de Custo';
+      html += `<div style='${hdrStyle}'><span>${hdrLabel2}</span><span style='text-align:right'>Entradas</span><span style='text-align:right'>Saídas</span><span style='text-align:right'>Saldo</span></div>`;
+      for (const [chave, dados] of Object.entries(ccs).sort((a,b) => (b[1].entradas - b[1].saidas) - (a[1].entradas - a[1].saidas))) {
+        if (tipo === 'OPERACIONAL') {
+          html += `<details style='margin:.2rem 0;border-left:3px solid ${cor}44;padding-left:.5rem'>
 <summary style='cursor:pointer;list-style:none;${rowStyle};background:#f8fafc;border-radius:.25rem'>
   <span style='font-weight:600'>\u25B6 ${chave}</span>
   <span style='text-align:right;color:#16a34a'>${fmtBRL(dados.entradas)}</span>
   <span style='text-align:right;color:#dc2626'>${fmtBRL(dados.saidas)}</span>
   ${fmtSaldo(dados.entradas,dados.saidas)}
 </summary>
-<div style='padding:.25rem 0 .25rem .5rem'>${tabelaProj}</div></details>`;
-
+<div style='padding:.25rem 0 .25rem .5rem'>${renderTabelaEmpresa(dados, cor)}</div></details>`;
         } else {
-          // ESTRUTURA / FINANCEIRO: linha simples por CC
-          arvoreHTML += `<div style='${rowStyle};border-bottom:1px solid #f1f5f9'>
+          html += `<div style='${rowStyle};border-bottom:1px solid #f1f5f9'>
   <span style='font-weight:500'>${chave}</span>
   <span style='text-align:right;color:#16a34a'>${fmtBRL(dados.entradas)}</span>
   <span style='text-align:right;color:#dc2626'>${fmtBRL(dados.saidas)}</span>
@@ -2592,17 +2593,66 @@ Responda em português, de forma objetiva e direta, citando os dados específico
 </div>`;
         }
       }
-
-      // Linha de total do tipo
-      arvoreHTML += `<div style='${rowStyle};border-top:2px solid ${cor}44;margin-top:.35rem;font-weight:700;background:${cor}08'>
+      html += `<div style='${rowStyle};border-top:2px solid ${cor}44;margin-top:.35rem;font-weight:700;background:${cor}08'>
   <span>TOTAL ${tipo}</span>
   <span style='text-align:right;color:#16a34a'>${fmtBRL(tipoEnt)}</span>
   <span style='text-align:right;color:#dc2626'>${fmtBRL(tipoSai)}</span>
   ${fmtSaldo(tipoEnt,tipoSai)}
-</div>`;
+</div></div></details>`;
+      return html;
+    }
 
+    // ── Gerar HTML do Resultado por Ano ──
+    let arvoreHTML = `<h3 style='margin-top:1.5rem'>\uD83D\uDCC8 Resultado Total por Ano</h3>
+<p style='color:#64748b;font-size:.9rem;margin-bottom:1rem'>Todos os lançamentos da planilha, separados por ano. Clique em um ano para expandir.</p>`;
+
+    // Totais gerais (todos os anos)
+    let totalGeralEnt = 0, totalGeralSai = 0;
+    const anosOrdenados = Object.keys(porAno).sort();
+
+    for (const ano of anosOrdenados) {
+      const anoData = porAno[ano];
+      let anoEnt = 0, anoSai = 0;
+      TIPOS_ORDEM.forEach(t => {
+        if (t === 'TRANSFERENCIA') return;
+        Object.values(anoData[t]||{}).forEach(d => { anoEnt += d.entradas; anoSai += d.saidas; });
+      });
+      totalGeralEnt += anoEnt;
+      totalGeralSai += anoSai;
+      const anoSaldo = anoEnt - anoSai;
+      const anoCor = anoSaldo >= 0 ? '#16a34a' : '#dc2626';
+      const isUltimoAno = ano === anosOrdenados[anosOrdenados.length - 1];
+      arvoreHTML += `<details style='border:2px solid #e2e8f0;border-radius:.6rem;margin-bottom:.75rem;background:#f8fafc' ${isUltimoAno ? 'open' : ''}>
+<summary style='cursor:pointer;padding:.75rem 1rem;background:#f1f5f9;border-radius:.6rem;list-style:none;display:flex;align-items:center;gap:.75rem;user-select:none'>
+  <span style='font-size:1.1rem;font-weight:800;color:#1e293b'>\uD83D\uDCC5 ${ano}</span>
+  <span style='flex:1'></span>
+  <span style='font-size:.85rem;color:#16a34a;white-space:nowrap'>+${fmtBRL(anoEnt)}</span>
+  <span style='font-size:.85rem;color:#dc2626;white-space:nowrap'>-${fmtBRL(anoSai)}</span>
+  <span style='font-size:.95rem;font-weight:800;white-space:nowrap;color:${anoCor}'>${fmtBRL(anoSaldo)}</span>
+</summary>
+<div style='padding:.6rem .75rem'>`;
+      for (const tipo of TIPOS_ORDEM) {
+        if (tipo === 'TRANSFERENCIA') continue;
+        const cor = tipoColor[tipo] || '#808080';
+        arvoreHTML += renderTipoBloco(tipo, anoData[tipo], cor);
+      }
+      arvoreHTML += `<div style='${rowStyle};border-top:2px solid #cbd5e1;margin-top:.5rem;font-weight:800;background:#e2e8f0;border-radius:.25rem'>
+  <span>TOTAL ${ano}</span>
+  <span style='text-align:right;color:#16a34a'>${fmtBRL(anoEnt)}</span>
+  <span style='text-align:right;color:#dc2626'>${fmtBRL(anoSai)}</span>
+  <span style='text-align:right;font-weight:800;color:${anoCor}'>${fmtBRL(anoSaldo)}</span>
+</div>`;
       arvoreHTML += `</div></details>`;
     }
+
+    // Linha de total geral (todos os anos)
+    const totalGeralSaldo = totalGeralEnt - totalGeralSai;
+    arvoreHTML += `<div style='${rowStyle};border:2px solid #1e293b;border-radius:.5rem;margin-top:.5rem;font-weight:800;background:#1e293b;color:#fff;padding:.6rem 1rem'>
+  <span style='color:#fff'>\uD83C\uDFC6 TOTAL GERAL (TODOS OS ANOS)</span>
+  <span style='text-align:right;color:#86efac'>${fmtBRL(totalGeralEnt)}</span>
+  <span style='text-align:right;color:#fca5a5'>${fmtBRL(totalGeralSai)}</span>
+  <span style='text-align:right;font-weight:800;color:${totalGeralSaldo >= 0 ? '#86efac' : '#fca5a5'}'>${fmtBRL(totalGeralSaldo)}</span>
+</div>`;
 
     // Conteúdo principal conforme visão selecionada
     const conteudoPrincipal = visao === 'fluxo'
