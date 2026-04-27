@@ -892,7 +892,6 @@ function page(title, body, user, activePage) {
     ['/', 'Home', ''],
     ['/upload', 'Upload', ''],
     ['/pendencias', 'Pré-análise', ''],
-    ['/cadastros', 'Revisável', ''],
     ['/fatura', 'Fatura', ''],
     ['/lancamentos', '✏ Lançamentos', ''],
     ['/historico', 'Histórico', ''],
@@ -1728,7 +1727,13 @@ ${groups.map((g) => `<h3>${g.title}</h3><ul>${openIssues.filter((i) => i.code ==
     return;
   }
 
+  // /cadastros redireciona para a nova tela de lançamentos
   if (req.method === 'GET' && url.pathname === '/cadastros') {
+    res.writeHead(302, { Location: '/lancamentos' });
+    res.end();
+    return;
+  }
+  if (req.method === 'GET' && url.pathname === '/cadastros-legado') {
     const statusFilter = (url.searchParams.get('status') || 'pendente').trim();
     const typeFilter = (url.searchParams.get('tipo') || '').trim();
     const textFilter = normalizeName(url.searchParams.get('q') || '');
@@ -3586,6 +3591,7 @@ async function excluirRef(tipo,nome){
     const qDC = url.searchParams.get('dc') || '';
     const qStatus = url.searchParams.get('status') || '';
     const qCpf = (url.searchParams.get('cpf') || '').toLowerCase().trim();
+    const qInc = url.searchParams.get('inc') || ''; // filtro de inconsistência
     const page_num = Math.max(1, parseInt(url.searchParams.get('p') || '1', 10));
     const PAGE_SIZE = 50;
 
@@ -3603,10 +3609,37 @@ async function excluirRef(tipo,nome){
       if (qDC && (e.dc || (e.valor >= 0 ? 'C' : 'D')) !== qDC) return false;
       if (qStatus && (e.status || '') !== qStatus) return false;
       if (qCpf && !(e.cpfCnpj || '').toLowerCase().includes(qCpf)) return false;
+      // Filtros de inconsistência
+      if (qInc === 'sem_cc' && (e.centroCusto || '').trim()) return false;
+      if (qInc === 'sem_nome' && (e.favorecido || e.cliente || e.parceiro || '').trim()) return false;
+      if (qInc === 'sem_projeto') {
+        const nat = (e.naturezaGerencial || e.natureza || '');
+        const precisaProjeto = nat === 'Receita Operacional' || nat === 'Custo Direto';
+        if (!precisaProjeto || (e.projeto || '').trim()) return false;
+      }
+      if (qInc === 'sem_natureza') {
+        const nat = (e.naturezaGerencial || e.natureza || '');
+        if (nat && nat !== 'Pendente de Classificação') return false;
+      }
+      if (qInc === 'sem_cpf' && (e.cpfCnpj || '').trim()) return false;
       return true;
     }).sort((a, b) => (b.dataISO || '').localeCompare(a.dataISO || ''));
 
     const total = entries.length;
+
+    // Contadores de inconsistência (sobre TODOS os lançamentos, sem filtro de inc)
+    const allEntries = db.entries;
+    const cntSemCC = allEntries.filter(e => !(e.centroCusto || '').trim()).length;
+    const cntSemNome = allEntries.filter(e => !(e.favorecido || e.cliente || e.parceiro || '').trim()).length;
+    const cntSemProjeto = allEntries.filter(e => {
+      const nat = (e.naturezaGerencial || e.natureza || '');
+      return (nat === 'Receita Operacional' || nat === 'Custo Direto') && !(e.projeto || '').trim();
+    }).length;
+    const cntSemNatureza = allEntries.filter(e => {
+      const nat = (e.naturezaGerencial || e.natureza || '');
+      return !nat || nat === 'Pendente de Classificação';
+    }).length;
+    const cntSemCpf = allEntries.filter(e => !(e.cpfCnpj || '').trim()).length;
     const totalPages = Math.ceil(total / PAGE_SIZE) || 1;
     const paginated = entries.slice((page_num - 1) * PAGE_SIZE, page_num * PAGE_SIZE);
 
@@ -3639,6 +3672,16 @@ async function excluirRef(tipo,nome){
 
     // Linhas da tabela
     const rows = paginated.map(e => {
+      // Detectar inconsistências deste lançamento
+      const nat = (e.naturezaGerencial || e.natureza || '');
+      const precisaProjeto = nat === 'Receita Operacional' || nat === 'Custo Direto';
+      const inconsistencias = [];
+      if (!(e.centroCusto || '').trim()) inconsistencias.push('sem_cc');
+      if (!(e.favorecido || e.cliente || e.parceiro || '').trim()) inconsistencias.push('sem_nome');
+      if (precisaProjeto && !(e.projeto || '').trim()) inconsistencias.push('sem_projeto');
+      if (!nat || nat === 'Pendente de Classificação') inconsistencias.push('sem_natureza');
+      const temInconsistencia = inconsistencias.length > 0;
+      const incJson = JSON.stringify(inconsistencias);
       const dcStr = e.dc || (e.valor >= 0 ? 'C' : 'D');
       const dcCls = dcStr === 'C' ? 'color:#065f46;font-weight:700' : 'color:#991b1b;font-weight:700';
       const val = Number(e.valor || 0);
@@ -3647,17 +3690,19 @@ async function excluirRef(tipo,nome){
       const nome = (e.favorecido || e.cliente || e.parceiro || '-').slice(0, 30);
       const desc = (e.documento || e.descricao || '-').slice(0, 50);
       const cc = (e.centroCusto || '-').slice(0, 15);
-      const nat = (e.naturezaGerencial || e.natureza || '-').slice(0, 20);
+      const natLabel = (e.naturezaGerencial || e.natureza || '-').slice(0, 20);
       const status = e.status || '-';
       const origem = e.origem === 'manual' ? '<span style="font-size:.65rem;background:#dbeafe;color:#1e40af;padding:.1rem .3rem;border-radius:4px">MANUAL</span>' : '';
-      return `<tr id="row-${e.id}" style="border-bottom:1px solid #f1f5f9;cursor:pointer" onclick="toggleEditLanc('${e.id}')">
+      const incBadge = temInconsistencia ? `<span title="${inconsistencias.map(i=>({sem_cc:'Sem CC',sem_nome:'Sem nome',sem_projeto:'Sem projeto',sem_natureza:'Sem natureza'}[i]||i)).join(', ')}" style="font-size:.6rem;background:#fee2e2;color:#991b1b;padding:.1rem .3rem;border-radius:4px;cursor:help">⚠ ${inconsistencias.length}</span>` : '';
+      const rowBg = temInconsistencia ? 'background:#fffbeb' : '';
+      return `<tr id="row-${e.id}" style="border-bottom:1px solid #f1f5f9;cursor:pointer;${rowBg}" onclick="toggleEditLanc('${e.id}', ${incJson})">
         <td style="white-space:nowrap;color:#64748b;font-size:.8rem">${e.dataISO || '-'}</td>
         <td style="${dcCls};font-size:.78rem;text-align:center">${dcStr}</td>
         <td style="color:#64748b;font-size:.78rem">${cc}</td>
-        <td style="font-size:.78rem">${nome} ${origem}</td>
+        <td style="font-size:.78rem">${nome} ${origem} ${incBadge}</td>
         <td style="font-size:.78rem;color:#475569" title="${(e.descritivo||e.descricao||'')}">${desc}</td>
         <td style="${valCls};font-size:.8rem;text-align:right;font-weight:600">${valStr}</td>
-        <td style="font-size:.72rem;color:#94a3b8">${nat}</td>
+        <td style="font-size:.72rem;color:#94a3b8">${natLabel}</td>
         <td style="font-size:.72rem;color:#94a3b8">${status}</td>
         <td style="text-align:center"><button onclick="event.stopPropagation();excluirLanc('${e.id}')" style="background:#fee2e2;color:#991b1b;font-size:.7rem;padding:.2rem .4rem;box-shadow:none;border:1px solid #fca5a5">✕</button></td>
       </tr>
@@ -3758,6 +3803,17 @@ async function excluirRef(tipo,nome){
   <div id="novo-feedback" style="margin-top:.5rem;font-size:.85rem"></div>
 </div>
 
+<!-- FILTROS RÁPIDOS DE INCONSISTÊNCIA -->
+<div style="display:flex;gap:.5rem;flex-wrap:wrap;margin-bottom:.75rem;align-items:center">
+  <span style="font-size:.75rem;font-weight:700;color:#64748b;text-transform:uppercase">Revisar:</span>
+  <a href="/lancamentos?inc=sem_cc" style="font-size:.75rem;padding:.3rem .7rem;background:${qInc==='sem_cc'?'#dc2626':'#fee2e2'};color:${qInc==='sem_cc'?'#fff':'#991b1b'};border-radius:6px;text-decoration:none;font-weight:600">⚠ Sem CC (${cntSemCC})</a>
+  <a href="/lancamentos?inc=sem_nome" style="font-size:.75rem;padding:.3rem .7rem;background:${qInc==='sem_nome'?'#dc2626':'#fee2e2'};color:${qInc==='sem_nome'?'#fff':'#991b1b'};border-radius:6px;text-decoration:none;font-weight:600">⚠ Sem Nome (${cntSemNome})</a>
+  <a href="/lancamentos?inc=sem_projeto" style="font-size:.75rem;padding:.3rem .7rem;background:${qInc==='sem_projeto'?'#dc2626':'#fee2e2'};color:${qInc==='sem_projeto'?'#fff':'#991b1b'};border-radius:6px;text-decoration:none;font-weight:600">⚠ Sem Projeto (${cntSemProjeto})</a>
+  <a href="/lancamentos?inc=sem_natureza" style="font-size:.75rem;padding:.3rem .7rem;background:${qInc==='sem_natureza'?'#dc2626':'#fee2e2'};color:${qInc==='sem_natureza'?'#fff':'#991b1b'};border-radius:6px;text-decoration:none;font-weight:600">⚠ Sem Natureza (${cntSemNatureza})</a>
+  <a href="/lancamentos?inc=sem_cpf" style="font-size:.75rem;padding:.3rem .7rem;background:${qInc==='sem_cpf'?'#dc2626':'#fee2e2'};color:${qInc==='sem_cpf'?'#fff':'#991b1b'};border-radius:6px;text-decoration:none;font-weight:600">⚠ Sem CPF/CNPJ (${cntSemCpf})</a>
+  ${qInc ? '<a href="/lancamentos" style="font-size:.75rem;padding:.3rem .7rem;background:#e2e8f0;color:#475569;border-radius:6px;text-decoration:none">✕ Limpar filtro</a>' : ''}
+</div>
+
 <!-- FILTROS DE PESQUISA -->
 <form method="GET" action="/lancamentos" style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:12px;padding:1rem;margin-bottom:1rem">
   <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:.5rem;align-items:end">
@@ -3790,6 +3846,7 @@ async function excluirRef(tipo,nome){
       ${STATUS_LISTA.map(s => `<option value="${s}" ${qStatus===s?'selected':''}>${s}</option>`).join('')}
     </select></div>
     <div style="display:flex;gap:.4rem;align-items:flex-end">
+      <input type="hidden" name="inc" value="${qInc}">
       <button type="submit" style="background:#6d28d9;font-size:.8rem;padding:.4rem .8rem;flex:1">🔍 Pesquisar</button>
       <a href="/lancamentos" style="background:#e2e8f0;color:#475569;font-size:.8rem;padding:.4rem .6rem;border-radius:6px;text-decoration:none">✕</a>
     </div>
@@ -3820,9 +3877,37 @@ ${paginacao}
 ${paginacao}
 
 <script>
-function toggleEditLanc(id) {
+function toggleEditLanc(id, inconsistencias) {
   const row = document.getElementById('edit-lanc-' + id);
-  if (row) row.style.display = row.style.display === 'none' ? 'table-row' : 'none';
+  if (!row) return;
+  const isOpen = row.style.display !== 'none';
+  row.style.display = isOpen ? 'none' : 'table-row';
+  if (!isOpen && inconsistencias && inconsistencias.length > 0) {
+    // Destacar campos problemáticos em vermelho
+    const mapaCampos = {
+      sem_cc: 'el-cc-' + id,
+      sem_nome: 'el-cliente-' + id,
+      sem_projeto: 'el-proj-' + id,
+      sem_natureza: 'el-nat-' + id,
+    };
+    // Resetar todos primeiro
+    ['el-cc-','el-cliente-','el-proj-','el-nat-'].forEach(p => {
+      const el = document.getElementById(p + id);
+      if (el) { el.style.borderColor = ''; el.style.background = ''; }
+    });
+    // Destacar os problemáticos
+    inconsistencias.forEach(inc => {
+      const fieldId = mapaCampos[inc];
+      if (fieldId) {
+        const el = document.getElementById(fieldId);
+        if (el) {
+          el.style.borderColor = '#dc2626';
+          el.style.background = '#fff5f5';
+          el.focus();
+        }
+      }
+    });
+  }
 }
 async function salvarLancEdit(id) {
   const data = {
