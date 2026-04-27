@@ -1107,7 +1107,7 @@ function reviewCards(list, allEntries) {
                     + "<input id='ef-conta-"+eId+"' list='dl-contas' value='"+contaVal+"' placeholder='Selecione ou digite...' style='font-size:.8rem;padding:.3rem .5rem'/>"
                     + "</div>"
                     + "<div>"
-                    + "<label style='font-size:.72rem;font-weight:700;"+lvMotivo(clienteVal,clienteEMotivo)+";text-transform:uppercase'>"+(clienteEMotivo?'\u26a0 \u2190 PENDENTE DE CLASSIFICA\u00c7\u00c3O ':warn(clienteVal))+"Nome (Cliente / Fornecedor)</label>"
+                    + "<label style='font-size:.72rem;font-weight:700;"+lvMotivo(clienteVal,clienteEMotivo)+";text-transform:uppercase'>"+(clienteEMotivo?'\u26a0 \u2190 PENDENTE DE CLASSIFICA\u00c7\u00c3O ':warn(clienteVal))+"Cliente / Fornecedor / Prestador</label>"
                     + "<input id='ef-cliente-"+eId+"' list='dl-clientes' value='"+clienteVal+"' placeholder='Selecione ou digite...' style='font-size:.8rem;padding:.3rem .5rem;"+fvMotivo(clienteVal,clienteEMotivo)+"'/>"
                     + "</div>"
                     + "<div>"
@@ -1143,7 +1143,7 @@ function reviewCards(list, allEntries) {
               <th style='white-space:nowrap'>Data</th>
               <th style='white-space:nowrap'>Tipo</th>
               <th>Código</th>
-              <th>Nome</th>
+              <th>Cliente / Fornecedor / Prestador</th>
               <th>Descritivo</th>
               <th>Natureza</th>
               <th style='text-align:right'>Valor</th>
@@ -1425,7 +1425,7 @@ function entriesTable(entries) {
     <td>${e.natureza || '-'}</td>
     <td>${e.status || '-'}</td>
   </tr>`).join('');
-  return `<table><thead><tr><th>Data</th><th>Tipo</th><th>Código</th><th>Nome</th><th>Descritivo</th><th>Natureza</th><th style="text-align:right">Valor</th></tr></thead><tbody>${rows || '<tr><td colspan="7">Sem lançamentos no recorte.</td></tr>'}</tbody></table>`;
+  return `<table><thead><tr><th>Data</th><th>Tipo</th><th>Código</th><th>Cliente / Fornecedor / Prestador</th><th>Descritivo</th><th>Natureza</th><th style="text-align:right">Valor</th></tr></thead><tbody>${rows || '<tr><td colspan="7">Sem lançamentos no recorte.</td></tr>'}</tbody></table>`;
 }
 
 const server = http.createServer(async (req, res) => {
@@ -2032,7 +2032,7 @@ async function verHistoricoLancamento(eId){
   try{
     const resp=await fetch('/api/entries/'+eId+'/historico');
     const log=await resp.json();
-    const LABELS={cliente:'Nome (Cliente/Fornecedor)',favorecido:'Favorecido',projeto:'Projeto',parceiro:'Parceiro',centroCusto:'Código (CC)',natureza:'Natureza (legado)',naturezaGerencial:'Natureza Gerencial',grupoDespesa:'Grupo da Despesa',tipoDespesa:'Tipo de Despesa',cpfCnpj:'CPF/CNPJ',documento:'Documento/Referência',descritivo:'Descritivo',categoria:'Categoria',detalhe:'Detalhe',conta:'Conta',formaPagamento:'Forma Pgto',status:'Status',descricao:'Histórico (legado)',valor:'Valor',dc:'D/C',data:'Data'};
+    const LABELS={cliente:'Cliente / Fornecedor / Prestador',favorecido:'Favorecido',projeto:'Projeto',parceiro:'Parceiro',centroCusto:'Código (CC)',natureza:'Natureza (legado)',naturezaGerencial:'Natureza Gerencial',grupoDespesa:'Grupo da Despesa',tipoDespesa:'Tipo de Despesa',cpfCnpj:'CPF/CNPJ',documento:'Documento/Referência',descritivo:'Descritivo',categoria:'Categoria',detalhe:'Detalhe',conta:'Conta',formaPagamento:'Forma Pgto',status:'Status',descricao:'Histórico (legado)',valor:'Valor',dc:'D/C',data:'Data'};
     const formatTs=ts=>{const d=new Date(ts);return d.toLocaleDateString('pt-BR')+' '+d.toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'});};
     const content=document.getElementById('hist-content-'+eId);
     if(!log.length){ content.innerHTML='<em style="color:#94a3b8">Nenhuma alteração registrada para este lançamento.</em>'; return; }
@@ -3031,7 +3031,7 @@ function openDrawer(view, de, ate) {
       if (isMutuo) {
         body.innerHTML = '<table><thead><tr><th>Data</th><th>Descrição</th><th>Tipo</th><th style="text-align:right">Valor</th><th style="text-align:right">Saldo devedor</th></tr></thead><tbody>' + rows + '</tbody></table>';
       } else {
-        body.innerHTML = '<table><thead><tr><th>Data</th><th>Tipo</th><th>Código</th><th>Nome</th><th>Descritivo</th><th style="text-align:right">Valor</th></tr></thead><tbody>' + rows + '</tbody></table>';
+        body.innerHTML = '<table><thead><tr><th>Data</th><th>Tipo</th><th>Código</th><th>Cliente / Fornecedor / Prestador</th><th>Descritivo</th><th style="text-align:right">Valor</th></tr></thead><tbody>' + rows + '</tbody></table>';
       }
     })
     .catch(err => {
@@ -3314,7 +3314,7 @@ function renderResultado(data) {
   div.innerHTML = '<h3 style="margin-bottom:.75rem">Itens extraídos da fatura (' + data.itens.length + ')</h3>' +
     '<p style="font-size:.82rem;color:var(--gray-600);margin-bottom:.75rem">Itens em amarelo foram deixados como <strong>Pendente</strong> pela IA. Revise e ajuste antes de confirmar.</p>' +
     '<div style="overflow-x:auto;margin-bottom:1rem"><table style="min-width:800px"><thead><tr>' +
-    '<th>Data</th><th>Tipo</th><th>Código</th><th>Nome</th><th>Descritivo</th><th>Natureza</th><th style="text-align:right">Valor</th><th>Projeto</th><th>Obs. IA</th>' +
+    '<th>Data</th><th>Tipo</th><th>Código</th><th>Cliente / Fornecedor / Prestador</th><th>Descritivo</th><th>Natureza</th><th style="text-align:right">Valor</th><th>Projeto</th><th>Obs. IA</th>' +
     '</tr></thead><tbody>' + rows + '</tbody></table></div>' +
     '<div style="background:#fef2f2;border:1px solid #fecaca;border-radius:8px;padding:.75rem 1rem;margin-bottom:1rem">' +
     '<strong style="font-size:.85rem;color:#991b1b">⚠ Atenção:</strong> <span style="font-size:.82rem;color:#7f1d1d">Ao confirmar, o lançamento original de R$ ' + Number(data.valorOriginal||0).toFixed(2) + ' será <strong>removido</strong> e substituído pelos ' + data.itens.length + ' itens acima. Esta ação não pode ser desfeita.</span>' +
@@ -3693,7 +3693,7 @@ async function excluirRef(tipo,nome){
       const natLabel = (e.naturezaGerencial || e.natureza || '-').slice(0, 20);
       const status = e.status || '-';
       const origem = e.origem === 'manual' ? '<span style="font-size:.65rem;background:#dbeafe;color:#1e40af;padding:.1rem .3rem;border-radius:4px">MANUAL</span>' : '';
-      const incBadge = temInconsistencia ? `<span title="${inconsistencias.map(i=>({sem_cc:'Sem CC',sem_nome:'Sem nome',sem_projeto:'Sem projeto',sem_natureza:'Sem natureza'}[i]||i)).join(', ')}" style="font-size:.6rem;background:#fee2e2;color:#991b1b;padding:.1rem .3rem;border-radius:4px;cursor:help">⚠ ${inconsistencias.length}</span>` : '';
+      const incBadge = temInconsistencia ? `<span title="${inconsistencias.map(i=>({sem_cc:'Sem CC',sem_nome:'Sem Cliente/Fornecedor/Prestador',sem_projeto:'Sem projeto',sem_natureza:'Sem natureza'}[i]||i)).join(', ')}" style="font-size:.6rem;background:#fee2e2;color:#991b1b;padding:.1rem .3rem;border-radius:4px;cursor:help">⚠ ${inconsistencias.length}</span>` : '';
       const rowBg = temInconsistencia ? 'background:#fffbeb' : '';
       return `<tr id="row-${e.id}" style="border-bottom:1px solid #f1f5f9;cursor:pointer;${rowBg}" onclick="toggleEditLanc('${e.id}', ${incJson})">
         <td style="white-space:nowrap;color:#64748b;font-size:.8rem">${e.dataISO || '-'}</td>
@@ -3724,7 +3724,7 @@ async function excluirRef(tipo,nome){
             <select id="el-tipo-${e.id}" style="font-size:.8rem;padding:.3rem .5rem;width:100%">${TIPOS.map(t=>`<option value="${t}" ${(e.tipoDespesa||'')==t?'selected':''}>${t||'-- Selecione --'}</option>`).join('')}</select></div>
             <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Código (CC)</label>
             <input id="el-cc-${e.id}" list="dl-cc-lanc" value="${e.centroCusto||''}" style="font-size:.8rem;padding:.3rem .5rem;width:100%"/></div>
-            <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Nome (Cliente / Fornecedor)</label>
+            <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Cliente / Fornecedor / Prestador</label>
             <input id="el-cliente-${e.id}" list="dl-clientes-lanc" value="${e.favorecido||e.cliente||e.parceiro||''}" style="font-size:.8rem;padding:.3rem .5rem;width:100%"/></div>
             <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">CPF / CNPJ</label>
             <input id="el-cpf-${e.id}" value="${e.cpfCnpj||''}" placeholder="000.000.000-00" style="font-size:.8rem;padding:.3rem .5rem;width:100%"/></div>
@@ -3779,7 +3779,7 @@ async function excluirRef(tipo,nome){
     <select id="novo-tipo" style="font-size:.8rem;padding:.3rem .5rem;width:100%">${tipoOpts}</select></div>
     <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Código (CC) *</label>
     <input id="novo-cc" list="dl-cc-lanc" placeholder="Ex: ESCRITORIO" style="font-size:.8rem;padding:.3rem .5rem;width:100%"/></div>
-    <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Nome (Cliente / Fornecedor)</label>
+    <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Cliente / Fornecedor / Prestador</label>
     <input id="novo-cliente" list="dl-clientes-lanc" placeholder="Ex: VIVO, SEBRAE-AC" style="font-size:.8rem;padding:.3rem .5rem;width:100%"/></div>
     <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">CPF / CNPJ</label>
     <input id="novo-cpf" placeholder="000.000.000-00" style="font-size:.8rem;padding:.3rem .5rem;width:100%"/></div>
@@ -3807,7 +3807,7 @@ async function excluirRef(tipo,nome){
 <div style="display:flex;gap:.5rem;flex-wrap:wrap;margin-bottom:.75rem;align-items:center">
   <span style="font-size:.75rem;font-weight:700;color:#64748b;text-transform:uppercase">Revisar:</span>
   <a href="/lancamentos?inc=sem_cc" style="font-size:.75rem;padding:.3rem .7rem;background:${qInc==='sem_cc'?'#dc2626':'#fee2e2'};color:${qInc==='sem_cc'?'#fff':'#991b1b'};border-radius:6px;text-decoration:none;font-weight:600">⚠ Sem CC (${cntSemCC})</a>
-  <a href="/lancamentos?inc=sem_nome" style="font-size:.75rem;padding:.3rem .7rem;background:${qInc==='sem_nome'?'#dc2626':'#fee2e2'};color:${qInc==='sem_nome'?'#fff':'#991b1b'};border-radius:6px;text-decoration:none;font-weight:600">⚠ Sem Nome (${cntSemNome})</a>
+  <a href="/lancamentos?inc=sem_nome" style="font-size:.75rem;padding:.3rem .7rem;background:${qInc==='sem_nome'?'#dc2626':'#fee2e2'};color:${qInc==='sem_nome'?'#fff':'#991b1b'};border-radius:6px;text-decoration:none;font-weight:600">⚠ Sem Cliente/Fornecedor (${cntSemNome})</a>
   <a href="/lancamentos?inc=sem_projeto" style="font-size:.75rem;padding:.3rem .7rem;background:${qInc==='sem_projeto'?'#dc2626':'#fee2e2'};color:${qInc==='sem_projeto'?'#fff':'#991b1b'};border-radius:6px;text-decoration:none;font-weight:600">⚠ Sem Projeto (${cntSemProjeto})</a>
   <a href="/lancamentos?inc=sem_natureza" style="font-size:.75rem;padding:.3rem .7rem;background:${qInc==='sem_natureza'?'#dc2626':'#fee2e2'};color:${qInc==='sem_natureza'?'#fff':'#991b1b'};border-radius:6px;text-decoration:none;font-weight:600">⚠ Sem Natureza (${cntSemNatureza})</a>
   <a href="/lancamentos?inc=sem_cpf" style="font-size:.75rem;padding:.3rem .7rem;background:${qInc==='sem_cpf'?'#dc2626':'#fee2e2'};color:${qInc==='sem_cpf'?'#fff':'#991b1b'};border-radius:6px;text-decoration:none;font-weight:600">⚠ Sem CPF/CNPJ (${cntSemCpf})</a>
@@ -3863,7 +3863,7 @@ ${paginacao}
       <th style="padding:.5rem .75rem;text-align:left">Data</th>
       <th style="padding:.5rem .75rem;text-align:center">Tipo</th>
       <th style="padding:.5rem .75rem;text-align:left">Código</th>
-      <th style="padding:.5rem .75rem;text-align:left">Nome</th>
+      <th style="padding:.5rem .75rem;text-align:left">Cliente / Fornecedor / Prestador</th>
       <th style="padding:.5rem .75rem;text-align:left">Descritivo</th>
       <th style="padding:.5rem .75rem;text-align:right">Valor</th>
       <th style="padding:.5rem .75rem;text-align:left">Natureza</th>
@@ -4980,7 +4980,7 @@ function renderHistoricoRel() {
       <th style='padding:.55rem .75rem;text-align:left;white-space:nowrap'>Data</th>
       <th style='padding:.55rem .75rem;text-align:center'>D/C</th>
       <th style='padding:.55rem .75rem;text-align:left'>C\u00f3digo CC</th>
-      <th style='padding:.55rem .75rem;text-align:left'>Nome</th>
+      <th style='padding:.55rem .75rem;text-align:left'>Cliente / Fornecedor / Prestador</th>
       <th style='padding:.55rem .75rem;text-align:left'>Descritivo</th>
       <th style='padding:.55rem .75rem;text-align:left'>Natureza</th>
       <th style='padding:.55rem .75rem;text-align:right'>Valor</th>
@@ -5622,7 +5622,7 @@ async function saveContrato() {
 <section>
   <h2>Contas Pendentes</h2>
   <div style='overflow-x:auto'>
-  <table><thead><tr><th>Tipo</th><th>Vencimento</th><th>Código</th><th>Nome</th><th>Descritivo</th><th style="text-align:right">Valor</th><th>Status</th><th></th></tr></thead>
+  <table><thead><tr><th>Tipo</th><th>Vencimento</th><th>Código</th><th>Cliente / Fornecedor / Prestador</th><th>Descritivo</th><th style="text-align:right">Valor</th><th>Status</th><th></th></tr></thead>
   <tbody>${renderContas}</tbody></table></div>
 </section>
 
