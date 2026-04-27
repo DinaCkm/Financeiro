@@ -2622,7 +2622,8 @@ Responda em português, de forma objetiva e direta, citando os dados específico
     }
     const totalGeralSaldo = totalGeralEnt - totalGeralSai;
 
-    // Tabela resumo por ano (sempre visível)
+    // Tabela resumo por ano com Saldo Acumulado (sempre visível)
+    let saldoAcumulado = 0;
     let tabelaAnos = `
 <table style='width:100%;border-collapse:collapse;font-size:.9rem;margin-bottom:.5rem'>
   <thead>
@@ -2630,28 +2631,33 @@ Responda em português, de forma objetiva e direta, citando os dados específico
       <th style='padding:.5rem .75rem;text-align:left;border-radius:.375rem 0 0 0'>ANO</th>
       <th style='padding:.5rem .75rem;text-align:right;color:#86efac'>ENTRADAS</th>
       <th style='padding:.5rem .75rem;text-align:right;color:#fca5a5'>SAÍDAS</th>
-      <th style='padding:.5rem .75rem;text-align:right;border-radius:0 .375rem 0 0'>SALDO</th>
+      <th style='padding:.5rem .75rem;text-align:right'>RESULTADO</th>
+      <th style='padding:.5rem .75rem;text-align:right;border-radius:0 .375rem 0 0'>SALDO ACUMULADO</th>
     </tr>
   </thead>
   <tbody>`;
     for (const ano of anosOrdenados) {
       const { ent, sai, saldo } = anoTotais[ano];
-      const cor = saldo >= 0 ? '#16a34a' : '#dc2626';
-      const bg = saldo >= 0 ? '#f0fdf4' : '#fef2f2';
+      saldoAcumulado += saldo;
+      const corRes = saldo >= 0 ? '#16a34a' : '#dc2626';
+      const corAcum = saldoAcumulado >= 0 ? '#16a34a' : '#dc2626';
+      const bg = saldoAcumulado >= 0 ? '#f0fdf4' : '#fef2f2';
       tabelaAnos += `
-    <tr style='background:${bg};border-bottom:1px solid #e2e8f0;cursor:pointer' onclick="this.closest('table').nextElementSibling.querySelector('#det-${ano}').open=!this.closest('table').nextElementSibling.querySelector('#det-${ano}').open" title='Clique para expandir ${ano}'>
+    <tr style='background:${bg};border-bottom:1px solid #e2e8f0;cursor:pointer' onclick="this.closest('table').nextElementSibling.querySelector('#det-${ano}').open=!this.closest('table').nextElementSibling.querySelector('#det-${ano}').open" title='Clique para ver detalhes de ${ano}'>
       <td style='padding:.45rem .75rem;font-weight:700;color:#1e293b'>📅 ${ano}</td>
       <td style='padding:.45rem .75rem;text-align:right;color:#16a34a'>+${fmtBRL(ent)}</td>
       <td style='padding:.45rem .75rem;text-align:right;color:#dc2626'>-${fmtBRL(sai)}</td>
-      <td style='padding:.45rem .75rem;text-align:right;font-weight:800;color:${cor}'>${fmtBRL(saldo)}</td>
+      <td style='padding:.45rem .75rem;text-align:right;font-weight:600;color:${corRes}'>${saldo >= 0 ? '+' : ''}${fmtBRL(saldo)}</td>
+      <td style='padding:.45rem .75rem;text-align:right;font-weight:800;color:${corAcum}'>${fmtBRL(saldoAcumulado)}</td>
     </tr>`;
     }
     tabelaAnos += `
     <tr style='background:#1e293b;color:#fff;font-weight:800'>
-      <td style='padding:.5rem .75rem;border-radius:0 0 0 .375rem'>🏆 TOTAL GERAL</td>
+      <td style='padding:.5rem .75rem;border-radius:0 0 0 .375rem'>🏆 TOTAL</td>
       <td style='padding:.5rem .75rem;text-align:right;color:#86efac'>+${fmtBRL(totalGeralEnt)}</td>
       <td style='padding:.5rem .75rem;text-align:right;color:#fca5a5'>-${fmtBRL(totalGeralSai)}</td>
-      <td style='padding:.5rem .75rem;text-align:right;font-weight:800;color:${totalGeralSaldo >= 0 ? '#86efac' : '#fca5a5'};border-radius:0 0 .375rem 0'>${fmtBRL(totalGeralSaldo)}</td>
+      <td style='padding:.5rem .75rem;text-align:right;color:${totalGeralSaldo >= 0 ? '#86efac' : '#fca5a5'}'>${totalGeralSaldo >= 0 ? '+' : ''}${fmtBRL(totalGeralSaldo)}</td>
+      <td style='padding:.5rem .75rem;text-align:right;font-weight:800;color:${saldoAcumulado >= 0 ? '#86efac' : '#fca5a5'};border-radius:0 0 .375rem 0'>${fmtBRL(saldoAcumulado)}</td>
     </tr>
   </tbody>
 </table>`;
