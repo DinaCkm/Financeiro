@@ -2664,7 +2664,11 @@ ${fluxoGrafico}${fluxoTabela}
 </div>`
       : `${arvoreHTML}
 <div style='margin-top:1rem;padding:.75rem;background:#eff6ff;border:1px solid #bfdbfe;border-radius:.375rem;font-size:.85rem;color:#1e40af'>
-\uD83D\uDCA1 <strong>Como ler:</strong> Clique em cada grupo para expandir. <strong>Operacional</strong> = receitas e custos de projetos com clientes. <strong>Estrutura</strong> = gastos fixos da empresa (escritório, salários, jurídico). <strong>Financeiro</strong> = empréstimos e tarifas bancárias. Para ver o fluxo mês a mês, use <a href='/dashboard?de=${filtroInicio}&ate=${filtroFim}&visao=fluxo'>Fluxo de Caixa</a>.
+💡 <strong>Como ler:</strong> Clique em cada grupo para expandir. <strong>Operacional</strong> = receitas e custos de projetos com clientes. <strong>Estrutura</strong> = gastos fixos da empresa (escritório, salários, jurídico). <strong>Financeiro</strong> = empréstimos e tarifas bancárias. Para ver o fluxo mês a mês, use <a href='/dashboard?de=${filtroInicio}&ate=${filtroFim}&visao=fluxo'>Fluxo de Caixa</a>.
+</div>
+<div style='margin-top:.75rem;padding:.75rem;background:#fefce8;border:1px solid #fde68a;border-radius:.375rem;font-size:.85rem;color:#713f12'>
+ℹ️ <strong>Por que o Total Geral não é igual ao saldo em conta?</strong><br>
+Este painel mostra o <strong>resultado econômico acumulado</strong> — quanto a empresa gerou ou gastou desde 2019, separado por tipo. O <strong>saldo em conta</strong> (R$ ${fmtBRL(metrics.saldoHoje)}) é diferente porque: (1) as transferências entre as 3 contas da empresa (TEF) são movimentações internas e não entram neste cálculo; (2) pode haver saldo anterior ao início da planilha. São duas informações complementares: use este painel para entender <em>onde o dinheiro foi</em>, e o card <strong>Saldo de Hoje</strong> para saber <em>quanto tem disponível agora</em>.
 </div>`;
 
     const html = page('Dashboard', `<section>
