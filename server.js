@@ -3818,9 +3818,10 @@ async function excluirRef(tipo,nome){
       const incBadge = temInconsistencia ? `<span title="${inconsistencias.map(i=>({sem_cc:'Sem CC',sem_nome:'Sem Cliente/Fornecedor/Prestador',sem_projeto:'Sem projeto',sem_natureza:'Sem natureza'}[i]||i)).join(', ')}" style="font-size:.6rem;background:#fee2e2;color:#991b1b;padding:.1rem .3rem;border-radius:4px;cursor:help">⚠ ${inconsistencias.length}</span>` : '';
       const confirmarBadge = e.pendente_confirmacao ? `<span title="${(e.motivo_confirmacao||'Aguardando confirmação').replace(/"/g,'&quot;')}" style="font-size:.6rem;background:#fef3c7;color:#92400e;padding:.1rem .3rem;border-radius:4px;cursor:help">🕐 Confirmar</span>` : '';
       const rowBg = e.pendente_confirmacao ? 'background:#fffbeb;border-left:3px solid #f59e0b' : (temInconsistencia ? 'background:#fffbeb' : '');
-      const numStr = e.numLanc ? `<span style="font-size:.65rem;color:#94a3b8;font-family:monospace">#${String(e.numLanc).padStart(6,'0')}</span>` : '';
+      const numStr = e.numLanc ? `<span style="font-family:monospace;font-size:.78rem;font-weight:700;color:#1d4ed8">#${String(e.numLanc).padStart(6,'0')}</span>` : '<span style="color:#94a3b8;font-size:.72rem">—</span>';
       return `<tr id="row-${e.id}" style="border-bottom:1px solid #f1f5f9;cursor:pointer;${rowBg}" onclick="toggleEditLanc('${e.id}', ${incJson})">
-        <td style="white-space:nowrap;color:#64748b;font-size:.8rem">${e.dataISO || '-'} ${numStr}</td>
+        <td style="white-space:nowrap;text-align:center;padding:.5rem .4rem">${numStr}</td>
+        <td style="white-space:nowrap;color:#64748b;font-size:.8rem">${e.dataISO || '-'}</td>
         <td style="${dcCls};font-size:.78rem;text-align:center">${dcStr}</td>
         <td style="color:#64748b;font-size:.78rem">${cc}</td>
         <td style="font-size:.78rem">${nome} ${origem} ${incBadge} ${confirmarBadge}</td>
@@ -3831,7 +3832,7 @@ async function excluirRef(tipo,nome){
         <td style="text-align:center"><button onclick="event.stopPropagation();toggleEditLanc('${e.id}', ${incJson})" title="Editar lançamento" style="background:#ede9fe;color:#6d28d9;font-size:.75rem;padding:.25rem .5rem;box-shadow:none;border:1px solid #c4b5fd">✏</button></td>
       </tr>
       <tr id="edit-lanc-${e.id}" style="display:none;background:#f8fafc">
-        <td colspan="9" style="padding:.75rem 1rem">
+        <td colspan="10" style="padding:.75rem 1rem">
           <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:.75rem">
             <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Data</label>
             <input id="el-data-${e.id}" value="${e.dataISO||''}" type="date" style="font-size:.8rem;padding:.3rem .5rem;width:100%"/></div>
@@ -3986,6 +3987,7 @@ ${paginacao}
 <table style="width:100%;border-collapse:collapse">
   <thead>
     <tr style="background:#f1f5f9;font-size:.75rem;text-transform:uppercase;color:#64748b">
+      <th style="padding:.5rem .75rem;text-align:center;white-space:nowrap">Nº</th>
       <th style="padding:.5rem .75rem;text-align:left">Data</th>
       <th style="padding:.5rem .75rem;text-align:center">Tipo</th>
       <th style="padding:.5rem .75rem;text-align:left">Código</th>
@@ -3997,7 +3999,7 @@ ${paginacao}
       <th style="padding:.5rem .75rem;text-align:center">Ação</th>
     </tr>
   </thead>
-  <tbody>${rows || '<tr><td colspan="9" style="text-align:center;padding:2rem;color:#94a3b8">Nenhum lançamento encontrado com os filtros aplicados.</td></tr>'}</tbody>
+  <tbody>${rows || '<tr><td colspan="10" style="text-align:center;padding:2rem;color:#94a3b8">Nenhum lançamento encontrado com os filtros aplicados.</td></tr>'}</tbody>
 </table>
 </div>
 ${paginacao}
