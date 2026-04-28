@@ -6111,8 +6111,34 @@ async function boot() {
         fs.writeFileSync(DB_PATH, JSON.stringify(pgDb, null, 2));
         // Executar limpeza automática após carregar o banco
         limparCadastrosAutomatico(pgDb);
+
+        // ===== MIGRAÇÃO: atribuir numLanc sequencial a todos os lançamentos que não têm =====
+        if (!pgDb.meta) pgDb.meta = {};
+        const semNumLanc = pgDb.entries.filter(e => !e.numLanc);
+        if (semNumLanc.length > 0) {
+          console.log(`[boot] Migrando numLanc: ${semNumLanc.length} lançamentos sem número sequencial...`);
+          // Ordenar por data para atribuir números em ordem cronológica
+          pgDb.entries.sort((a, b) => {
+            const da = a.dataISO || a.data || '';
+            const db2 = b.dataISO || b.data || '';
+            return da < db2 ? -1 : da > db2 ? 1 : 0;
+          });
+          // Atribuir numLanc a todos que não têm, mantendo os existentes
+          let contador = 0;
+          pgDb.entries.forEach(e => { if (e.numLanc) contador = Math.max(contador, e.numLanc); });
+          pgDb.entries.forEach(e => {
+            if (!e.numLanc) {
+              contador++;
+              e.numLanc = contador;
+            }
+          });
+          pgDb.meta.ultimoNumLanc = contador;
+          console.log(`[boot] Migração concluída: ${semNumLanc.length} lançamentos numerados. Último: #${String(contador).padStart(6,'0')}`);
+        }
+        // ===================================================================================
+
         fs.writeFileSync(DB_PATH, JSON.stringify(pgDb, null, 2));
-        // Persistir limpeza de volta ao PostgreSQL
+        // Persistir limpeza e migração de volta ao PostgreSQL
         await storage.saveDb(pgDb).catch(e => console.error('[boot] Erro ao salvar limpeza:', e.message));
         // Carregar sessões ativas do PostgreSQL para o Map() em memória
         try {
