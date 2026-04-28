@@ -3686,6 +3686,7 @@ async function excluirRef(tipo,nome){
     const statusOpts = STATUS_LISTA.map(s => `<option value="${s}">${STATUS_LABEL[s]||s}</option>`).join('');
     const grupoOpts = GRUPOS.map(g => `<option value="${g}">${g || '-- Selecione --'}</option>`).join('');
     const tipoOpts = TIPOS.map(t => `<option value="${t}">${t || '-- Selecione --'}</option>`).join('');
+    const natOpts = NATUREZAS.map(n => `<option value="${n}">${n}</option>`).join('');
     const dlCC = ccs.map(c => `<option value="${c}">`).join('');
     const dlClientes = clientes.map(c => `<option value="${c}">`).join('');
     const dlContas = contas.map(c => `<option value="${c}">`).join('');
