@@ -1579,36 +1579,59 @@ async function enviarArquivo(){
         ['Bloqueantes', data.blockingIssues, data.blockingIssues > 0 ? 'color:var(--red)' : 'color:var(--green)']
       ].map(([k,v,s]) => '<div class="card"><strong>'+k+'</strong><span style="'+s+'">'+v+'</span></div>').join('');
 
-      // --- Painel de conciliação ---
+      // --- Painel de conciliação automática ---
       const concDiv = document.getElementById('conciliacao-section');
       if(concDiv){
-        if(saldoOk){
-          concDiv.innerHTML = '<div style="display:flex;align-items:center;gap:.6rem;padding:.85rem 1.1rem;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:10px;margin-top:1rem">'
-            +'<span style="font-size:1.3rem">&#9989;</span>'
-            +'<div><strong style="color:#166534">Saldo conciliado</strong><br><span style="font-size:.82rem;color:#166534">Planilha: '+fmtVal(c.saldoPlanilha)+' &nbsp;|&nbsp; Banco: '+fmtVal(c.saldoBanco)+'</span></div></div>';
-        } else {
-          const tipoLabel = { novo: '&#128195; Novo (não estava no banco)', divergente: '&#9888;&#65039; Valor divergente', ausente_na_planilha: '&#128683; Ausente na planilha' };
-          const tipoColor = { novo: '#1d4ed8', divergente: '#d97706', ausente_na_planilha: '#dc2626' };
-          const detRows = (c.detalhes || []).map(d =>
-            '<tr style="border-bottom:1px solid #fef3c7">'
-            +'<td style="padding:.3rem .5rem;font-size:.76rem;white-space:nowrap">'+d.data+'</td>'
-            +'<td style="padding:.3rem .5rem;font-size:.76rem;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="'+d.descricao+'">'+d.descricao+'</td>'
-            +'<td style="padding:.3rem .5rem;font-size:.76rem">'+d.conta+'</td>'
-            +'<td style="padding:.3rem .5rem;font-size:.76rem;color:'+tipoColor[d.tipo]+'">'+tipoLabel[d.tipo]+'</td>'
-            +'<td style="padding:.3rem .5rem;font-size:.76rem;text-align:right">'+fmtVal(d.valorPlanilha)+'</td>'
-            +'<td style="padding:.3rem .5rem;font-size:.76rem;text-align:right">'+fmtVal(d.valorBanco)+'</td>'
-            +'<td style="padding:.3rem .5rem;font-size:.76rem;text-align:right;font-weight:700;color:'+(d.diferenca>=0?'#059669':'#dc2626')+'">'+fmtVal(d.diferenca)+'</td>'
-            +'</tr>'
-          ).join('');
-          concDiv.innerHTML = '<div style="background:#fffbeb;border:2px solid #fbbf24;border-radius:10px;padding:1rem;margin-top:1rem">'
-            +'<div style="display:flex;align-items:center;gap:.6rem;margin-bottom:.75rem">'
-            +'<span style="font-size:1.3rem">&#9888;&#65039;</span>'
-            +'<div><strong style="color:#92400e">Divergência de saldo detectada</strong><br>'
-            +'<span style="font-size:.82rem;color:#78350f">Planilha: <strong>'+fmtVal(c.saldoPlanilha)+'</strong> &nbsp;|&nbsp; Banco: <strong>'+fmtVal(c.saldoBanco)+'</strong> &nbsp;|&nbsp; Diferença: <strong style="color:'+(c.diferenca>=0?'#059669':'#dc2626')+'">'+fmtVal(c.diferenca)+'</strong></span></div></div>'
-            +'<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse">'
-            +'<thead><tr style="background:#fef3c7"><th style="padding:.3rem .5rem;text-align:left;font-size:.72rem">Data</th><th style="padding:.3rem .5rem;text-align:left;font-size:.72rem">Descrição</th><th style="padding:.3rem .5rem;text-align:left;font-size:.72rem">Conta</th><th style="padding:.3rem .5rem;text-align:left;font-size:.72rem">Situação</th><th style="padding:.3rem .5rem;text-align:right;font-size:.72rem">Planilha</th><th style="padding:.3rem .5rem;text-align:right;font-size:.72rem">Banco</th><th style="padding:.3rem .5rem;text-align:right;font-size:.72rem">Diferença</th></tr></thead>'
-            +'<tbody>'+detRows+'</tbody></table></div>'+(c.detalhes&&c.detalhes.length>=50?'<p style="font-size:.75rem;color:#92400e;margin-top:.5rem">&#8505;&#65039; Exibindo os primeiros 50 itens divergentes.</p>':'')+'</div>';
+        const auto = c.automatica || {};
+        const conciliados = auto.conciliados || 0;
+        const semLanc = auto.semLancamento || 0;
+        const agPend = auto.agPendentes || 0;
+
+        let html = '<div style="margin-top:1.25rem">';
+        html += '<h3 style="margin:0 0 .75rem;font-size:1rem;color:#1e293b">&#127974; Resultado da Conciliação Bancária</h3>';
+        html += '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:.75rem;margin-bottom:1rem">';
+
+        // Card: conciliados (verde)
+        html += '<div style="background:#f0fdf4;border:1px solid #86efac;border-radius:10px;padding:.85rem 1rem">';
+        html += '<div style="font-size:.75rem;color:#166534;font-weight:700;text-transform:uppercase">&#9989; Conciliados</div>';
+        html += '<div style="font-size:1.5rem;font-weight:800;color:#166534">'+conciliados+'</div>';
+        html += '<div style="font-size:.72rem;color:#166534">Status atualizado para PG/RE</div></div>';
+
+        // Card: sem lançamento (vermelho)
+        html += '<div style="background:'+(semLanc>0?'#fef2f2':'#f8fafc')+';border:1px solid '+(semLanc>0?'#fca5a5':'#e2e8f0')+';border-radius:10px;padding:.85rem 1rem">';
+        html += '<div style="font-size:.75rem;color:'+(semLanc>0?'#991b1b':'#64748b')+';font-weight:700;text-transform:uppercase">&#128683; Sem lançamento</div>';
+        html += '<div style="font-size:1.5rem;font-weight:800;color:'+(semLanc>0?'#dc2626':'#64748b')+'">'+semLanc+'</div>';
+        html += '<div style="font-size:.72rem;color:'+(semLanc>0?'#991b1b':'#64748b')+'">No extrato mas não lançado</div></div>';
+
+        // Card: AG pendentes (amarelo)
+        html += '<div style="background:'+(agPend>0?'#fffbeb':'#f8fafc')+';border:1px solid '+(agPend>0?'#fbbf24':'#e2e8f0')+';border-radius:10px;padding:.85rem 1rem">';
+        html += '<div style="font-size:.75rem;color:'+(agPend>0?'#92400e':'#64748b')+';font-weight:700;text-transform:uppercase">&#9203; Aguardando</div>';
+        html += '<div style="font-size:1.5rem;font-weight:800;color:'+(agPend>0?'#d97706':'#64748b')+'">'+agPend+'</div>';
+        html += '<div style="font-size:.72rem;color:'+(agPend>0?'#92400e':'#64748b')+'">Lançados mas não no extrato ainda</div></div>';
+
+        html += '</div>'; // fecha grid
+
+        // Tabela de itens sem lançamento (vermelho)
+        if(semLanc > 0 && auto.detalhesSemLancamento && auto.detalhesSemLancamento.length > 0){
+          html += '<div style="background:#fef2f2;border:1px solid #fca5a5;border-radius:10px;padding:1rem">';
+          html += '<strong style="color:#991b1b;font-size:.85rem">&#128683; Movimentações no extrato sem lançamento correspondente:</strong>';
+          html += '<div style="overflow-x:auto;margin-top:.5rem"><table style="width:100%;border-collapse:collapse">';
+          html += '<thead><tr style="background:#fee2e2"><th style="padding:.3rem .5rem;text-align:left;font-size:.72rem">Data</th><th style="padding:.3rem .5rem;text-align:left;font-size:.72rem">Descrição</th><th style="padding:.3rem .5rem;text-align:left;font-size:.72rem">Conta</th><th style="padding:.3rem .5rem;text-align:right;font-size:.72rem">Valor</th></tr></thead><tbody>';
+          auto.detalhesSemLancamento.forEach(d => {
+            html += '<tr style="border-bottom:1px solid #fecaca">';
+            html += '<td style="padding:.3rem .5rem;font-size:.76rem;white-space:nowrap">'+d.data+'</td>';
+            html += '<td style="padding:.3rem .5rem;font-size:.76rem">'+d.descricao+'</td>';
+            html += '<td style="padding:.3rem .5rem;font-size:.76rem">'+d.conta+'</td>';
+            html += '<td style="padding:.3rem .5rem;font-size:.76rem;text-align:right;font-weight:600;color:'+(Number(d.valor)>=0?'#059669':'#dc2626')+'">'+fmtVal(d.valor)+'</td>';
+            html += '</tr>';
+          });
+          html += '</tbody></table></div>';
+          if(semLanc > 30) html += '<p style="font-size:.72rem;color:#991b1b;margin-top:.4rem">... e mais '+(semLanc-30)+' movimentações. Acesse Lançamentos para ver todas.</p>';
+          html += '</div>';
         }
+
+        html += '</div>'; // fecha container
+        concDiv.innerHTML = html;
       }
     }
   } catch(e) { msg.textContent = 'Erro: ' + e.message; msg.style.color = 'var(--red)'; }
@@ -1659,8 +1682,65 @@ async function enviarArquivo(){
       });
 
       // --- Conciliação: comparar planilha vs. banco ANTES de persistir os novos ---
-      // (o banco ainda não tem os novos entries, então comparamos planilha completa vs. banco atual)
       const conciliacao = conciliarPlanilha(allNewEntries, db);
+
+      // --- CONCILIAÇÃO AUTOMÁTICA: cruzar extrato com lançamentos AG (Aguardando) ---
+      // Para cada linha do extrato, procura um lançamento AG com mesma data e valor absoluto
+      // Se encontrar, muda o status para PG (Pago) ou RE (Recebido) e marca como conciliado
+      let conciliadosAuto = 0;
+      const extratoPorChave = new Map(); // chave: dataISO|valorAbs -> array de entries do extrato
+      allNewEntries.forEach(e => {
+        const k = `${e.dataISO}|${Math.round(Math.abs(Number(e.valor||0))*100)}`;
+        if (!extratoPorChave.has(k)) extratoPorChave.set(k, []);
+        extratoPorChave.get(k).push(e);
+      });
+
+      // Lançamentos AG no banco que ainda não foram conciliados
+      const lancamentosAG = db.entries.filter(e =>
+        (e.status === 'AG' || e.status === 'ag' || e.status === 'pendente') &&
+        !e.conciliado
+      );
+
+      const usadosExtrato = new Set();
+      lancamentosAG.forEach(lanc => {
+        const valorAbs = Math.round(Math.abs(Number(lanc.valor||0))*100);
+        const k = `${lanc.dataISO}|${valorAbs}`;
+        const candidatos = extratoPorChave.get(k) || [];
+        // Procurar candidato ainda não usado
+        const idx = candidatos.findIndex((_, i) => !usadosExtrato.has(k+'|'+i));
+        if (idx !== -1) {
+          usadosExtrato.add(k+'|'+idx);
+          // Atualizar status do lançamento
+          const novoStatus = Number(lanc.valor||0) >= 0 ? 'RE' : 'PG';
+          lanc.status = novoStatus;
+          lanc.conciliado = true;
+          lanc.conciliadoEm = new Date().toISOString();
+          lanc.conciliadoUploadId = upload.id;
+          conciliadosAuto++;
+        }
+      });
+
+      // Lançamentos do extrato que não encontraram par AG no banco
+      const semLancamento = [];
+      allNewEntries.forEach((e, i) => {
+        const k = `${e.dataISO}|${Math.round(Math.abs(Number(e.valor||0))*100)}`;
+        const candidatos = extratoPorChave.get(k) || [];
+        const localIdx = candidatos.indexOf(e);
+        if (!usadosExtrato.has(k+'|'+localIdx)) {
+          // Verificar se já existe no banco (importado antes)
+          const jaExiste = db.entries.some(b =>
+            b.dataISO === e.dataISO &&
+            Math.round(Math.abs(Number(b.valor||0))*100) === Math.round(Math.abs(Number(e.valor||0))*100) &&
+            b.conciliado
+          );
+          if (!jaExiste) semLancamento.push(e);
+        }
+      });
+
+      // Lançamentos AG que não foram conciliados (ainda não apareceram no extrato)
+      const agNaoConciliados = db.entries.filter(e =>
+        (e.status === 'AG') && !e.conciliado
+      ).length;
 
       const issues = buildIssues(entries, db).map((i) => ({ ...i, id: crypto.randomUUID(), uploadId: upload.id, status: 'aberta' }));
       const registry = buildReviewRegistry(entries);
@@ -1669,6 +1749,19 @@ async function enviarArquivo(){
       db.issues.push(...issues);
       db.reviewRegistry = mergeRegistry(db.reviewRegistry, registry);
       saveDb(db);
+
+      // Adicionar resultado da conciliação automática ao objeto de retorno
+      conciliacao.automatica = {
+        conciliados: conciliadosAuto,
+        semLancamento: semLancamento.length,
+        agPendentes: agNaoConciliados,
+        detalhesSemLancamento: semLancamento.slice(0, 30).map(e => ({
+          data: e.dataISO,
+          descricao: (e.descricao || '').slice(0, 60),
+          valor: e.valor,
+          conta: e.conta || ''
+        }))
+      };
 
       const summary = buildPreAnalysisSummary(db);
       const duplicatesIgnored = allNewEntries.length - entries.length;
