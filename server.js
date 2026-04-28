@@ -1742,6 +1742,14 @@ async function enviarArquivo(){
         (e.status === 'AG') && !e.conciliado
       ).length;
 
+      // Atribuir numLanc sequencial permanente a cada entry do upload
+      if (!db.meta) db.meta = {};
+      entries.forEach(e => {
+        if (!e.numLanc) {
+          db.meta.ultimoNumLanc = (db.meta.ultimoNumLanc || 0) + 1;
+          e.numLanc = db.meta.ultimoNumLanc;
+        }
+      });
       const issues = buildIssues(entries, db).map((i) => ({ ...i, id: crypto.randomUUID(), uploadId: upload.id, status: 'aberta' }));
       const registry = buildReviewRegistry(entries);
       db.uploads.push(upload);
@@ -3556,21 +3564,26 @@ Regras:
     if (entryIdx === -1) return json(res, 404, { error: 'Lançamento não encontrado' });
     const original = db.entries[entryIdx];
     // Criar novos lançamentos detalhados no lugar do original
-    const novosLancamentos = itens.map((item) => ({
-      id: crypto.randomUUID(),
-      data: item.data || original.data,
-      dataISO: item.data || original.dataISO,
-      descricao: item.descricao || '-',
-      valor: -Math.abs(Number(item.valor || 0)), // débitos do cartão são negativos
-      natureza: item.natureza || 'Pendente',
-      centroCusto: item.centroCusto || original.centroCusto || '',
-      projeto: item.projeto || '',
-      conta: original.conta || '',
-      status: item.natureza === 'Pendente' ? 'pendente' : 'ok',
-      origem: 'fatura_cartao',
-      cartao: original.descricao || 'Cartão',
-      entryOriginalId: entryId
-    }));
+    if (!db.meta) db.meta = {};
+    const novosLancamentos = itens.map((item) => {
+      db.meta.ultimoNumLanc = (db.meta.ultimoNumLanc || 0) + 1;
+      return {
+        id: crypto.randomUUID(),
+        numLanc: db.meta.ultimoNumLanc,
+        data: item.data || original.data,
+        dataISO: item.data || original.dataISO,
+        descricao: item.descricao || '-',
+        valor: -Math.abs(Number(item.valor || 0)), // débitos do cartão são negativos
+        natureza: item.natureza || 'Pendente',
+        centroCusto: item.centroCusto || original.centroCusto || '',
+        projeto: item.projeto || '',
+        conta: original.conta || '',
+        status: item.natureza === 'Pendente' ? 'pendente' : 'ok',
+        origem: 'fatura_cartao',
+        cartao: original.descricao || 'Cartão',
+        entryOriginalId: entryId
+      };
+    });
     // Remover o lançamento original e inserir os detalhados
     db.entries.splice(entryIdx, 1, ...novosLancamentos);
     saveDb(db);
