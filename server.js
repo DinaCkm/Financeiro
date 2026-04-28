@@ -3774,7 +3774,7 @@ async function excluirRef(tipo,nome){
           <div style="display:flex;gap:.5rem;margin-top:.75rem;align-items:center">
             <button onclick="salvarLancEdit('${e.id}')" style="background:#059669;font-size:.8rem;padding:.4rem .9rem">✓ Salvar</button>
             <button onclick="toggleEditLanc('${e.id}')" style="background:#e2e8f0;color:#475569;font-size:.8rem;padding:.4rem .9rem;box-shadow:none">Cancelar</button>
-            <button onclick="if(confirm('Excluir lançamento #${e.numLanc ? String(e.numLanc).padStart(6,'0') : '?'}? A exclusão ficará registrada no histórico.')) excluirLanc('${e.id}')" style="background:#fee2e2;color:#991b1b;font-size:.78rem;padding:.4rem .9rem;box-shadow:none;border:1px solid #fca5a5;margin-left:auto">🗑 Excluir</button>
+            <button onclick="if(confirm('Excluir lançamento ${numStr ? numStr.replace(/<[^>]+>/g,'') : '#?'}? A exclusão ficará registrada no histórico.')) excluirLanc('${e.id}')" style="background:#fee2e2;color:#991b1b;font-size:.78rem;padding:.4rem .9rem;box-shadow:none;border:1px solid #fca5a5;margin-left:auto">🗑 Excluir</button>
           </div>
         </td>
       </tr>`;
