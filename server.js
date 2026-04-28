@@ -3674,11 +3674,18 @@ async function excluirRef(tipo,nome){
     const GRUPOS = ['','Pessoal','Sistemas e Tecnologia','Serviços Terceirizados','Despesas Financeiras','Despesas Administrativas','Receita de Contrato','Rendimentos Financeiros','Custo de Projeto'];
     const TIPOS = ['','Salário / Pró-labore','Serviço PJ','Software / Licença','Hospedagem','Assessoria Contábil','Assessoria Jurídica','Assessoria de Marketing','Terceiros / Consultoria','Tarifa Bancária','Imposto / Tributo','Aluguel','Internet / Telefonia','Material de Escritório','Reembolso','Receita de Contrato','Rendimento Financeiro','Custo Operacional de Projeto','Outros'];
     const STATUS_LISTA = ['PG','AG','RE','RT','TF','NT','ZZ','OK','RG','XF','AP','DE','MK','NR','BQ','CR','RD','importado','pendente','ok','cancelado','revisado'];
-
-    const natOpts = NATUREZAS.map(n => `<option value="${n}">${n}</option>`).join('');
+    const STATUS_LABEL = {
+      PG: 'PG (Pago)', AG: 'AG (Aguardando)', RE: 'RE (Recebido)', RT: 'RT (Retido)',
+      TF: 'TF (Transferência)', NT: 'NT (Não Tributado)', ZZ: 'ZZ (Cancelado)',
+      OK: 'OK (Confirmado)', RG: 'RG (Renegociado)', XF: 'XF (Estornado)',
+      AP: 'AP (A Pagar)', DE: 'DE (Devolvido)', MK: 'MK (Marketing)',
+      NR: 'NR (Não Realizado)', BQ: 'BQ (Bloqueado)', CR: 'CR (Crédito)',
+      RD: 'RD (Redigitado)', importado: 'Importado', pendente: 'Pendente',
+      ok: 'OK (Confirmado)', cancelado: 'Cancelado', revisado: 'Revisado'
+    };
+    const statusOpts = STATUS_LISTA.map(s => `<option value="${s}">${STATUS_LABEL[s]||s}</option>`).join('');
     const grupoOpts = GRUPOS.map(g => `<option value="${g}">${g || '-- Selecione --'}</option>`).join('');
     const tipoOpts = TIPOS.map(t => `<option value="${t}">${t || '-- Selecione --'}</option>`).join('');
-    const statusOpts = STATUS_LISTA.map(s => `<option value="${s}">${s}</option>`).join('');
     const dlCC = ccs.map(c => `<option value="${c}">`).join('');
     const dlClientes = clientes.map(c => `<option value="${c}">`).join('');
     const dlContas = contas.map(c => `<option value="${c}">`).join('');
@@ -3726,8 +3733,8 @@ async function excluirRef(tipo,nome){
         <td style="font-size:.78rem;color:#475569" title="${(e.descritivo||e.descricao||'')}">${ desc}</td>
         <td style="${valCls};font-size:.8rem;text-align:right;font-weight:600">${valStr}</td>
         <td style="font-size:.72rem;color:#94a3b8">${natLabel}</td>
-        <td style="font-size:.72rem;color:#94a3b8">${status}</td>
-        <td style="text-align:center"><button onclick="event.stopPropagation();excluirLanc('${e.id}')" style="background:#fee2e2;color:#991b1b;font-size:.7rem;padding:.2rem .4rem;box-shadow:none;border:1px solid #fca5a5">✕</button></td>
+        <td style="font-size:.72rem;color:#94a3b8" title="${STATUS_LABEL[status]||status}">${STATUS_LABEL[status]||status}</td>
+        <td style="text-align:center"><button onclick="event.stopPropagation();toggleEditLanc('${e.id}', ${incJson})" title="Editar lançamento" style="background:#ede9fe;color:#6d28d9;font-size:.75rem;padding:.25rem .5rem;box-shadow:none;border:1px solid #c4b5fd">✏</button></td>
       </tr>
       <tr id="edit-lanc-${e.id}" style="display:none;background:#f8fafc">
         <td colspan="9" style="padding:.75rem 1rem">
@@ -3758,15 +3765,16 @@ async function excluirRef(tipo,nome){
             <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Valor (R$)</label>
             <input id="el-valor-${e.id}" type="number" step="0.01" value="${Math.abs(val)}" style="font-size:.8rem;padding:.3rem .5rem;width:100%"/></div>
             <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Status</label>
-            <select id="el-status-${e.id}" style="font-size:.8rem;padding:.3rem .5rem;width:100%">${STATUS_LISTA.map(s=>`<option value="${s}" ${(e.status||'')==s?'selected':''}>${s}</option>`).join('')}</select></div>
+            <select id="el-status-${e.id}" style="font-size:.8rem;padding:.3rem .5rem;width:100%">${STATUS_LISTA.map(s=>`<option value="${s}" ${(e.status||'')==s?'selected':''}>${STATUS_LABEL[s]||s}</option>`).join('')}</select></div>
             <div style="grid-column:span 2"><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Documento / Referência (NF, Recibo, Contrato)</label>
             <input id="el-doc-${e.id}" value="${(e.documento||e.descricao||'').replace(/"/g,'&quot;')}" style="font-size:.8rem;padding:.3rem .5rem;width:100%"/></div>
             <div style="grid-column:span 2"><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Descritivo (finalidade do gasto)</label>
             <input id="el-descritivo-${e.id}" value="${(e.descritivo||'').replace(/"/g,'&quot;')}" placeholder="Ex: Serviço de hospedagem para manutenção da presença digital" style="font-size:.8rem;padding:.3rem .5rem;width:100%"/></div>
           </div>
-          <div style="display:flex;gap:.5rem;margin-top:.75rem">
+          <div style="display:flex;gap:.5rem;margin-top:.75rem;align-items:center">
             <button onclick="salvarLancEdit('${e.id}')" style="background:#059669;font-size:.8rem;padding:.4rem .9rem">✓ Salvar</button>
             <button onclick="toggleEditLanc('${e.id}')" style="background:#e2e8f0;color:#475569;font-size:.8rem;padding:.4rem .9rem;box-shadow:none">Cancelar</button>
+            <button onclick="if(confirm('Excluir lançamento #${e.numLanc ? String(e.numLanc).padStart(6,'0') : '?'}? A exclusão ficará registrada no histórico.')) excluirLanc('${e.id}')" style="background:#fee2e2;color:#991b1b;font-size:.78rem;padding:.4rem .9rem;box-shadow:none;border:1px solid #fca5a5;margin-left:auto">🗑 Excluir</button>
           </div>
         </td>
       </tr>`;
