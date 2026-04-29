@@ -85,6 +85,8 @@ const MAPA_CLIENTES_CKM = {
   '1.19': 'TCU',
   '1.20': 'IGDR'
 };
+// Mapa de projetos — carregado dinamicamente do PostgreSQL no boot
+// Valores padrão usados como fallback quando o banco não está disponível
 const MAPA_PROJETOS_CKM = {
   '4.1': 'Treinamentos/Assessment/Cursos',
   '4.2': 'Palestra',
@@ -99,6 +101,18 @@ const MAPA_PROJETOS_CKM = {
   '4.11': 'Estágio Probatório',
   '4.12': 'Concurso Público'
 };
+// Função para recarregar o mapa do banco (chamada no boot e após criar/editar projetos)
+async function recarregarMapaProjetos(pg) {
+  try {
+    const r = await pg.query('SELECT codigo, nome FROM projetos WHERE ativo=true ORDER BY codigo');
+    // Limpar entradas existentes e repopular com dados do banco
+    Object.keys(MAPA_PROJETOS_CKM).forEach(k => delete MAPA_PROJETOS_CKM[k]);
+    r.rows.forEach(p => { if (p.codigo && p.nome) MAPA_PROJETOS_CKM[p.codigo] = p.nome; });
+    console.log(`[projetos] Mapa recarregado: ${r.rows.length} projetos ativos`);
+  } catch(e) {
+    console.warn('[projetos] Não foi possível recarregar mapa:', e.message);
+  }
+}
 const MAPA_TIPOS_DESPESA_CKM = {
   '5.1': 'Prestador de Serviços/Consultoria',
   '5.2': 'Logística/Deslocamento/Alimentação',
@@ -5241,7 +5255,10 @@ function renderHistoricoRel() {
         <td>${p.tipo||'-'}</td>
         <td>${p.cliente_nome||'-'}</td>
         <td><span class='status-dot ${p.ativo?'ativo':'inativo'}'></span>${p.ativo?'Ativo':'Inativo'}</td>
-        <td><button class='btn btn-sm btn-outline' onclick="editProjeto('${p.id}','${p.codigo}','${p.nome.replace(/'/g,"\\'")  }','${p.tipo||''}','${p.cliente_id||''}',${p.ativo})">Editar</button></td>
+        <td style='display:flex;gap:.4rem'>
+          <button class='btn btn-sm btn-outline' onclick="editProjeto('${p.id}','${p.codigo}','${p.nome.replace(/'/g,"\\'")  }','${p.tipo||''}','${p.cliente_id||''}',${p.ativo})">Editar</button>
+          ${p.ativo ? `<button class='btn btn-sm' style='background:#fee2e2;color:#991b1b;border:1px solid #fca5a5' onclick="deleteProjeto('${p.id}','${p.nome.replace(/'/g,"\\'")}')">Inativar</button>` : `<button class='btn btn-sm' style='background:#dcfce7;color:#166534;border:1px solid #86efac' onclick="ativarProjeto('${p.id}','${p.nome.replace(/'/g,"\\'")}')">Reativar</button>`}
+        </td>
       </tr>`).join('');
 
     const renderTipos = tipos.map(t => `
@@ -5490,6 +5507,24 @@ async function saveProjeto() {
     location.reload();
   }catch(e){alert(e.message);}
 }
+async function deleteProjeto(id, nome) {
+  if(!confirm('Inativar o projeto "'+nome+'"? Ele não aparecerá mais nas opções de seleção, mas os lançamentos existentes não serão alterados.')) return;
+  try{
+    await apiCall('DELETE','/api/mestres/projetos/'+id);
+    location.reload();
+  }catch(e){alert(e.message);}
+}
+async function ativarProjeto(id, nome) {
+  if(!confirm('Reativar o projeto "'+nome+'"?')) return;
+  try{
+    const r = await fetch('/api/mestres/projetos/'+id);
+    const d = await r.json();
+    const p = d.data && d.data[0];
+    if(!p) throw new Error('Projeto não encontrado');
+    await apiCall('PUT','/api/mestres/projetos/'+id, {...p, ativo: true});
+    location.reload();
+  }catch(e){alert(e.message);}
+}
 function clearFormBanco() {
   ['banco-id','banco-codigo','banco-nome','banco-agencia','banco-conta'].forEach(id=>document.getElementById(id).value='');
   document.getElementById('banco-ativo').value='true';
@@ -5573,10 +5608,17 @@ async function saveBanco() {
       if (entidade === 'projetos') {
         if (req.method === 'POST') {
           const r = await pg.query('INSERT INTO projetos (codigo,nome,tipo,cliente_id,ativo) VALUES ($1,$2,$3,$4,$5) RETURNING id', [body.codigo, body.nome, body.tipo||null, body.cliente_id||null, body.ativo!==false]);
+          await recarregarMapaProjetos(pg); // Atualiza mapa em memória imediatamente
           return json(res, 200, { ok: true, id: r.rows[0].id });
         }
         if (req.method === 'PUT' && id) {
           await pg.query('UPDATE projetos SET codigo=$1,nome=$2,tipo=$3,cliente_id=$4,ativo=$5,atualizado_em=NOW() WHERE id=$6', [body.codigo, body.nome, body.tipo||null, body.cliente_id||null, body.ativo!==false, id]);
+          await recarregarMapaProjetos(pg); // Atualiza mapa em memória imediatamente
+          return json(res, 200, { ok: true });
+        }
+        if (req.method === 'DELETE' && id) {
+          await pg.query('UPDATE projetos SET ativo=false WHERE id=$1', [id]);
+          await recarregarMapaProjetos(pg); // Atualiza mapa em memória imediatamente
           return json(res, 200, { ok: true });
         }
         if (req.method === 'GET') {
@@ -6171,6 +6213,9 @@ async function boot() {
         } catch (se) {
           console.warn('[boot] Não foi possível restaurar sessões:', se.message);
         }
+        // Carregar mapa de projetos do banco
+        const pgPool = storage.getPool ? storage.getPool() : null;
+        if (pgPool) await recarregarMapaProjetos(pgPool);
         bootReady = true;
         console.log(`[boot] Sincronizado: ${pgDb.entries.length} lançamentos, ${pgDb.reviewRegistry.length} cadastros, ${pgDb.savedRules.length} regras`);
       } catch (err) {
