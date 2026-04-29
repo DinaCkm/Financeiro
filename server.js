@@ -3796,7 +3796,15 @@ async function excluirRef(tipo,nome){
     const dlCC = ccs.map(c => `<option value="${c}">`).join('');
     const dlClientes = clientes.map(c => `<option value="${c}">`).join('');
     const dlContas = contas.map(c => `<option value="${c}">`).join('');
-    const dlProjetos = projetos.map(c => `<option value="${c}">`).join('');
+    // Gera datalist com nome do projeto (ex: "PDI Evoluir (4.6)") e value = código numérico
+    const dlProjetos = projetos.map(c => {
+      const nome = MAPA_PROJETOS_CKM[c];
+      return nome ? `<option value="${c}" label="${nome} (${c})">` : `<option value="${c}">`;
+    }).join('');
+    // Também gera opções com nome para facilitar busca por nome
+    const dlProjetosNome = Object.entries(MAPA_PROJETOS_CKM).map(([cod, nome]) =>
+      `<option value="${cod}">${nome} (${cod})</option>`
+    ).join('');
 
     // Paginação
     const paginacao = totalPages > 1 ? `<div style="display:flex;gap:.5rem;align-items:center;margin-top:1rem;flex-wrap:wrap">
@@ -3840,12 +3848,13 @@ async function excluirRef(tipo,nome){
         <td style="font-size:.78rem">${nome} ${origem} ${incBadge} ${confirmarBadge}</td>
         <td style="font-size:.78rem;color:#475569" title="${(e.descritivo||e.descricao||'')}">${ desc}</td>
         <td style="${valCls};font-size:.8rem;text-align:right;font-weight:600">${valStr}</td>
+        <td style="font-size:.72rem;color:#7c3aed;font-weight:500">${MAPA_PROJETOS_CKM[e.projeto] ? `<span title="${e.projeto}">${MAPA_PROJETOS_CKM[e.projeto]}</span>` : (e.projeto ? `<span style="color:#94a3b8">${e.projeto}</span>` : '<span style="color:#e2e8f0">—</span>')}</td>
         <td style="font-size:.72rem;color:#94a3b8">${natLabel}</td>
         <td style="font-size:.72rem;color:#94a3b8" title="${STATUS_LABEL[status]||status}">${STATUS_LABEL[status]||status}</td>
         <td style="text-align:center"><button onclick="event.stopPropagation();toggleEditLanc('${e.id}', ${incJson})" title="Editar lançamento" style="background:#ede9fe;color:#6d28d9;font-size:.75rem;padding:.25rem .5rem;box-shadow:none;border:1px solid #c4b5fd">✏</button></td>
       </tr>
       <tr id="edit-lanc-${e.id}" style="display:none;background:#f8fafc">
-        <td colspan="10" style="padding:.75rem 1rem">
+        <td colspan="11" style="padding:.75rem 1rem">
           <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:.75rem">
             <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Data</label>
             <input id="el-data-${e.id}" value="${e.dataISO||''}" type="date" style="font-size:.8rem;padding:.3rem .5rem;width:100%"/></div>
@@ -3869,8 +3878,10 @@ async function excluirRef(tipo,nome){
             <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Conta / Banco</label>
             <input id="el-conta-${e.id}" list="dl-contas-lanc" value="${e.conta||''}" style="font-size:.8rem;padding:.3rem .5rem;width:100%"/></div>
             <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Projeto</label>
-            <input id="el-proj-${e.id}" list="dl-projetos-lanc" value="${e.projeto||''}" style="font-size:.8rem;padding:.3rem .5rem;width:100%"/></div>
-            <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Valor (R$)</label>
+            <select id="el-proj-${e.id}" style="font-size:.8rem;padding:.3rem .5rem;width:100%">
+              <option value="">-- Selecione o Projeto --</option>
+              ${Object.entries(MAPA_PROJETOS_CKM).map(([cod,nome])=>`<option value="${cod}" ${(e.projeto||'')==cod?'selected':''}>${nome} (${cod})</option>`).join('')}
+            </select></div>           <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Valor (R$)</label>
             <input id="el-valor-${e.id}" type="number" step="0.01" value="${Math.abs(val)}" style="font-size:.8rem;padding:.3rem .5rem;width:100%"/></div>
             <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Status</label>
             <select id="el-status-${e.id}" style="font-size:.8rem;padding:.3rem .5rem;width:100%">${STATUS_LISTA.map(s=>`<option value="${s}" ${(e.status||'')==s?'selected':''}>${STATUS_LABEL[s]||s}</option>`).join('')}</select></div>
@@ -3893,6 +3904,7 @@ async function excluirRef(tipo,nome){
 <datalist id="dl-clientes-lanc">${dlClientes}</datalist>
 <datalist id="dl-contas-lanc">${dlContas}</datalist>
 <datalist id="dl-projetos-lanc">${dlProjetos}</datalist>
+<datalist id="dl-projetos-nome-lanc">${dlProjetosNome}</datalist>
 
 <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1.5rem;flex-wrap:wrap;gap:.75rem">
   <h1 style="margin:0">✏ Gestão de Lançamentos</h1>
@@ -3925,7 +3937,10 @@ async function excluirRef(tipo,nome){
     <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Conta / Banco</label>
     <input id="novo-conta" list="dl-contas-lanc" placeholder="Ex: Itaú PJ" style="font-size:.8rem;padding:.3rem .5rem;width:100%"/></div>
     <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Projeto</label>
-    <input id="novo-proj" list="dl-projetos-lanc" placeholder="Ex: BRB-PDL" style="font-size:.8rem;padding:.3rem .5rem;width:100%"/></div>
+    <select id="novo-proj" style="font-size:.8rem;padding:.3rem .5rem;width:100%">
+      <option value="">-- Selecione o Projeto --</option>
+      ${Object.entries(MAPA_PROJETOS_CKM).map(([cod,nome])=>`<option value="${cod}">${nome} (${cod})</option>`).join('')}
+    </select></div>
     <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Valor (R$) *</label>
     <input id="novo-valor" type="number" step="0.01" placeholder="0,00" style="font-size:.8rem;padding:.3rem .5rem;width:100%"/></div>
     <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Status</label>
@@ -4007,12 +4022,13 @@ ${paginacao}
       <th style="padding:.5rem .75rem;text-align:left">Cliente / Fornecedor / Prestador</th>
       <th style="padding:.5rem .75rem;text-align:left">Descritivo</th>
       <th style="padding:.5rem .75rem;text-align:right">Valor</th>
+      <th style="padding:.5rem .75rem;text-align:left">Projeto</th>
       <th style="padding:.5rem .75rem;text-align:left">Natureza</th>
       <th style="padding:.5rem .75rem;text-align:left">Status</th>
       <th style="padding:.5rem .75rem;text-align:center">Ação</th>
     </tr>
   </thead>
-  <tbody>${rows || '<tr><td colspan="10" style="text-align:center;padding:2rem;color:#94a3b8">Nenhum lançamento encontrado com os filtros aplicados.</td></tr>'}</tbody>
+  <tbody>${rows || '<tr><td colspan="11" style="text-align:center;padding:2rem;color:#94a3b8">Nenhum lançamento encontrado com os filtros aplicados.</td></tr>'}</tbody>
 </table>
 </div>
 ${paginacao}
