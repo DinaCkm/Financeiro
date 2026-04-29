@@ -3730,6 +3730,7 @@ async function excluirRef(tipo,nome){
     const qDC = url.searchParams.get('dc') || '';
     const qStatus = url.searchParams.get('status') || '';
     const qCpf = (url.searchParams.get('cpf') || '').toLowerCase().trim();
+    const qProjeto = (url.searchParams.get('projeto') || '').trim();
     const qInc = url.searchParams.get('inc') || ''; // filtro de inconsistência
     const page_num = Math.max(1, parseInt(url.searchParams.get('p') || '1', 10));
     const PAGE_SIZE = 50;
@@ -3748,6 +3749,7 @@ async function excluirRef(tipo,nome){
       if (qDC && (e.dc || (e.valor >= 0 ? 'C' : 'D')) !== qDC) return false;
       if (qStatus && (e.status || '') !== qStatus) return false;
       if (qCpf && !(e.cpfCnpj || '').toLowerCase().includes(qCpf)) return false;
+      if (qProjeto && (e.projeto || '') !== qProjeto) return false;
       // Filtros de inconsistência
       if (qInc === 'sem_cc' && (e.centroCusto || '').trim()) return false;
       if (qInc === 'sem_nome' && (e.favorecido || e.cliente || e.parceiro || '').trim()) return false;
@@ -3822,9 +3824,9 @@ async function excluirRef(tipo,nome){
 
     // Paginação
     const paginacao = totalPages > 1 ? `<div style="display:flex;gap:.5rem;align-items:center;margin-top:1rem;flex-wrap:wrap">
-      ${page_num > 1 ? `<a href="?p=${page_num-1}&q=${encodeURIComponent(q)}&data=${qData}&data_fim=${qDataFim}&cc=${encodeURIComponent(qCC)}&cliente=${encodeURIComponent(qCliente)}&nat=${encodeURIComponent(qNat)}&dc=${qDC}&status=${qStatus}&cpf=${encodeURIComponent(qCpf)}" style="padding:.3rem .7rem;background:#e2e8f0;border-radius:6px;text-decoration:none;color:#475569">← Anterior</a>` : ''}
+      ${page_num > 1 ? `<a href="?p=${page_num-1}&q=${encodeURIComponent(q)}&data=${qData}&data_fim=${qDataFim}&cc=${encodeURIComponent(qCC)}&cliente=${encodeURIComponent(qCliente)}&nat=${encodeURIComponent(qNat)}&dc=${qDC}&status=${qStatus}&cpf=${encodeURIComponent(qCpf)}&projeto=${encodeURIComponent(qProjeto)}" style="padding:.3rem .7rem;background:#e2e8f0;border-radius:6px;text-decoration:none;color:#475569">← Anterior</a>` : ''}
       <span style="color:#64748b;font-size:.85rem">Página ${page_num} de ${totalPages} (${total} lançamentos)</span>
-      ${page_num < totalPages ? `<a href="?p=${page_num+1}&q=${encodeURIComponent(q)}&data=${qData}&data_fim=${qDataFim}&cc=${encodeURIComponent(qCC)}&cliente=${encodeURIComponent(qCliente)}&nat=${encodeURIComponent(qNat)}&dc=${qDC}&status=${qStatus}&cpf=${encodeURIComponent(qCpf)}" style="padding:.3rem .7rem;background:#e2e8f0;border-radius:6px;text-decoration:none;color:#475569">Próxima →</a>` : ''}
+      ${page_num < totalPages ? `<a href="?p=${page_num+1}&q=${encodeURIComponent(q)}&data=${qData}&data_fim=${qDataFim}&cc=${encodeURIComponent(qCC)}&cliente=${encodeURIComponent(qCliente)}&nat=${encodeURIComponent(qNat)}&dc=${qDC}&status=${qStatus}&cpf=${encodeURIComponent(qCpf)}&projeto=${encodeURIComponent(qProjeto)}" style="padding:.3rem .7rem;background:#e2e8f0;border-radius:6px;text-decoration:none;color:#475569">Próxima →</a>` : ''}
     </div>` : `<div style="color:#64748b;font-size:.85rem;margin-top:.5rem">${total} lançamento(s) encontrado(s)</div>`;
 
     // Linhas da tabela
@@ -3998,6 +4000,11 @@ async function excluirRef(tipo,nome){
     <input name="cliente" list="dl-clientes-lanc" value="${qCliente}" placeholder="Ex: SEBRAE, VIVO" style="font-size:.8rem;padding:.3rem .5rem;width:100%"/></div>
     <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">CPF / CNPJ</label>
     <input name="cpf" value="${qCpf}" placeholder="000.000.000-00" style="font-size:.8rem;padding:.3rem .5rem;width:100%"/></div>
+    <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Projeto</label>
+    <select name="projeto" style="font-size:.8rem;padding:.3rem .5rem;width:100%">
+      <option value="">Todos</option>
+      ${Object.entries(MAPA_PROJETOS_CKM).map(([cod,nome]) => `<option value="${cod}" ${qProjeto===cod?'selected':''}>${nome}</option>`).join('')}
+    </select></div>
     <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Natureza</label>
     <select name="nat" style="font-size:.8rem;padding:.3rem .5rem;width:100%">
       <option value="">Todas</option>
