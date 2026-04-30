@@ -1156,7 +1156,7 @@ function reviewCards(list, allEntries) {
             <thead><tr>
               <th style='white-space:nowrap'>Data</th>
               <th style='white-space:nowrap'>Tipo</th>
-              <th>Código</th>
+              <th>Centro de Custo</th>
               <th>Cliente / Fornecedor / Prestador</th>
               <th>Descritivo</th>
               <th>Natureza</th>
@@ -1439,7 +1439,7 @@ function entriesTable(entries) {
     <td>${e.natureza || '-'}</td>
     <td>${e.status || '-'}</td>
   </tr>`).join('');
-  return `<table><thead><tr><th>Data</th><th>Tipo</th><th>Código</th><th>Cliente / Fornecedor / Prestador</th><th>Descritivo</th><th>Natureza</th><th style="text-align:right">Valor</th></tr></thead><tbody>${rows || '<tr><td colspan="7">Sem lançamentos no recorte.</td></tr>'}</tbody></table>`;
+  return `<table><thead><tr><th>Data</th><th>Tipo</th><th>Centro de Custo</th><th>Cliente / Fornecedor / Prestador</th><th>Descritivo</th><th>Natureza</th><th style="text-align:right">Valor</th></tr></thead><tbody>${rows || '<tr><td colspan="7">Sem lançamentos no recorte.</td></tr>'}</tbody></table>`;
 }
 
 const server = http.createServer(async (req, res) => {
@@ -3165,7 +3165,7 @@ function openDrawer(view, de, ate) {
       if (isMutuo) {
         body.innerHTML = '<table><thead><tr><th>Data</th><th>Descrição</th><th>Tipo</th><th style="text-align:right">Valor</th><th style="text-align:right">Saldo devedor</th></tr></thead><tbody>' + rows + '</tbody></table>';
       } else {
-        body.innerHTML = '<table><thead><tr><th>Data</th><th>Tipo</th><th>Código</th><th>Cliente / Fornecedor / Prestador</th><th>Descritivo</th><th style="text-align:right">Valor</th></tr></thead><tbody>' + rows + '</tbody></table>';
+        body.innerHTML = '<table><thead><tr><th>Data</th><th>Tipo</th><th>Centro de Custo</th><th>Cliente / Fornecedor / Prestador</th><th>Descritivo</th><th style="text-align:right">Valor</th></tr></thead><tbody>' + rows + '</tbody></table>';
       }
     })
     .catch(err => {
@@ -3448,7 +3448,7 @@ function renderResultado(data) {
   div.innerHTML = '<h3 style="margin-bottom:.75rem">Itens extraídos da fatura (' + data.itens.length + ')</h3>' +
     '<p style="font-size:.82rem;color:var(--gray-600);margin-bottom:.75rem">Itens em amarelo foram deixados como <strong>Pendente</strong> pela IA. Revise e ajuste antes de confirmar.</p>' +
     '<div style="overflow-x:auto;margin-bottom:1rem"><table style="min-width:800px"><thead><tr>' +
-    '<th>Data</th><th>Tipo</th><th>Código</th><th>Cliente / Fornecedor / Prestador</th><th>Descritivo</th><th>Natureza</th><th style="text-align:right">Valor</th><th>Projeto</th><th>Obs. IA</th>' +
+    '<th>Data</th><th>Tipo</th><th>Centro de Custo</th><th>Cliente / Fornecedor / Prestador</th><th>Descritivo</th><th>Natureza</th><th style="text-align:right">Valor</th><th>Projeto</th><th>Obs. IA</th>' +
     '</tr></thead><tbody>' + rows + '</tbody></table></div>' +
     '<div style="background:#fef2f2;border:1px solid #fecaca;border-radius:8px;padding:.75rem 1rem;margin-bottom:1rem">' +
     '<strong style="font-size:.85rem;color:#991b1b">⚠ Atenção:</strong> <span style="font-size:.82rem;color:#7f1d1d">Ao confirmar, o lançamento original de R$ ' + Number(data.valorOriginal||0).toFixed(2) + ' será <strong>removido</strong> e substituído pelos ' + data.itens.length + ' itens acima. Esta ação não pode ser desfeita.</span>' +
@@ -4039,7 +4039,7 @@ ${paginacao}
       <th style="padding:.5rem .75rem;text-align:center;white-space:nowrap">Nº</th>
       <th style="padding:.5rem .75rem;text-align:left">Data</th>
       <th style="padding:.5rem .75rem;text-align:center">Tipo</th>
-      <th style="padding:.5rem .75rem;text-align:left">Código</th>
+      <th style="padding:.5rem .75rem;text-align:left">Centro de Custo</th>
       <th style="padding:.5rem .75rem;text-align:left">Cliente / Fornecedor / Prestador</th>
       <th style="padding:.5rem .75rem;text-align:left">Descritivo</th>
       <th style="padding:.5rem .75rem;text-align:right">Valor</th>
