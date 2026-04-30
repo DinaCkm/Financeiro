@@ -3786,8 +3786,8 @@ async function excluirRef(tipo,nome){
     const totalPages = Math.ceil(total / PAGE_SIZE) || 1;
     const paginated = entries.slice((page_num - 1) * PAGE_SIZE, page_num * PAGE_SIZE);
 
-    // Datalists para autocomplete
-    const ccs = [...new Set(db.entries.map(e => e.centroCusto).filter(Boolean))].sort();
+    // Datalists para autocomplete — CCs: apenas os oficiais cadastrados no banco
+    const ccs = [...new Set([...CC_PADRAO, ...(db.referencias?.centrosCusto || [])])].sort();
     const clientes = [...new Set(db.entries.map(e => e.favorecido || e.cliente || e.parceiro).filter(Boolean))].sort();
     const contas = [...new Set(db.entries.map(e => e.conta).filter(Boolean))].sort();
     const projetos = [...new Set(db.entries.map(e => e.projeto).filter(Boolean))].sort();
