@@ -4041,8 +4041,10 @@ async function excluirRef(tipo,nome){
     </select></div>
     <div>
       <label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">CPF / CNPJ</label>
-      <input id="novo-cpf" placeholder="Somente números (sem pontos ou traços)" oninput="autocompleteFavorecido(this.value)" style="font-size:.8rem;padding:.3rem .5rem;width:100%"/>
-      <div style="font-size:.68rem;color:#94a3b8;margin-top:.15rem">Digite somente os números, sem pontos, barras ou traços</div>
+      <div style="position:relative">
+        <input id="novo-cpf" placeholder="Digite CPF ou CNPJ (somente números)" oninput="autocompleteFavorecido(this.value)" onblur="setTimeout(function(){var d=document.getElementById('cpf-sugestoes');if(d)d.style.display='none';},200)" autocomplete="off" style="font-size:.8rem;padding:.3rem .5rem;width:100%"/>
+        <div id="cpf-sugestoes" style="display:none;position:absolute;top:100%;left:0;right:0;background:#fff;border:1px solid #cbd5e1;border-radius:6px;box-shadow:0 4px 12px rgba(0,0,0,.1);z-index:9999;max-height:200px;overflow-y:auto"></div>
+      </div>
       <div id="novo-cpf-aviso" style="font-size:.72rem;margin-top:.2rem"></div>
     </div>
     <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Cliente / Fornecedor / Prestador</label>
@@ -4160,18 +4162,53 @@ const GRUPOS_LISTA = ${JSON.stringify(GRUPOS.map(g=>({codigo:g.codigo,nome:g.nom
 const CLIENTES_MAP_CPF = ${JSON.stringify(clientesMapCpf)};
 // Mapa NOME → { cpf, tipo } para autocomplete inverso
 const CLIENTES_MAP_NOME = ${JSON.stringify(clientesCad.reduce((m,c)=>{ m[c.nome]={cpf:c.cpf||'',tipo:c.tipo||''}; return m; }, {}))};
+function selecionarFavorecido(cpf, nome, tipo) {
+  var campoCpf = document.getElementById('novo-cpf');
+  var campoNome = document.getElementById('novo-cliente');
+  var aviso = document.getElementById('novo-cpf-aviso');
+  var sugestoes = document.getElementById('cpf-sugestoes');
+  if(campoCpf) campoCpf.value = cpf;
+  if(campoNome) campoNome.value = nome;
+  if(aviso) aviso.innerHTML = '<span style="color:#059669">\u2713 ' + (tipo||'Cadastrado') + '</span>';
+  if(sugestoes) sugestoes.style.display = 'none';
+}
 function autocompleteFavorecido(val) {
   var cpfLimpo = val.replace(/\D/g,'');
   var aviso = document.getElementById('novo-cpf-aviso');
   var campoNome = document.getElementById('novo-cliente');
-  if (cpfLimpo.length < 11) { if(aviso) aviso.innerHTML=''; return; }
-  var cli = CLIENTES_MAP_CPF[cpfLimpo];
-  if (cli) {
-    if(campoNome) campoNome.value = cli.nome;
-    if(aviso) aviso.innerHTML = '<span style="color:#059669">\u2713 ' + (cli.tipo||'Cadastrado') + '</span>';
-  } else {
-    if(campoNome) campoNome.value = '';
-    if(aviso) aviso.innerHTML = '<span style="color:#dc2626">\u26a0 CPF/CNPJ n\u00e3o encontrado no cadastro. <a href="/cadastros-mestres" style="color:#6d28d9">Cadastrar agora</a></span>';
+  var sugestoes = document.getElementById('cpf-sugestoes');
+  // Limpar se vazio
+  if (cpfLimpo.length === 0) {
+    if(aviso) aviso.innerHTML='';
+    if(campoNome) campoNome.value='';
+    if(sugestoes) sugestoes.style.display='none';
+    return;
+  }
+  // A partir de 3 digitos: mostrar sugestoes
+  if (cpfLimpo.length >= 3) {
+    var matches = Object.keys(CLIENTES_MAP_CPF).filter(function(k){ return k.indexOf(cpfLimpo)===0; });
+    if (matches.length > 0 && cpfLimpo.length < 14) {
+      var html = '';
+      matches.slice(0,10).forEach(function(cpfKey){
+        var c = CLIENTES_MAP_CPF[cpfKey];
+        html += '<div onclick="selecionarFavorecido(\'' + cpfKey + '\',\'' + c.nome.replace(/'/g,"\\'") + '\',\'' + (c.tipo||'') + '\')" style="padding:.4rem .6rem;cursor:pointer;border-bottom:1px solid #f1f5f9;font-size:.8rem" onmouseover="this.style.background=\'#f1f5f9\'" onmouseout="this.style.background=\'\'"><strong>' + c.nome + '</strong><br><span style="color:#94a3b8;font-size:.72rem">' + cpfKey + '</span></div>';
+      });
+      if(sugestoes){ sugestoes.innerHTML=html; sugestoes.style.display='block'; }
+    } else {
+      if(sugestoes) sugestoes.style.display='none';
+    }
+  }
+  // Correspondencia exata (11 digitos CPF ou 14 digitos CNPJ)
+  if (cpfLimpo.length === 11 || cpfLimpo.length === 14) {
+    var cli = CLIENTES_MAP_CPF[cpfLimpo];
+    if (cli) {
+      if(campoNome) campoNome.value = cli.nome;
+      if(aviso) aviso.innerHTML = '<span style="color:#059669">\u2713 ' + (cli.tipo||'Cadastrado') + '</span>';
+      if(sugestoes) sugestoes.style.display='none';
+    } else {
+      if(campoNome) campoNome.value = '';
+      if(aviso) aviso.innerHTML = '<span style="color:#dc2626">\u26a0 CPF/CNPJ n\u00e3o encontrado no cadastro. <a href="/cadastros-mestres" style="color:#6d28d9">Cadastrar agora</a></span>';
+    }
   }
 }
 function autocompletePorNome(val) {
