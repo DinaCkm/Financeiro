@@ -3803,14 +3803,23 @@ async function excluirRef(tipo,nome){
     const paginated = entries.slice((page_num - 1) * PAGE_SIZE, page_num * PAGE_SIZE);
 
     // Datalists para autocomplete — CCs: apenas os oficiais cadastrados no banco
-    const ccs = [...new Set([...CC_PADRAO, ...(db.referencias?.centrosCusto || [])])].sort();
-    const clientes = [...new Set(db.entries.map(e => e.favorecido || e.cliente || e.parceiro).filter(Boolean))].sort();
+    // ── Listas de filtro: 100% originadas dos cadastros (banco) ──────────────
+    let ccs = [], clientesCad = [], projetosCad = [], naturezasCad = [], gruposCad = [], tiposDespesaCad = [];
     const contas = [...new Set(db.entries.map(e => e.conta).filter(Boolean))].sort();
-    const projetos = [...new Set(db.entries.map(e => e.projeto).filter(Boolean))].sort();
-
-    const NATUREZAS = ['Receita Operacional','Custo Direto','Custo Indireto','Receita Financeira','Movimentação Financeira','Transferência Interna','Pendente de Classificação'];
-    const GRUPOS = ['','Pessoal','Sistemas e Tecnologia','Serviços Terceirizados','Despesas Financeiras','Despesas Administrativas','Receita de Contrato','Rendimentos Financeiros','Custo de Projeto'];
-    const TIPOS = ['','Salário / Pró-labore','Serviço PJ','Software / Licença','Hospedagem','Assessoria Contábil','Assessoria Jurídica','Assessoria de Marketing','Terceiros / Consultoria','Tarifa Bancária','Imposto / Tributo','Aluguel','Internet / Telefonia','Material de Escritório','Reembolso','Receita de Contrato','Rendimento Financeiro','Custo Operacional de Projeto','Outros'];
+    try {
+      const pg = storage.getPool ? storage.getPool() : null;
+      if (pg) {
+        ccs            = (await pg.query('SELECT codigo, nome FROM centros_de_custo WHERE ativo=true ORDER BY nome')).rows;
+        clientesCad    = (await pg.query('SELECT nome, cpf, tipo FROM clientes WHERE ativo=true ORDER BY nome')).rows;
+        projetosCad    = (await pg.query('SELECT codigo, nome FROM projetos WHERE ativo=true ORDER BY nome')).rows;
+        naturezasCad   = (await pg.query('SELECT nome FROM tipos_lancamento WHERE ativo=true ORDER BY nome')).rows;
+        gruposCad      = (await pg.query('SELECT codigo, nome FROM grupos_despesa WHERE ativo=true ORDER BY nome')).rows;
+        tiposDespesaCad= (await pg.query('SELECT td.codigo, td.nome, gd.nome as grupo_nome FROM tipos_despesa td LEFT JOIN grupos_despesa gd ON gd.id=td.grupo_id WHERE td.ativo=true ORDER BY gd.nome NULLS LAST, td.nome')).rows;
+      }
+    } catch(e) { console.error('[lancamentos-filtros]', e.message); }
+    const NATUREZAS = naturezasCad.map(r => r.nome);
+    const GRUPOS = gruposCad;
+    const TIPOS = tiposDespesaCad;
     const STATUS_LISTA = ['PG','AG','RE','RT','TF','NT','ZZ','OK','RG','XF','AP','DE','MK','NR','BQ','CR','RD','importado','pendente','ok','cancelado','revisado'];
     const STATUS_LABEL = {
       PG: 'PG (Pago)', AG: 'AG (Aguardando)', RE: 'RE (Recebido)', RT: 'RT (Retido)',
@@ -3822,21 +3831,16 @@ async function excluirRef(tipo,nome){
       ok: 'OK (Confirmado)', cancelado: 'Cancelado', revisado: 'Revisado'
     };
     const statusOpts = STATUS_LISTA.map(s => `<option value="${s}">${STATUS_LABEL[s]||s}</option>`).join('');
-    const grupoOpts = GRUPOS.map(g => `<option value="${g}">${g || '-- Selecione --'}</option>`).join('');
-    const tipoOpts = TIPOS.map(t => `<option value="${t}">${t || '-- Selecione --'}</option>`).join('');
-    const natOpts = NATUREZAS.map(n => `<option value="${n}">${n}</option>`).join('');
-    const dlCC = ccs.map(c => `<option value="${c}">`).join('');
-    const dlClientes = clientes.map(c => `<option value="${c}">`).join('');
-    const dlContas = contas.map(c => `<option value="${c}">`).join('');
-    // Gera datalist com nome do projeto (ex: "PDI Evoluir (4.6)") e value = código numérico
-    const dlProjetos = projetos.map(c => {
-      const nome = MAPA_PROJETOS_CKM[c];
-      return nome ? `<option value="${c}" label="${nome} (${c})">` : `<option value="${c}">`;
-    }).join('');
-    // Também gera opções com nome para facilitar busca por nome
-    const dlProjetosNome = Object.entries(MAPA_PROJETOS_CKM).map(([cod, nome]) =>
-      `<option value="${cod}">${nome} (${cod})</option>`
-    ).join('');
+    // Opts do cadastro
+    const grupoOpts = '<option value="">Todos</option>' + GRUPOS.map(g => `<option value="${g.codigo}" ${qCC===g.codigo?'selected':''}>${g.nome}</option>`).join('');
+    const tipoOpts  = '<option value="">Todos</option>' + TIPOS.map(t => `<option value="${t.codigo}">${t.grupo_nome ? t.grupo_nome+' → ' : ''}${t.nome}</option>`).join('');
+    const natOpts   = '<option value="">Todas</option>' + NATUREZAS.map(n => `<option value="${n}" ${qNat===n?'selected':''}>${n}</option>`).join('');
+    const dlCC      = ccs.map(c => `<option value="${c.codigo}" label="${c.nome}">`).join('');
+    const dlClientes= clientesCad.map(c => `<option value="${c.nome}">`).join('');
+    const dlContas  = contas.map(c => `<option value="${c}">`).join('');
+    // Projetos do cadastro
+    const dlProjetos     = projetosCad.map(p => `<option value="${p.codigo}" label="${p.nome} (${p.codigo})">`).join('');
+    const dlProjetosNome = projetosCad.map(p => `<option value="${p.codigo}">${p.nome} (${p.codigo})</option>`).join('');
 
     // Paginação
     const paginacao = totalPages > 1 ? `<div style="display:flex;gap:.5rem;align-items:center;margin-top:1rem;flex-wrap:wrap">
@@ -4021,12 +4025,11 @@ async function excluirRef(tipo,nome){
     <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Projeto</label>
     <select name="projeto" style="font-size:.8rem;padding:.3rem .5rem;width:100%">
       <option value="">Todos</option>
-      ${Object.entries(MAPA_PROJETOS_CKM).map(([cod,nome]) => `<option value="${cod}" ${qProjeto===cod?'selected':''}>${nome}</option>`).join('')}
+      ${projetosCad.map(p => `<option value="${p.codigo}" ${qProjeto===p.codigo?'selected':''}>${p.nome}</option>`).join('')}
     </select></div>
     <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Natureza</label>
     <select name="nat" style="font-size:.8rem;padding:.3rem .5rem;width:100%">
-      <option value="">Todas</option>
-      ${NATUREZAS.map(n => `<option value="${n}" ${qNat===n?'selected':''}>${n}</option>`).join('')}
+      ${natOpts}
     </select></div>
     <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">D/C</label>
     <select name="dc" style="font-size:.8rem;padding:.3rem .5rem;width:100%">
