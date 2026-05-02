@@ -4041,7 +4041,7 @@ async function excluirRef(tipo,nome){
       <div id="novo-cpf-aviso" style="font-size:.72rem;margin-top:.2rem"></div>
     </div>
     <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Cliente / Fornecedor / Prestador</label>
-    <input id="novo-cliente" list="dl-clientes-lanc" placeholder="Ex: VIVO, SEBRAE-AC" style="font-size:.8rem;padding:.3rem .5rem;width:100%" oninput="autocompletePorNome(this.value)"/></div>
+    <input id="novo-cliente" readonly placeholder="Preenchido automaticamente pelo CPF/CNPJ" style="font-size:.8rem;padding:.3rem .5rem;width:100%;background:#f1f5f9;color:#475569;cursor:not-allowed"/></div>
     <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Projeto</label>
     <select id="novo-proj" style="font-size:.8rem;padding:.3rem .5rem;width:100%">
       <option value="">-- Selecione o Projeto --</option>
