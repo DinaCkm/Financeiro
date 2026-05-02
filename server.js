@@ -3865,13 +3865,15 @@ async function excluirRef(tipo,nome){
 
     // Datalists para autocomplete — CCs: apenas os oficiais cadastrados no banco
     // ── Listas de filtro: 100% originadas dos cadastros (banco) ──────────────
-    let ccs = [], clientesCad = [], projetosCad = [], naturezasCad = [], gruposCad = [], tiposDespesaCad = [], bancosCad = [];
+    let ccs = [], clientesCad = [], clientesMapCpf = {}, projetosCad = [], naturezasCad = [], gruposCad = [], tiposDespesaCad = [], bancosCad = [];
     const contas = [...new Set(db.entries.map(e => e.conta).filter(Boolean))].sort();
     try {
       const pg = storage.getPool ? storage.getPool() : null;
       if (pg) {
         ccs            = (await pg.query('SELECT codigo, nome FROM centros_de_custo WHERE ativo=true ORDER BY nome')).rows;
         clientesCad    = (await pg.query('SELECT nome, cpf, tipo FROM clientes WHERE ativo=true ORDER BY nome')).rows;
+        // Mapa CPF/CNPJ → cliente para autocomplete
+        clientesMapCpf = clientesCad.filter(c=>c.cpf).reduce((m,c)=>{ m[c.cpf.replace(/\D/g,'')]=c; return m; }, {});
         projetosCad    = (await pg.query('SELECT codigo, nome FROM projetos WHERE ativo=true ORDER BY nome')).rows;
         naturezasCad   = (await pg.query('SELECT nome FROM tipos_lancamento WHERE ativo=true ORDER BY nome')).rows;
         gruposCad      = (await pg.query('SELECT codigo, nome FROM grupos_despesa WHERE ativo=true ORDER BY nome')).rows;
@@ -4023,25 +4025,6 @@ async function excluirRef(tipo,nome){
       <option value="D">D — Débito (saída)</option>
       <option value="C">C — Crédito (entrada)</option>
     </select></div>
-    <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Grupo da Despesa</label>
-    <select id="novo-grupo" style="font-size:.8rem;padding:.3rem .5rem;width:100%" onchange="filtrarTiposNoSelect('novo-grupo','novo-tipo','')">${grupoOpts}</select></div>
-    <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Tipo de Despesa</label>
-    <select id="novo-tipo" style="font-size:.8rem;padding:.3rem .5rem;width:100%">${tipoOpts}</select></div>
-    <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Código (CC) *</label>
-    <input id="novo-cc" list="dl-cc-lanc" placeholder="Ex: ESCRITORIO" style="font-size:.8rem;padding:.3rem .5rem;width:100%"/></div>
-    <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Cliente / Fornecedor / Prestador</label>
-    <input id="novo-cliente" list="dl-clientes-lanc" placeholder="Ex: VIVO, SEBRAE-AC" style="font-size:.8rem;padding:.3rem .5rem;width:100%"/></div>
-    <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">CPF / CNPJ</label>
-    <input id="novo-cpf" placeholder="000.000.000-00" style="font-size:.8rem;padding:.3rem .5rem;width:100%"/></div>
-    <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Conta / Banco</label>
-    <input id="novo-conta" list="dl-contas-lanc" placeholder="Ex: Itaú PJ" style="font-size:.8rem;padding:.3rem .5rem;width:100%"/></div>
-    <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Projeto</label>
-    <select id="novo-proj" style="font-size:.8rem;padding:.3rem .5rem;width:100%">
-      <option value="">-- Selecione o Projeto --</option>
-      ${Object.entries(MAPA_PROJETOS_CKM).map(([cod,nome])=>`<option value="${cod}">${nome} (${cod})</option>`).join('')}
-    </select></div>
-    <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Valor (R$) *</label>
-    <input id="novo-valor" type="number" step="0.01" placeholder="0,00" style="font-size:.8rem;padding:.3rem .5rem;width:100%"/></div>
     <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Classificação</label>
     <select id="novo-classif" style="font-size:.8rem;padding:.3rem .5rem;width:100%">
       <option value="">-- Selecione --</option>
@@ -4052,6 +4035,28 @@ async function excluirRef(tipo,nome){
       <option value="Movimentação Financeira">Movimentação Financeira</option>
       <option value="Transferência Interna">Transferência Interna</option>
     </select></div>
+    <div>
+      <label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">CPF / CNPJ</label>
+      <input id="novo-cpf" placeholder="000.000.000-00" oninput="autocompleteFavorecido(this.value)" style="font-size:.8rem;padding:.3rem .5rem;width:100%"/>
+      <div id="novo-cpf-aviso" style="font-size:.72rem;margin-top:.2rem"></div>
+    </div>
+    <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Cliente / Fornecedor / Prestador</label>
+    <input id="novo-cliente" list="dl-clientes-lanc" placeholder="Ex: VIVO, SEBRAE-AC" style="font-size:.8rem;padding:.3rem .5rem;width:100%" oninput="autocompletePorNome(this.value)"/></div>
+    <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Projeto</label>
+    <select id="novo-proj" style="font-size:.8rem;padding:.3rem .5rem;width:100%">
+      <option value="">-- Selecione o Projeto --</option>
+      ${projetosCad.map(p=>`<option value="${p.codigo}">${p.nome} (${p.codigo})</option>`).join('')}
+    </select></div>
+    <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Grupo da Despesa</label>
+    <select id="novo-grupo" style="font-size:.8rem;padding:.3rem .5rem;width:100%" onchange="filtrarTiposNoSelect('novo-grupo','novo-tipo','')">${grupoOpts}</select></div>
+    <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Tipo de Despesa</label>
+    <select id="novo-tipo" style="font-size:.8rem;padding:.3rem .5rem;width:100%">${tipoOpts}</select></div>
+    <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Código (CC) *</label>
+    <input id="novo-cc" list="dl-cc-lanc" placeholder="Ex: ESCRITORIO" style="font-size:.8rem;padding:.3rem .5rem;width:100%"/></div>
+    <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Conta / Banco</label>
+    <input id="novo-conta" list="dl-contas-lanc" placeholder="Ex: Itaú PJ" style="font-size:.8rem;padding:.3rem .5rem;width:100%"/></div>
+    <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Valor (R$) *</label>
+    <input id="novo-valor" type="number" step="0.01" placeholder="0,00" style="font-size:.8rem;padding:.3rem .5rem;width:100%"/></div>
     <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Status</label>
     <select id="novo-status" style="font-size:.8rem;padding:.3rem .5rem;width:100%">${statusOpts}</select></div>
     <div style="grid-column:span 2"><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Documento / Referência (NF, Recibo, Contrato)</label>
@@ -4146,7 +4151,33 @@ ${paginacao}
 // Dados do cadastro injetados pelo servidor
 const TODOS_TIPOS = ${JSON.stringify(tiposDespesaCad.map(t=>({codigo:t.codigo,nome:t.nome,grupo_cod:t.grupo_cod||'',grupo_nome:t.grupo_nome||''})))};
 const GRUPOS_LISTA = ${JSON.stringify(GRUPOS.map(g=>({codigo:g.codigo,nome:g.nome})))};
-
+// Mapa CPF/CNPJ (sem máscara) → { nome, tipo } para autocomplete no formulário
+const CLIENTES_MAP_CPF = ${JSON.stringify(clientesMapCpf)};
+// Mapa NOME → { cpf, tipo } para autocomplete inverso
+const CLIENTES_MAP_NOME = ${JSON.stringify(clientesCad.reduce((m,c)=>{ m[c.nome]={cpf:c.cpf||'',tipo:c.tipo||''}; return m; }, {}))};
+function autocompleteFavorecido(val) {
+  var cpfLimpo = val.replace(/\D/g,'');
+  var aviso = document.getElementById('novo-cpf-aviso');
+  var campoNome = document.getElementById('novo-cliente');
+  if (cpfLimpo.length < 11) { if(aviso) aviso.innerHTML=''; return; }
+  var cli = CLIENTES_MAP_CPF[cpfLimpo];
+  if (cli) {
+    if(campoNome) campoNome.value = cli.nome;
+    if(aviso) aviso.innerHTML = '<span style="color:#059669">\u2713 ' + (cli.tipo||'Cadastrado') + '</span>';
+  } else {
+    if(campoNome) campoNome.value = '';
+    if(aviso) aviso.innerHTML = '<span style="color:#dc2626">\u26a0 CPF/CNPJ n\u00e3o encontrado no cadastro. <a href="/cadastros-mestres" style="color:#6d28d9">Cadastrar agora</a></span>';
+  }
+}
+function autocompletePorNome(val) {
+  var cli = CLIENTES_MAP_NOME[val];
+  if (cli && cli.cpf) {
+    var campoCpf = document.getElementById('novo-cpf');
+    if(campoCpf) campoCpf.value = cli.cpf;
+    var aviso = document.getElementById('novo-cpf-aviso');
+    if(aviso) aviso.innerHTML = '<span style="color:#059669">\u2713 ' + (cli.tipo||'Cadastrado') + '</span>';
+  }
+}
 function filtrarTiposNoSelect(grupoSelectId, tipoSelectId, valorAtual) {
   var gSel = document.getElementById(grupoSelectId);
   var tSel = document.getElementById(tipoSelectId);
