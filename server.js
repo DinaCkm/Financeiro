@@ -3804,7 +3804,7 @@ async function excluirRef(tipo,nome){
 
     // Datalists para autocomplete — CCs: apenas os oficiais cadastrados no banco
     // ── Listas de filtro: 100% originadas dos cadastros (banco) ──────────────
-    let ccs = [], clientesCad = [], projetosCad = [], naturezasCad = [], gruposCad = [], tiposDespesaCad = [];
+    let ccs = [], clientesCad = [], projetosCad = [], naturezasCad = [], gruposCad = [], tiposDespesaCad = [], bancosCad = [];
     const contas = [...new Set(db.entries.map(e => e.conta).filter(Boolean))].sort();
     try {
       const pg = storage.getPool ? storage.getPool() : null;
@@ -3815,6 +3815,7 @@ async function excluirRef(tipo,nome){
         naturezasCad   = (await pg.query('SELECT nome FROM tipos_lancamento WHERE ativo=true ORDER BY nome')).rows;
         gruposCad      = (await pg.query('SELECT codigo, nome FROM grupos_despesa WHERE ativo=true ORDER BY nome')).rows;
         tiposDespesaCad= (await pg.query('SELECT td.codigo, td.nome, gd.nome as grupo_nome FROM tipos_despesa td LEFT JOIN grupos_despesa gd ON gd.id=td.grupo_id WHERE td.ativo=true ORDER BY gd.nome NULLS LAST, td.nome')).rows;
+        bancosCad      = (await pg.query('SELECT codigo, nome FROM bancos WHERE ativo=true ORDER BY nome')).rows;
       }
     } catch(e) { console.error('[lancamentos-filtros]', e.message); }
     const NATUREZAS = naturezasCad.map(r => r.nome);
@@ -3837,7 +3838,9 @@ async function excluirRef(tipo,nome){
     const natOpts   = '<option value="">Todas</option>' + NATUREZAS.map(n => `<option value="${n}" ${qNat===n?'selected':''}>${n}</option>`).join('');
     const dlCC      = ccs.map(c => `<option value="${c.codigo}" label="${c.nome}">`).join('');
     const dlClientes= clientesCad.map(c => `<option value="${c.nome}">`).join('');
-    const dlContas  = contas.map(c => `<option value="${c}">`).join('');
+    const dlContas  = bancosCad.length > 0
+      ? bancosCad.map(b => `<option value="${b.nome}">`).join('')
+      : contas.map(c => `<option value="${c}">`).join('');
     // Projetos do cadastro
     const dlProjetos     = projetosCad.map(p => `<option value="${p.codigo}" label="${p.nome} (${p.codigo})">`).join('');
     const dlProjetosNome = projetosCad.map(p => `<option value="${p.codigo}">${p.nome} (${p.codigo})</option>`).join('');
