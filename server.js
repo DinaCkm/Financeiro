@@ -3858,7 +3858,6 @@ async function excluirRef(tipo,nome){
       if (!(e.centroCusto || '').trim()) inconsistencias.push('sem_cc');
       if (!(e.favorecido || e.cliente || e.parceiro || '').trim()) inconsistencias.push('sem_nome');
       if (precisaProjeto && !(e.projeto || '').trim()) inconsistencias.push('sem_projeto');
-      if (!nat || nat === 'Pendente de Classificação') inconsistencias.push('sem_natureza');
       const temInconsistencia = inconsistencias.length > 0;
       const incJson = JSON.stringify(inconsistencias).replace(/"/g, "'");
       const dcStr = e.dc || (e.valor >= 0 ? 'C' : 'D');
@@ -3872,7 +3871,7 @@ async function excluirRef(tipo,nome){
       const natLabel = (e.naturezaGerencial || e.natureza || '-').slice(0, 20);
       const status = e.status || '-';
       const origem = e.origem === 'manual' ? '<span style="font-size:.65rem;background:#dbeafe;color:#1e40af;padding:.1rem .3rem;border-radius:4px">MANUAL</span>' : '';
-      const incBadge = temInconsistencia ? `<span title="${inconsistencias.map(i=>({sem_cc:'Sem CC',sem_nome:'Sem Cliente/Fornecedor/Prestador',sem_projeto:'Sem projeto',sem_natureza:'Sem natureza'}[i]||i)).join(', ')}" style="font-size:.6rem;background:#fee2e2;color:#991b1b;padding:.1rem .3rem;border-radius:4px;cursor:help">⚠ ${inconsistencias.length}</span>` : '';
+      const incBadge = temInconsistencia ? `<span title="${inconsistencias.map(i=>({sem_cc:'Sem CC',sem_nome:'Sem Cliente/Fornecedor/Prestador',sem_projeto:'Sem projeto'}[i]||i)).join(', ')}" style="font-size:.6rem;background:#fee2e2;color:#991b1b;padding:.1rem .3rem;border-radius:4px;cursor:help">⚠ ${inconsistencias.length}</span>` : '';
       const confirmarBadge = e.pendente_confirmacao ? `<span title="${(e.motivo_confirmacao||'Aguardando confirmação').replace(/"/g,'&quot;')}" style="font-size:.6rem;background:#fef3c7;color:#92400e;padding:.1rem .3rem;border-radius:4px;cursor:help">🕐 Confirmar</span>` : '';
       const rowBg = e.pendente_confirmacao ? 'background:#fffbeb;border-left:3px solid #f59e0b' : (temInconsistencia ? 'background:#fffbeb' : '');
       const numStr = e.numLanc ? `<span style="font-family:monospace;font-size:.78rem;font-weight:700;color:#1d4ed8">#${String(e.numLanc).padStart(6,'0')}</span>` : '<span style="color:#94a3b8;font-size:.72rem">—</span>';
@@ -3885,12 +3884,11 @@ async function excluirRef(tipo,nome){
         <td style="font-size:.78rem;color:#475569" title="${(e.descritivo||e.descricao||'')}">${ desc}</td>
         <td style="${valCls};font-size:.8rem;text-align:right;font-weight:600">${valStr}</td>
         <td style="font-size:.72rem;color:#7c3aed;font-weight:500">${MAPA_PROJETOS_CKM[e.projeto] ? `<span title="${e.projeto}">${MAPA_PROJETOS_CKM[e.projeto]}</span>` : (e.projeto ? `<span style="color:#94a3b8">${e.projeto}</span>` : '<span style="color:#e2e8f0">—</span>')}</td>
-        <td style="font-size:.72rem;color:#94a3b8">${natLabel}</td>
         <td style="font-size:.72rem;color:#94a3b8" title="${STATUS_LABEL[status]||status}">${STATUS_LABEL[status]||status}</td>
         <td style="text-align:center"><button onclick="event.stopPropagation();toggleEditLanc('${e.id}', ${incJson})" title="Editar lançamento" style="background:#ede9fe;color:#6d28d9;font-size:.75rem;padding:.25rem .5rem;box-shadow:none;border:1px solid #c4b5fd">&#9998;</button></td>
       </tr>
       <tr id="edit-lanc-${e.id}" style="display:none;background:#f8fafc">
-        <td colspan="11" style="padding:.75rem 1rem">
+        <td colspan="10" style="padding:.75rem 1rem">
           <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:.75rem">
             <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Data</label>
             <input id="el-data-${e.id}" value="${e.dataISO||''}" type="date" style="font-size:.8rem;padding:.3rem .5rem;width:100%"/></div>
@@ -3899,8 +3897,6 @@ async function excluirRef(tipo,nome){
               <option value="C" ${dcStr==='C'?'selected':''}>C — Crédito (entrada)</option>
               <option value="D" ${dcStr==='D'?'selected':''}>D — Débito (saída)</option>
             </select></div>
-            <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Natureza Gerencial</label>
-            <select id="el-nat-${e.id}" style="font-size:.8rem;padding:.3rem .5rem;width:100%">${NATUREZAS.map(n=>`<option value="${n}" ${(e.naturezaGerencial||e.natureza||'')==n?'selected':''}>${n}</option>`).join('')}</select></div>
             <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Grupo da Despesa</label>
             <select id="el-grupo-${e.id}" style="font-size:.8rem;padding:.3rem .5rem;width:100%">${GRUPOS.map(g=>`<option value="${g}" ${(e.grupoDespesa||'')==g?'selected':''}>${g||'-- Selecione --'}</option>`).join('')}</select></div>
             <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Tipo de Despesa</label>
@@ -3958,8 +3954,6 @@ async function excluirRef(tipo,nome){
       <option value="D">D — Débito (saída)</option>
       <option value="C">C — Crédito (entrada)</option>
     </select></div>
-    <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Natureza Gerencial *</label>
-    <select id="novo-nat" style="font-size:.8rem;padding:.3rem .5rem;width:100%">${natOpts}</select></div>
     <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Grupo da Despesa</label>
     <select id="novo-grupo" style="font-size:.8rem;padding:.3rem .5rem;width:100%">${grupoOpts}</select></div>
     <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Tipo de Despesa</label>
@@ -3999,7 +3993,6 @@ async function excluirRef(tipo,nome){
   <a href="/lancamentos?inc=sem_cc" style="font-size:.75rem;padding:.3rem .7rem;background:${qInc==='sem_cc'?'#dc2626':'#fee2e2'};color:${qInc==='sem_cc'?'#fff':'#991b1b'};border-radius:6px;text-decoration:none;font-weight:600">⚠ Sem CC (${cntSemCC})</a>
   <a href="/lancamentos?inc=sem_nome" style="font-size:.75rem;padding:.3rem .7rem;background:${qInc==='sem_nome'?'#dc2626':'#fee2e2'};color:${qInc==='sem_nome'?'#fff':'#991b1b'};border-radius:6px;text-decoration:none;font-weight:600">⚠ Sem Cliente/Fornecedor (${cntSemNome})</a>
   <a href="/lancamentos?inc=sem_projeto" style="font-size:.75rem;padding:.3rem .7rem;background:${qInc==='sem_projeto'?'#dc2626':'#fee2e2'};color:${qInc==='sem_projeto'?'#fff':'#991b1b'};border-radius:6px;text-decoration:none;font-weight:600">⚠ Sem Projeto (${cntSemProjeto})</a>
-  <a href="/lancamentos?inc=sem_natureza" style="font-size:.75rem;padding:.3rem .7rem;background:${qInc==='sem_natureza'?'#dc2626':'#fee2e2'};color:${qInc==='sem_natureza'?'#fff':'#991b1b'};border-radius:6px;text-decoration:none;font-weight:600">⚠ Sem Natureza (${cntSemNatureza})</a>
   <a href="/lancamentos?inc=sem_cpf" style="font-size:.75rem;padding:.3rem .7rem;background:${qInc==='sem_cpf'?'#dc2626':'#fee2e2'};color:${qInc==='sem_cpf'?'#fff':'#991b1b'};border-radius:6px;text-decoration:none;font-weight:600">⚠ Sem CPF/CNPJ (${cntSemCpf})</a>
   ${cntAConfirmar > 0 ? `<a href="/lancamentos?inc=a_confirmar" style="font-size:.75rem;padding:.3rem .7rem;background:${qInc==='a_confirmar'?'#d97706':'#fef3c7'};color:${qInc==='a_confirmar'?'#fff':'#92400e'};border-radius:6px;text-decoration:none;font-weight:600">🕐 A Confirmar (${cntAConfirmar})</a>` : ''}
   ${qInc ? '<a href="/lancamentos" style="font-size:.75rem;padding:.3rem .7rem;background:#e2e8f0;color:#475569;border-radius:6px;text-decoration:none">✕ Limpar filtro</a>' : ''}
@@ -4026,10 +4019,6 @@ async function excluirRef(tipo,nome){
     <select name="projeto" style="font-size:.8rem;padding:.3rem .5rem;width:100%">
       <option value="">Todos</option>
       ${projetosCad.map(p => `<option value="${p.codigo}" ${qProjeto===p.codigo?'selected':''}>${p.nome}</option>`).join('')}
-    </select></div>
-    <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Natureza</label>
-    <select name="nat" style="font-size:.8rem;padding:.3rem .5rem;width:100%">
-      ${natOpts}
     </select></div>
     <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">D/C</label>
     <select name="dc" style="font-size:.8rem;padding:.3rem .5rem;width:100%">
@@ -4065,12 +4054,11 @@ ${paginacao}
       <th style="padding:.5rem .75rem;text-align:left">Descritivo</th>
       <th style="padding:.5rem .75rem;text-align:right">Valor</th>
       <th style="padding:.5rem .75rem;text-align:left">Projeto</th>
-      <th style="padding:.5rem .75rem;text-align:left">Natureza</th>
       <th style="padding:.5rem .75rem;text-align:left">Status</th>
       <th style="padding:.5rem .75rem;text-align:center">Ação</th>
     </tr>
   </thead>
-  <tbody>${rows || '<tr><td colspan="11" style="text-align:center;padding:2rem;color:#94a3b8">Nenhum lançamento encontrado com os filtros aplicados.</td></tr>'}</tbody>
+  <tbody>${rows || '<tr><td colspan="10" style="text-align:center;padding:2rem;color:#94a3b8">Nenhum lançamento encontrado com os filtros aplicados.</td></tr>'}</tbody>
 </table>
 </div>
 ${paginacao}
@@ -4087,10 +4075,9 @@ function toggleEditLanc(id, inconsistencias) {
       sem_cc: 'el-cc-' + id,
       sem_nome: 'el-cliente-' + id,
       sem_projeto: 'el-proj-' + id,
-      sem_natureza: 'el-nat-' + id,
     };
     // Resetar todos primeiro
-    ['el-cc-','el-cliente-','el-proj-','el-nat-'].forEach(p => {
+    ['el-cc-','el-cliente-','el-proj-'].forEach(p => {
       const el = document.getElementById(p + id);
       if (el) { el.style.borderColor = ''; el.style.background = ''; }
     });
@@ -4113,8 +4100,6 @@ async function salvarLancEdit(id) {
     data: document.getElementById('el-data-'+id)?.value,
     dataISO: document.getElementById('el-data-'+id)?.value,
     dc: document.getElementById('el-dc-'+id)?.value,
-    natureza: document.getElementById('el-nat-'+id)?.value,
-    naturezaGerencial: document.getElementById('el-nat-'+id)?.value,
     grupoDespesa: document.getElementById('el-grupo-'+id)?.value,
     tipoDespesa: document.getElementById('el-tipo-'+id)?.value,
     centroCusto: document.getElementById('el-cc-'+id)?.value,
@@ -4142,7 +4127,6 @@ async function criarLancamento() {
   const data = {
     data: document.getElementById('novo-data')?.value,
     dc: document.getElementById('novo-dc')?.value,
-    naturezaGerencial: document.getElementById('novo-nat')?.value,
     grupoDespesa: document.getElementById('novo-grupo')?.value,
     tipoDespesa: document.getElementById('novo-tipo')?.value,
     centroCusto: document.getElementById('novo-cc')?.value,
