@@ -4407,7 +4407,7 @@ ${secaoExclusoes}`, user, '/historico');
   // ─── SEED: popular grupos_despesa e tipos_despesa ──────────────────────────
   if (req.method === 'POST' && url.pathname === '/api/admin/seed-grupos-tipos') {
     if (!requireAuth(req, res, db)) return;
-    const pg = await getPool();
+    const pg = storage.getPool ? storage.getPool() : null;
     if (!pg) return json(res, 503, { ok: false, error: 'Banco indisponível' });
     const ESTRUTURA = [
       ['PESSOAL','Pessoal',[['PROLABORE','Pró-labore'],['SALARIOS','Salários'],['PJ_INTERNOS','Prestadores PJ Internos'],['BENEFICIOS','Benefícios'],['ASSIST_MEDICA','Assistência Médica'],['VALE_TRANSPORTE','Vale Transporte'],['VALE_REFEICAO','Vale Refeição / Alimentação'],['BONIFICACOES','Bonificações'],['FERIAS','Férias'],['DECIMO_TERCEIRO','13º Salário'],['RESCISOES','Rescisões'],['ENCARGOS_TRAB','Encargos Trabalhistas'],['ENCARGOS_PROLABORE','Encargos sobre Pró-labore'],['REEMBOLSOS_EQUIPE','Reembolsos de Equipe']]],
