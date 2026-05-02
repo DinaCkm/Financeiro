@@ -3875,7 +3875,7 @@ async function excluirRef(tipo,nome){
         projetosCad    = (await pg.query('SELECT codigo, nome FROM projetos WHERE ativo=true ORDER BY nome')).rows;
         naturezasCad   = (await pg.query('SELECT nome FROM tipos_lancamento WHERE ativo=true ORDER BY nome')).rows;
         gruposCad      = (await pg.query('SELECT codigo, nome FROM grupos_despesa WHERE ativo=true ORDER BY nome')).rows;
-        tiposDespesaCad= (await pg.query('SELECT td.codigo, td.nome, gd.nome as grupo_nome FROM tipos_despesa td LEFT JOIN grupos_despesa gd ON gd.id=td.grupo_id WHERE td.ativo=true ORDER BY gd.nome NULLS LAST, td.nome')).rows;
+        tiposDespesaCad= (await pg.query('SELECT td.codigo, td.nome, td.grupo_id, gd.nome as grupo_nome, gd.codigo as grupo_cod FROM tipos_despesa td LEFT JOIN grupos_despesa gd ON gd.id=td.grupo_id WHERE td.ativo=true ORDER BY gd.nome NULLS LAST, td.nome')).rows;
         bancosCad      = (await pg.query('SELECT codigo, nome FROM bancos WHERE ativo=true ORDER BY nome')).rows;
       }
     } catch(e) { console.error('[lancamentos-filtros]', e.message); }
@@ -4144,7 +4144,7 @@ ${paginacao}
 
 <script>
 // Dados do cadastro injetados pelo servidor
-const TODOS_TIPOS = ${JSON.stringify(tiposDespesaCad.map(t=>({codigo:t.codigo,nome:t.nome,grupo_codigo:t.grupo_nome||''})))};
+const TODOS_TIPOS = ${JSON.stringify(tiposDespesaCad.map(t=>({codigo:t.codigo,nome:t.nome,grupo_cod:t.grupo_cod||'',grupo_nome:t.grupo_nome||''})))};
 const GRUPOS_LISTA = ${JSON.stringify(GRUPOS.map(g=>({codigo:g.codigo,nome:g.nome})))};
 
 function filtrarTiposNoSelect(grupoSelectId, tipoSelectId, valorAtual) {
@@ -4152,8 +4152,7 @@ function filtrarTiposNoSelect(grupoSelectId, tipoSelectId, valorAtual) {
   var tSel = document.getElementById(tipoSelectId);
   if (!gSel || !tSel) return;
   var grupoCod = gSel.value;
-  var grp = GRUPOS_LISTA.find(function(g){ return g.codigo === grupoCod; });
-  var tiposFiltrados = grp ? TODOS_TIPOS.filter(function(t){ return t.grupo_codigo === grp.nome; }) : TODOS_TIPOS;
+  var tiposFiltrados = grupoCod ? TODOS_TIPOS.filter(function(t){ return t.grupo_cod === grupoCod; }) : TODOS_TIPOS;
   var opts = '<option value="">-- Selecione o Tipo --</option>';
   tiposFiltrados.forEach(function(t){
     opts += '<option value="' + t.codigo + '"' + (t.codigo===valorAtual?' selected':'') + '>' + t.nome + '</option>';
