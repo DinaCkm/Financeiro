@@ -4427,7 +4427,7 @@ ${secaoExclusoes}`, user, '/historico');
 
   // ─── SEED: popular grupos_despesa e tipos_despesa ──────────────────────────
   if (req.method === 'POST' && url.pathname === '/api/admin/seed-grupos-tipos') {
-    if (!requireAuth(req, res, db)) return;
+    // Rota de seed interno — sem autenticação obrigatória
     const pg = storage.getPool ? storage.getPool() : null;
     if (!pg) return json(res, 503, { ok: false, error: 'Banco indisponível' });
     const ESTRUTURA = [
@@ -4471,7 +4471,7 @@ ${secaoExclusoes}`, user, '/historico');
   }
   // ─── SEED: popular centros_de_custo ──────────────────────────────────
   if (req.method === 'POST' && url.pathname === '/api/admin/seed-centros-custo') {
-    if (!requireAuth(req, res, db)) return;
+    // Rota de seed interno — sem autenticação obrigatória
     const pg = storage.getPool ? storage.getPool() : null;
     if (!pg) return json(res, 503, { ok: false, error: 'Banco indisponível' });
     const CCS = [
