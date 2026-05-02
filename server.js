@@ -4041,7 +4041,8 @@ async function excluirRef(tipo,nome){
     </select></div>
     <div>
       <label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">CPF / CNPJ</label>
-      <input id="novo-cpf" placeholder="000.000.000-00" oninput="autocompleteFavorecido(this.value)" style="font-size:.8rem;padding:.3rem .5rem;width:100%"/>
+      <input id="novo-cpf" placeholder="Somente números (sem pontos ou traços)" oninput="autocompleteFavorecido(this.value)" style="font-size:.8rem;padding:.3rem .5rem;width:100%"/>
+      <div style="font-size:.68rem;color:#94a3b8;margin-top:.15rem">Digite somente os números, sem pontos, barras ou traços</div>
       <div id="novo-cpf-aviso" style="font-size:.72rem;margin-top:.2rem"></div>
     </div>
     <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Cliente / Fornecedor / Prestador</label>
