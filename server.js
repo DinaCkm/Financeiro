@@ -3745,12 +3745,14 @@ async function excluirRef(tipo,nome){
     const qStatus = url.searchParams.get('status') || '';
     const qCpf = (url.searchParams.get('cpf') || '').toLowerCase().trim();
     const qProjeto = (url.searchParams.get('projeto') || '').trim();
+    const qNumLanc = url.searchParams.get('num') ? parseInt(url.searchParams.get('num'), 10) : null;
     const qInc = url.searchParams.get('inc') || ''; // filtro de inconsistência
     const page_num = Math.max(1, parseInt(url.searchParams.get('p') || '1', 10));
     const PAGE_SIZE = 50;
 
     // Filtrar lançamentos
     let entries = db.entries.filter(e => {
+      if (qNumLanc && e.numLanc !== qNumLanc) return false;
       if (q) {
         const txt = [e.descricao, e.documento, e.descritivo, e.cliente, e.favorecido, e.parceiro, e.projeto, e.centroCusto, e.cpfCnpj].join(' ').toLowerCase();
         if (!txt.includes(q)) return false;
@@ -4002,6 +4004,8 @@ async function excluirRef(tipo,nome){
 <!-- FILTROS DE PESQUISA -->
 <form method="GET" action="/lancamentos" style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:12px;padding:1rem;margin-bottom:1rem">
   <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:.5rem;align-items:end">
+    <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Nº do Lançamento</label>
+    <input name="num" type="number" value="${url.searchParams.get('num')||''}" placeholder="Ex: 4121" style="font-size:.8rem;padding:.3rem .5rem;width:100%" min="1"/></div>
     <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Busca geral</label>
     <input name="q" value="${q}" placeholder="Nome, descrição, NF..." style="font-size:.8rem;padding:.3rem .5rem;width:100%"/></div>
     <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Data início</label>
@@ -5235,17 +5239,22 @@ function renderHistoricoRel() {
   // ============================================================
   if (req.method === 'GET' && url.pathname === '/cadastros-mestres') {
     const user = requireAuth(req, res, db); if (!user) return;
-    let ccs = [], clientes = [], projetos = [], tipos = [], bancos = [];
+    let ccs = [], clientes = [], projetos = [], tipos = [], bancos = [], grupos = [];
     try {
       const pg = storage.getPool ? storage.getPool() : null;
       if (pg) {
         ccs      = (await pg.query('SELECT * FROM centros_de_custo ORDER BY tipo, nome')).rows;
-        clientes = (await pg.query('SELECT * FROM clientes ORDER BY nome')).rows;
+        clientes = (await pg.query('SELECT * FROM clientes ORDER BY tipo, nome')).rows;
         projetos = (await pg.query('SELECT p.*, c.nome_curto as cliente_nome FROM projetos p LEFT JOIN clientes c ON p.cliente_id=c.id ORDER BY p.codigo')).rows;
         tipos    = (await pg.query('SELECT * FROM tipos_lancamento ORDER BY natureza, nome')).rows;
         bancos   = (await pg.query('SELECT * FROM bancos ORDER BY nome')).rows;
       }
     } catch(e) { console.error('[cadastros-mestres]', e.message); }
+    // Carregar grupos separadamente para não quebrar se tabela não existir
+    try {
+      const pg2 = storage.getPool ? storage.getPool() : null;
+      if (pg2) grupos = (await pg2.query('SELECT * FROM grupos_despesa ORDER BY natureza, nome')).rows;
+    } catch(eg) { grupos = []; }
 
     const tipoColors = { ESTRUTURA:'#5B2EFF', FINANCEIRO:'#00B8D9', OPERACIONAL:'#5ED38C', TRANSFERENCIA:'#f59e0b' };
     const natColors  = { RECEITA:'#5ED38C', DESPESA:'#ef4444', IMPOSTO:'#f59e0b', FINANCEIRO:'#00B8D9', TRANSFERENCIA:'#808080' };
@@ -5259,15 +5268,26 @@ function renderHistoricoRel() {
         <td><button class='btn btn-sm btn-outline' onclick="editCC('${c.id}','${c.codigo}','${c.nome.replace(/'/g,"\\'")  }','${c.tipo}',${c.ativo})">Editar</button></td>
       </tr>`).join('');
 
-    const renderClientes = clientes.map(c => `
+    const tipoCliColors = { CLIENTE:'#5B2EFF', FORNECEDOR:'#ef4444', PRESTADOR:'#f59e0b', OUTRO:'#808080' };
+    const renderClientes = clientes.map(c => {
+      const docDisplay = c.tipo === 'PRESTADOR' || c.tipo === 'OUTRO' ? (c.cpf||c.cnpj||'<span style="color:#ef4444">Sem CPF/CNPJ</span>') : (c.cnpj||c.cpf||'<span style="color:#ef4444">Sem CNPJ</span>');
+      const enc = (s) => (s||'').replace(/'/g,"\\'");
+      return `
       <tr>
+        <td><span class='badge' style='background:${tipoCliColors[c.tipo||'CLIENTE']||'#808080'}22;color:${tipoCliColors[c.tipo||'CLIENTE']||'#808080'}'>${c.tipo||'CLIENTE'}</span></td>
         <td><strong>${c.codigo||'-'}</strong></td>
         <td>${c.nome}</td>
         <td>${c.nome_curto||'-'}</td>
-        <td>${c.cnpj||'-'}</td>
+        <td style='font-family:monospace;font-size:.82rem'>${docDisplay}</td>
+        <td>${c.email||'-'}</td>
+        <td>${c.telefone||'-'}</td>
         <td><span class='status-dot ${c.ativo?'ativo':'inativo'}'></span>${c.ativo?'Ativo':'Inativo'}</td>
-        <td><button class='btn btn-sm btn-outline' onclick="editCliente('${c.id}','${c.codigo||''}','${c.nome.replace(/'/g,"\\'")  }','${(c.nome_curto||'').replace(/'/g,"\\'")  }','${c.cnpj||''}',${c.ativo})">Editar</button></td>
-      </tr>`).join('');
+        <td style='display:flex;gap:.4rem'>
+          <button class='btn btn-sm btn-outline' onclick="editCliente('${c.id}','${enc(c.codigo)}','${enc(c.nome)}','${enc(c.nome_curto)}','${enc(c.cnpj)}','${enc(c.cpf)}','${c.tipo||'CLIENTE'}','${enc(c.email)}','${enc(c.telefone)}','${enc(c.observacoes)}',${c.ativo})">&#9998; Editar</button>
+          ${c.ativo ? `<button class='btn btn-sm' style='background:#fee2e2;color:#991b1b;border:1px solid #fca5a5' onclick="toggleCliente('${c.id}',false,'${enc(c.nome)}')">Inativar</button>` : `<button class='btn btn-sm' style='background:#dcfce7;color:#166534;border:1px solid #86efac' onclick="toggleCliente('${c.id}',true,'${enc(c.nome)}')">Reativar</button>`}
+        </td>
+      </tr>`;
+    }).join('');
 
     const renderProjetos = projetos.map(p => `
       <tr>
@@ -5282,13 +5302,34 @@ function renderHistoricoRel() {
         </td>
       </tr>`).join('');
 
-    const renderTipos = tipos.map(t => `
+    const renderTipos = tipos.map(t => {
+      const enc = (s) => (s||'').replace(/'/g,"\\'");
+      return `
       <tr>
         <td><span class='badge' style='background:${natColors[t.natureza]||'#808080'}22;color:${natColors[t.natureza]||'#808080'}'>${t.natureza}</span></td>
         <td><strong>${t.codigo}</strong></td>
         <td>${t.nome}</td>
         <td><span class='status-dot ${t.ativo?'ativo':'inativo'}'></span>${t.ativo?'Ativo':'Inativo'}</td>
-      </tr>`).join('');
+        <td><button class='btn btn-sm btn-outline' onclick="editTipo('${t.id}','${enc(t.codigo)}','${enc(t.nome)}','${t.natureza}',${t.ativo})">&#9998; Editar</button></td>
+      </tr>`;
+    }).join('');
+
+    const grupoNatColors = { DESPESA:'#ef4444', RECEITA:'#5ED38C', IMPOSTO:'#f59e0b', FINANCEIRO:'#00B8D9', TRANSFERENCIA:'#808080' };
+    const renderGrupos = grupos.map(g => {
+      const enc = (s) => (s||'').replace(/'/g,"\\'");
+      return `
+      <tr>
+        <td><span class='badge' style='background:${grupoNatColors[g.natureza]||'#808080'}22;color:${grupoNatColors[g.natureza]||'#808080'}'>${g.natureza}</span></td>
+        <td><strong>${g.codigo}</strong></td>
+        <td>${g.nome}</td>
+        <td style='font-size:.82rem;color:#64748b'>${g.descricao||'-'}</td>
+        <td><span class='status-dot ${g.ativo?'ativo':'inativo'}'></span>${g.ativo?'Ativo':'Inativo'}</td>
+        <td style='display:flex;gap:.4rem'>
+          <button class='btn btn-sm btn-outline' onclick="editGrupo('${g.id}','${enc(g.codigo)}','${enc(g.nome)}','${g.natureza}','${enc(g.descricao)}',${g.ativo})">&#9998; Editar</button>
+          ${g.ativo ? `<button class='btn btn-sm' style='background:#fee2e2;color:#991b1b;border:1px solid #fca5a5' onclick="toggleGrupo('${g.id}',false,'${enc(g.nome)}')">Inativar</button>` : `<button class='btn btn-sm' style='background:#dcfce7;color:#166534;border:1px solid #86efac' onclick="toggleGrupo('${g.id}',true,'${enc(g.nome)}')">Reativar</button>`}
+        </td>
+      </tr>`;
+    }).join('');
 
     const renderBancos = bancos.map(b => `
       <tr>
@@ -5300,34 +5341,188 @@ function renderHistoricoRel() {
         <td><button class='btn btn-sm btn-outline' onclick="editBanco('${b.id}','${b.codigo}','${b.nome.replace(/'/g,"\\'")  }','${b.agencia||''}','${b.conta||''}',${b.ativo})">Editar</button></td>
       </tr>`).join('');
 
-    const clienteOpts = clientes.map(c => `<option value='${c.id}'>${c.nome}</option>`).join('');
+    const clienteOpts = clientes.filter(c=>c.ativo).map(c => `<option value='${c.id}'>${c.nome}${c.nome_curto?' ('+c.nome_curto+')':''}</option>`).join('');
 
     const body = `
-<h2 class='page-title'>⚙ Cadastros Mestres</h2>
-<div class='alert alert-info'>Gerencie aqui os dados de referência do sistema. Alterações aqui afetam automaticamente a classificação de novos lançamentos.</div>
+<h2 class='page-title'>&#9881; Cadastros Mestres</h2>
+<div class='alert alert-info'>Gerencie aqui os dados de refer&#234;ncia do sistema. Altera&#231;&#245;es aqui afetam automaticamente a classifica&#231;&#227;o de novos lan&#231;amentos. <strong>CPF/CNPJ &#233; obrigat&#243;rio</strong> para todos os clientes, fornecedores e prestadores.</div>
 
 <div class='master-tabs'>
-  <button class='master-tab active' onclick="switchTab('cc')">Centros de Custo (${ccs.length})</button>
-  <button class='master-tab' onclick="switchTab('clientes')">Clientes (${clientes.length})</button>
+  <button class='master-tab active' onclick="switchTab('clientes')">Clientes / Fornecedores / Prestadores (${clientes.length})</button>
+  <button class='master-tab' onclick="switchTab('grupos')">Grupos de Despesa (${grupos.length})</button>
+  <button class='master-tab' onclick="switchTab('tipos')">Naturezas Gerenciais (${tipos.length})</button>
   <button class='master-tab' onclick="switchTab('projetos')">Projetos (${projetos.length})</button>
-  <button class='master-tab' onclick="switchTab('tipos')">Tipos de Lançamento (${tipos.length})</button>
+  <button class='master-tab' onclick="switchTab('cc')">Centros de Custo (${ccs.length})</button>
   <button class='master-tab' onclick="switchTab('bancos')">Bancos (${bancos.length})</button>
 </div>
 
+<!-- CLIENTES / FORNECEDORES / PRESTADORES -->
+<div id='panel-clientes' class='master-panel active'>
+  <div class='master-form' id='form-cli'>
+    <h3 id='form-cli-title'>&#10133; Novo Cadastro</h3>
+    <input type='hidden' id='cli-id'>
+    <div class='form-grid'>
+      <label>Tipo de Cadastro <span style='color:#ef4444'>*</span>
+        <select id='cli-tipo' onchange='atualizarLabelDoc()'>
+          <option value='CLIENTE'>Cliente (empresa contratante)</option>
+          <option value='FORNECEDOR'>Fornecedor (empresa fornecedora)</option>
+          <option value='PRESTADOR'>Prestador de Servi&#231;o (pessoa f&#237;sica PJ)</option>
+          <option value='OUTRO'>Outro</option>
+        </select>
+      </label>
+      <label>C&#243;digo interno <input id='cli-codigo' placeholder='Ex: SEBRAE_TO'></label>
+      <label>Nome completo <span style='color:#ef4444'>*</span> <input id='cli-nome' placeholder='Raz&#227;o social ou nome completo'></label>
+      <label>Nome curto / Apelido <input id='cli-curto' placeholder='Ex: SEBRAE-TO'></label>
+      <label id='label-cnpj'>CNPJ <span style='color:#ef4444'>*</span> <input id='cli-cnpj' placeholder='00.000.000/0001-00' maxlength='18'></label>
+      <label id='label-cpf' style='display:none'>CPF <span style='color:#ef4444'>*</span> <input id='cli-cpf' placeholder='000.000.000-00' maxlength='14'></label>
+      <label>E-mail <input id='cli-email' type='email' placeholder='contato@empresa.com.br'></label>
+      <label>Telefone <input id='cli-telefone' placeholder='(11) 99999-9999'></label>
+      <label>Contato / Respons&#225;vel <input id='cli-contato' placeholder='Nome do contato principal'></label>
+      <label>Status <select id='cli-ativo'><option value='true'>Ativo</option><option value='false'>Inativo</option></select></label>
+    </div>
+    <label style='margin-top:.5rem'>Observa&#231;&#245;es <textarea id='cli-obs' rows='2' placeholder='Informa&#231;&#245;es adicionais...' style='width:100%;padding:.5rem;border:1px solid #e2e8f0;border-radius:.5rem;font-size:.9rem'></textarea></label>
+    <div style='display:flex;gap:.75rem;flex-wrap:wrap;margin-top:.75rem'>
+      <button onclick='saveCliente()'>&#128190; Salvar</button>
+      <button class='btn-outline' onclick='clearFormCli()'>Cancelar</button>
+    </div>
+  </div>
+  <section>
+    <div style='display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:.5rem;margin-bottom:.75rem'>
+      <h2 style='margin:0'>Cadastros de Pessoas e Empresas</h2>
+      <div style='display:flex;gap:.5rem;flex-wrap:wrap'>
+        <input id='cli-busca' placeholder='&#128269; Buscar por nome ou CPF/CNPJ...' style='padding:.4rem .75rem;border:1px solid #e2e8f0;border-radius:.5rem;font-size:.85rem;width:260px' oninput='filtrarClientes()'>
+        <select id='cli-filtro-tipo' onchange='filtrarClientes()' style='padding:.4rem .75rem;border:1px solid #e2e8f0;border-radius:.5rem;font-size:.85rem'>
+          <option value=''>Todos os tipos</option>
+          <option value='CLIENTE'>Clientes</option>
+          <option value='FORNECEDOR'>Fornecedores</option>
+          <option value='PRESTADOR'>Prestadores</option>
+        </select>
+      </div>
+    </div>
+    <div style='overflow-x:auto'>
+    <table><thead><tr><th>Tipo</th><th>C&#243;digo</th><th>Nome</th><th>Nome Curto</th><th>CPF / CNPJ</th><th>E-mail</th><th>Telefone</th><th>Status</th><th></th></tr></thead>
+    <tbody id='tbody-clientes'>${renderClientes}</tbody></table></div>
+  </section>
+</div>
+
+<!-- GRUPOS DE DESPESA -->
+<div id='panel-grupos' class='master-panel'>
+  <div class='master-form' id='form-grupo'>
+    <h3 id='form-grupo-title'>&#10133; Novo Grupo de Despesa</h3>
+    <input type='hidden' id='grupo-id'>
+    <div class='form-grid'>
+      <label>C&#243;digo <span style='color:#ef4444'>*</span> <input id='grupo-codigo' placeholder='Ex: PESSOAL' style='text-transform:uppercase'></label>
+      <label>Nome do Grupo <span style='color:#ef4444'>*</span> <input id='grupo-nome' placeholder='Ex: Pessoal e Benef&#237;cios'></label>
+      <label>Natureza Financeira <span style='color:#ef4444'>*</span>
+        <select id='grupo-natureza'>
+          <option value='DESPESA'>Despesa</option>
+          <option value='RECEITA'>Receita</option>
+          <option value='IMPOSTO'>Imposto / Tributo</option>
+          <option value='FINANCEIRO'>Financeiro (empr&#233;stimos, tarifas)</option>
+          <option value='TRANSFERENCIA'>Transfer&#234;ncia interna</option>
+        </select>
+      </label>
+      <label>Status <select id='grupo-ativo'><option value='true'>Ativo</option><option value='false'>Inativo</option></select></label>
+    </div>
+    <label style='margin-top:.5rem'>Descri&#231;&#227;o / O que inclui <textarea id='grupo-desc' rows='2' placeholder='Descreva quais tipos de gasto pertencem a este grupo...' style='width:100%;padding:.5rem;border:1px solid #e2e8f0;border-radius:.5rem;font-size:.9rem'></textarea></label>
+    <div style='display:flex;gap:.75rem;flex-wrap:wrap;margin-top:.75rem'>
+      <button onclick='saveGrupo()'>&#128190; Salvar</button>
+      <button class='btn-outline' onclick='clearFormGrupo()'>Cancelar</button>
+    </div>
+  </div>
+  <section>
+    <h2>Grupos de Despesa cadastrados</h2>
+    <p style='color:#64748b;font-size:.88rem'>Os grupos organizam as despesas em categorias gerenciais. Cada lan&#231;amento deve ter um grupo associado para an&#225;lise por categoria.</p>
+    <div style='overflow-x:auto'>
+    <table><thead><tr><th>Natureza</th><th>C&#243;digo</th><th>Nome</th><th>Descri&#231;&#227;o</th><th>Status</th><th></th></tr></thead>
+    <tbody id='tbody-grupos'>${renderGrupos}</tbody></table></div>
+  </section>
+</div>
+
+<!-- NATUREZAS GERENCIAIS -->
+<div id='panel-tipos' class='master-panel'>
+  <div class='master-form' id='form-tipo'>
+    <h3 id='form-tipo-title'>&#10133; Nova Natureza Gerencial</h3>
+    <input type='hidden' id='tipo-id'>
+    <div class='form-grid'>
+      <label>C&#243;digo <span style='color:#ef4444'>*</span> <input id='tipo-codigo' placeholder='Ex: CUSTO_DIRETO'></label>
+      <label>Nome <span style='color:#ef4444'>*</span> <input id='tipo-nome' placeholder='Ex: Custo Direto do Projeto'></label>
+      <label>Natureza Financeira <span style='color:#ef4444'>*</span>
+        <select id='tipo-natureza'>
+          <option value='RECEITA'>Receita</option>
+          <option value='DESPESA'>Despesa</option>
+          <option value='IMPOSTO'>Imposto</option>
+          <option value='FINANCEIRO'>Financeiro</option>
+          <option value='TRANSFERENCIA'>Transfer&#234;ncia</option>
+        </select>
+      </label>
+      <label>Status <select id='tipo-ativo'><option value='true'>Ativo</option><option value='false'>Inativo</option></select></label>
+    </div>
+    <div style='display:flex;gap:.75rem;flex-wrap:wrap;margin-top:.75rem'>
+      <button onclick='saveTipo()'>&#128190; Salvar</button>
+      <button class='btn-outline' onclick='clearFormTipo()'>Cancelar</button>
+    </div>
+  </div>
+  <section>
+    <h2>Naturezas Gerenciais</h2>
+    <p style='color:#64748b;font-size:.88rem'>As naturezas gerenciais classificam cada lan&#231;amento para an&#225;lise de DRE e fluxo de caixa.</p>
+    <div style='overflow-x:auto'>
+    <table><thead><tr><th>Natureza</th><th>C&#243;digo</th><th>Nome</th><th>Status</th><th></th></tr></thead>
+    <tbody id='tbody-tipos'>${renderTipos}</tbody></table></div>
+  </section>
+</div>
+
+<!-- PROJETOS -->
+<div id='panel-projetos' class='master-panel'>
+  <div class='master-form' id='form-proj'>
+    <h3 id='form-proj-title'>&#10133; Novo Projeto</h3>
+    <input type='hidden' id='proj-id'>
+    <div class='form-grid'>
+      <label>C&#243;digo <span style='color:#ef4444'>*</span> <input id='proj-codigo' placeholder='Ex: 4.16'></label>
+      <label>Nome <span style='color:#ef4444'>*</span> <input id='proj-nome' placeholder='Ex: Coaching Executivo'></label>
+      <label>Tipo de Projeto
+        <select id='proj-tipo'>
+          <option value=''>-- Selecione --</option>
+          <option value='CONSULTORIA'>Consultoria</option>
+          <option value='CAPACITACAO'>Capacita&#231;&#227;o / Treinamento</option>
+          <option value='ASSESSORIA'>Assessoria</option>
+          <option value='PESQUISA'>Pesquisa / Diagn&#243;stico</option>
+          <option value='LICITACAO'>Licita&#231;&#227;o / Contrato P&#250;blico</option>
+          <option value='INTERNO'>Projeto Interno</option>
+        </select>
+      </label>
+      <label>Cliente vinculado
+        <select id='proj-cliente'><option value=''>-- Nenhum --</option>${clienteOpts}</select>
+      </label>
+      <label>Status <select id='proj-ativo'><option value='true'>Ativo</option><option value='false'>Inativo</option></select></label>
+    </div>
+    <div style='display:flex;gap:.75rem;flex-wrap:wrap;margin-top:.75rem'>
+      <button onclick='saveProjeto()'>&#128190; Salvar</button>
+      <button class='btn-outline' onclick='clearFormProj()'>Cancelar</button>
+    </div>
+  </div>
+  <section>
+    <h2>Projetos cadastrados</h2>
+    <div style='overflow-x:auto'>
+    <table><thead><tr><th>C&#243;digo</th><th>Nome</th><th>Tipo</th><th>Cliente</th><th>Status</th><th></th></tr></thead>
+    <tbody id='tbody-projetos'>${renderProjetos}</tbody></table></div>
+  </section>
+</div>
+
 <!-- CENTROS DE CUSTO -->
-<div id='panel-cc' class='master-panel active'>
+<div id='panel-cc' class='master-panel'>
   <div class='master-form' id='form-cc'>
-    <h3 id='form-cc-title'>➕ Novo Centro de Custo</h3>
+    <h3 id='form-cc-title'>&#10133; Novo Centro de Custo</h3>
     <input type='hidden' id='cc-id'>
     <div class='form-grid'>
-      <label>Código <input id='cc-codigo' placeholder='Ex: MARKETING'></label>
-      <label>Nome <input id='cc-nome' placeholder='Ex: Marketing e Comunicação'></label>
+      <label>C&#243;digo <span style='color:#ef4444'>*</span> <input id='cc-codigo' placeholder='Ex: MARKETING'></label>
+      <label>Nome <span style='color:#ef4444'>*</span> <input id='cc-nome' placeholder='Ex: Marketing e Comunica&#231;&#227;o'></label>
       <label>Tipo
         <select id='cc-tipo'>
           <option value='ESTRUTURA'>Estrutura (Custo Indireto)</option>
           <option value='OPERACIONAL'>Operacional (Custo Direto / Receita)</option>
-          <option value='FINANCEIRO'>Financeiro (empréstimos, tarifas)</option>
-          <option value='TRANSFERENCIA'>Transferência entre contas</option>
+          <option value='FINANCEIRO'>Financeiro (empr&#233;stimos, tarifas)</option>
+          <option value='TRANSFERENCIA'>Transfer&#234;ncia entre contas</option>
         </select>
       </label>
       <label>Status
@@ -5335,112 +5530,47 @@ function renderHistoricoRel() {
       </label>
     </div>
     <div style='display:flex;gap:.75rem;flex-wrap:wrap'>
-      <button onclick='saveCC()'>💾 Salvar</button>
+      <button onclick='saveCC()'>&#128190; Salvar</button>
       <button class='btn-outline' onclick='clearFormCC()'>Cancelar</button>
     </div>
   </div>
   <section>
     <h2>Centros de Custo cadastrados</h2>
     <div style='overflow-x:auto'>
-    <table><thead><tr><th>Tipo</th><th>Código</th><th>Nome</th><th>Status</th><th></th></tr></thead>
+    <table><thead><tr><th>Tipo</th><th>C&#243;digo</th><th>Nome</th><th>Status</th><th></th></tr></thead>
     <tbody id='tbody-cc'>${renderCC}</tbody></table></div>
-  </section>
-</div>
-
-<!-- CLIENTES -->
-<div id='panel-clientes' class='master-panel'>
-  <div class='master-form'>
-    <h3 id='form-cli-title'>➕ Novo Cliente</h3>
-    <input type='hidden' id='cli-id'>
-    <div class='form-grid'>
-      <label>Código <input id='cli-codigo' placeholder='Ex: SEBRAE_TO'></label>
-      <label>Nome completo <input id='cli-nome' placeholder='Ex: SEBRAE Tocantins'></label>
-      <label>Nome curto <input id='cli-curto' placeholder='Ex: SEBRAE-TO'></label>
-      <label>CNPJ <input id='cli-cnpj' placeholder='00.000.000/0001-00'></label>
-      <label>Status <select id='cli-ativo'><option value='true'>Ativo</option><option value='false'>Inativo</option></select></label>
-    </div>
-    <div style='display:flex;gap:.75rem;flex-wrap:wrap'>
-      <button onclick='saveCliente()'>💾 Salvar</button>
-      <button class='btn-outline' onclick='clearFormCli()'>Cancelar</button>
-    </div>
-  </div>
-  <section>
-    <h2>Clientes cadastrados</h2>
-    <div style='overflow-x:auto'>
-    <table><thead><tr><th>Código</th><th>Nome</th><th>Nome Curto</th><th>CNPJ</th><th>Status</th><th></th></tr></thead>
-    <tbody id='tbody-clientes'>${renderClientes}</tbody></table></div>
-  </section>
-</div>
-
-<!-- PROJETOS -->
-<div id='panel-projetos' class='master-panel'>
-  <div class='master-form'>
-    <h3 id='form-proj-title'>➕ Novo Projeto</h3>
-    <input type='hidden' id='proj-id'>
-    <div class='form-grid'>
-      <label>Código <input id='proj-codigo' placeholder='Ex: 4.16'></label>
-      <label>Nome <input id='proj-nome' placeholder='Ex: Coaching Executivo'></label>
-      <label>Tipo <input id='proj-tipo' placeholder='Ex: CONSULTORIA'></label>
-      <label>Cliente vinculado
-        <select id='proj-cliente'><option value=''>-- Nenhum --</option>${clienteOpts}</select>
-      </label>
-      <label>Status <select id='proj-ativo'><option value='true'>Ativo</option><option value='false'>Inativo</option></select></label>
-    </div>
-    <div style='display:flex;gap:.75rem;flex-wrap:wrap'>
-      <button onclick='saveProjeto()'>💾 Salvar</button>
-      <button class='btn-outline' onclick='clearFormProj()'>Cancelar</button>
-    </div>
-  </div>
-  <section>
-    <h2>Projetos cadastrados</h2>
-    <div style='overflow-x:auto'>
-    <table><thead><tr><th>Código</th><th>Nome</th><th>Tipo</th><th>Cliente</th><th>Status</th><th></th></tr></thead>
-    <tbody id='tbody-projetos'>${renderProjetos}</tbody></table></div>
-  </section>
-</div>
-
-<!-- TIPOS DE LANÇAMENTO -->
-<div id='panel-tipos' class='master-panel'>
-  <section>
-    <h2>Tipos de Lançamento</h2>
-    <div class='alert alert-info'>Os tipos de lançamento definem a natureza de cada movimentação financeira. Edição disponível em breve.</div>
-    <div style='overflow-x:auto'>
-    <table><thead><tr><th>Natureza</th><th>Código</th><th>Nome</th><th>Status</th></tr></thead>
-    <tbody>${renderTipos}</tbody></table></div>
   </section>
 </div>
 
 <!-- BANCOS -->
 <div id='panel-bancos' class='master-panel'>
-  <div class='master-form'>
-    <h3 id='form-banco-title'>➕ Novo Banco</h3>
+  <div class='master-form' id='form-banco'>
+    <h3 id='form-banco-title'>&#10133; Novo Banco / Conta</h3>
     <input type='hidden' id='banco-id'>
     <div class='form-grid'>
-      <label>Código <input id='banco-codigo' placeholder='Ex: NUBANK'></label>
-      <label>Nome <input id='banco-nome' placeholder='Ex: Nubank PJ'></label>
-      <label>Agência <input id='banco-agencia' placeholder='Ex: 0001'></label>
+      <label>C&#243;digo <span style='color:#ef4444'>*</span> <input id='banco-codigo' placeholder='Ex: NUBANK'></label>
+      <label>Nome <span style='color:#ef4444'>*</span> <input id='banco-nome' placeholder='Ex: Nubank PJ'></label>
+      <label>Ag&#234;ncia <input id='banco-agencia' placeholder='Ex: 0001'></label>
       <label>Conta <input id='banco-conta' placeholder='Ex: 12345-6'></label>
       <label>Status <select id='banco-ativo'><option value='true'>Ativo</option><option value='false'>Inativo</option></select></label>
     </div>
     <div style='display:flex;gap:.75rem;flex-wrap:wrap'>
-      <button onclick='saveBanco()'>💾 Salvar</button>
+      <button onclick='saveBanco()'>&#128190; Salvar</button>
       <button class='btn-outline' onclick='clearFormBanco()'>Cancelar</button>
     </div>
   </div>
   <section>
-    <h2>Bancos cadastrados</h2>
+    <h2>Bancos e Contas cadastrados</h2>
     <div style='overflow-x:auto'>
-    <table><thead><tr><th>Código</th><th>Nome</th><th>Agência</th><th>Conta</th><th>Status</th><th></th></tr></thead>
+    <table><thead><tr><th>C&#243;digo</th><th>Nome</th><th>Ag&#234;ncia</th><th>Conta</th><th>Status</th><th></th></tr></thead>
     <tbody id='tbody-bancos'>${renderBancos}</tbody></table></div>
   </section>
 </div>
 
 <script>
+const TABS_ORDER = ['clientes','grupos','tipos','projetos','cc','bancos'];
 function switchTab(tab) {
-  document.querySelectorAll('.master-tab').forEach((b,i) => {
-    const tabs = ['cc','clientes','projetos','tipos','bancos'];
-    b.classList.toggle('active', tabs[i] === tab);
-  });
+  document.querySelectorAll('.master-tab').forEach((b,i) => b.classList.toggle('active', TABS_ORDER[i] === tab));
   document.querySelectorAll('.master-panel').forEach(p => p.classList.remove('active'));
   document.getElementById('panel-' + tab).classList.add('active');
 }
@@ -5450,63 +5580,150 @@ async function apiCall(method, url, body) {
   if (!d.ok) throw new Error(d.error || 'Erro');
   return d;
 }
-function clearFormCC() {
-  document.getElementById('cc-id').value='';
-  document.getElementById('cc-codigo').value='';
-  document.getElementById('cc-nome').value='';
-  document.getElementById('cc-tipo').value='ESTRUTURA';
-  document.getElementById('cc-ativo').value='true';
-  document.getElementById('form-cc-title').textContent='➕ Novo Centro de Custo';
-}
-function editCC(id,codigo,nome,tipo,ativo) {
-  switchTab('cc');
-  document.getElementById('cc-id').value=id;
-  document.getElementById('cc-codigo').value=codigo;
-  document.getElementById('cc-nome').value=nome;
-  document.getElementById('cc-tipo').value=tipo;
-  document.getElementById('cc-ativo').value=String(ativo);
-  document.getElementById('form-cc-title').textContent='✏ Editar Centro de Custo: '+nome;
-  setTimeout(()=>document.getElementById('form-cc').scrollIntoView({behavior:'smooth'}),100);
-}
-async function saveCC() {
-  const id=document.getElementById('cc-id').value;
-  const payload={codigo:document.getElementById('cc-codigo').value.trim().toUpperCase(),nome:document.getElementById('cc-nome').value.trim(),tipo:document.getElementById('cc-tipo').value,ativo:document.getElementById('cc-ativo').value==='true'};
-  if(!payload.codigo||!payload.nome){alert('Preencha código e nome');return;}
-  try{
-    await apiCall(id?'PUT':'POST','/api/mestres/centros-custo'+(id?'/'+id:''),payload);
-    location.reload();
-  }catch(e){alert(e.message);}
+// ─── CLIENTES / FORNECEDORES / PRESTADORES ───
+function atualizarLabelDoc() {
+  const tipo = document.getElementById('cli-tipo').value;
+  const isPF = tipo === 'PRESTADOR' || tipo === 'OUTRO';
+  document.getElementById('label-cnpj').style.display = isPF ? 'none' : '';
+  document.getElementById('label-cpf').style.display = isPF ? '' : 'none';
 }
 function clearFormCli() {
-  ['cli-id','cli-codigo','cli-nome','cli-curto','cli-cnpj'].forEach(id=>document.getElementById(id).value='');
+  ['cli-id','cli-codigo','cli-nome','cli-curto','cli-cnpj','cli-cpf','cli-email','cli-telefone','cli-contato','cli-obs'].forEach(id => { const el = document.getElementById(id); if(el) el.value=''; });
+  document.getElementById('cli-tipo').value='CLIENTE';
   document.getElementById('cli-ativo').value='true';
-  document.getElementById('form-cli-title').textContent='➕ Novo Cliente';
+  document.getElementById('form-cli-title').textContent='\u2795 Novo Cadastro';
+  atualizarLabelDoc();
 }
-function editCliente(id,codigo,nome,curto,cnpj,ativo) {
+function editCliente(id,codigo,nome,curto,cnpj,cpf,tipo,email,telefone,obs,ativo) {
   document.getElementById('cli-id').value=id;
   document.getElementById('cli-codigo').value=codigo;
   document.getElementById('cli-nome').value=nome;
   document.getElementById('cli-curto').value=curto;
   document.getElementById('cli-cnpj').value=cnpj;
+  document.getElementById('cli-cpf').value=cpf;
+  document.getElementById('cli-tipo').value=tipo||'CLIENTE';
+  document.getElementById('cli-email').value=email;
+  document.getElementById('cli-telefone').value=telefone;
+  document.getElementById('cli-obs').value=obs;
   document.getElementById('cli-ativo').value=String(ativo);
-  document.getElementById('form-cli-title').textContent='✏ Editar Cliente: '+nome;
+  document.getElementById('form-cli-title').textContent='\u270F Editar: '+nome;
+  atualizarLabelDoc();
   switchTab('clientes');
-  setTimeout(()=>document.querySelector('#panel-clientes .master-form').scrollIntoView({behavior:'smooth'}),100);
+  setTimeout(()=>document.getElementById('form-cli').scrollIntoView({behavior:'smooth'}),100);
 }
 async function saveCliente() {
   const id=document.getElementById('cli-id').value;
-  const payload={codigo:document.getElementById('cli-codigo').value.trim().toUpperCase(),nome:document.getElementById('cli-nome').value.trim(),nome_curto:document.getElementById('cli-curto').value.trim(),cnpj:document.getElementById('cli-cnpj').value.trim(),ativo:document.getElementById('cli-ativo').value==='true'};
-  if(!payload.nome){alert('Preencha o nome');return;}
+  const tipo=document.getElementById('cli-tipo').value;
+  const isPF = tipo === 'PRESTADOR' || tipo === 'OUTRO';
+  const cnpj=document.getElementById('cli-cnpj').value.trim();
+  const cpf=document.getElementById('cli-cpf').value.trim();
+  const doc = isPF ? cpf : cnpj;
+  if(!document.getElementById('cli-nome').value.trim()){alert('Preencha o nome completo');return;}
+  if(!doc){alert((isPF?'CPF':'CNPJ')+' \u00e9 obrigat\u00f3rio para este tipo de cadastro.');return;}
+  const payload={
+    codigo:document.getElementById('cli-codigo').value.trim().toUpperCase()||null,
+    nome:document.getElementById('cli-nome').value.trim(),
+    nome_curto:document.getElementById('cli-curto').value.trim()||null,
+    cnpj: isPF ? null : cnpj,
+    cpf: isPF ? cpf : null,
+    tipo,
+    email:document.getElementById('cli-email').value.trim()||null,
+    telefone:document.getElementById('cli-telefone').value.trim()||null,
+    contato:document.getElementById('cli-contato').value.trim()||null,
+    observacoes:document.getElementById('cli-obs').value.trim()||null,
+    ativo:document.getElementById('cli-ativo').value==='true'
+  };
   try{
     await apiCall(id?'PUT':'POST','/api/mestres/clientes'+(id?'/'+id:''),payload);
     location.reload();
   }catch(e){alert(e.message);}
 }
+async function toggleCliente(id, ativo, nome) {
+  if(!confirm((ativo?'Reativar':'Inativar')+' o cadastro "'+nome+'"?')) return;
+  try{
+    await apiCall('PATCH','/api/mestres/clientes/'+id+'/toggle',{ativo});
+    location.reload();
+  }catch(e){alert(e.message);}
+}
+function filtrarClientes() {
+  const busca = document.getElementById('cli-busca').value.toLowerCase();
+  const tipo = document.getElementById('cli-filtro-tipo').value;
+  document.querySelectorAll('#tbody-clientes tr').forEach(tr => {
+    const txt = tr.textContent.toLowerCase();
+    const tipoCell = tr.querySelector('td:first-child');
+    const tipoVal = tipoCell ? tipoCell.textContent.trim() : '';
+    const matchBusca = !busca || txt.includes(busca);
+    const matchTipo = !tipo || tipoVal === tipo;
+    tr.style.display = (matchBusca && matchTipo) ? '' : 'none';
+  });
+}
+// ─── GRUPOS DE DESPESA ───
+function clearFormGrupo() {
+  ['grupo-id','grupo-codigo','grupo-nome','grupo-desc'].forEach(id=>document.getElementById(id).value='');
+  document.getElementById('grupo-natureza').value='DESPESA';
+  document.getElementById('grupo-ativo').value='true';
+  document.getElementById('form-grupo-title').textContent='\u2795 Novo Grupo de Despesa';
+}
+function editGrupo(id,codigo,nome,natureza,desc,ativo) {
+  document.getElementById('grupo-id').value=id;
+  document.getElementById('grupo-codigo').value=codigo;
+  document.getElementById('grupo-nome').value=nome;
+  document.getElementById('grupo-natureza').value=natureza;
+  document.getElementById('grupo-desc').value=desc;
+  document.getElementById('grupo-ativo').value=String(ativo);
+  document.getElementById('form-grupo-title').textContent='\u270F Editar Grupo: '+nome;
+  switchTab('grupos');
+  setTimeout(()=>document.getElementById('form-grupo').scrollIntoView({behavior:'smooth'}),100);
+}
+async function saveGrupo() {
+  const id=document.getElementById('grupo-id').value;
+  const payload={codigo:document.getElementById('grupo-codigo').value.trim().toUpperCase(),nome:document.getElementById('grupo-nome').value.trim(),natureza:document.getElementById('grupo-natureza').value,descricao:document.getElementById('grupo-desc').value.trim()||null,ativo:document.getElementById('grupo-ativo').value==='true'};
+  if(!payload.codigo||!payload.nome){alert('Preencha c\u00f3digo e nome');return;}
+  try{
+    await apiCall(id?'PUT':'POST','/api/mestres/grupos-despesa'+(id?'/'+id:''),payload);
+    location.reload();
+  }catch(e){alert(e.message);}
+}
+async function toggleGrupo(id, ativo, nome) {
+  if(!confirm((ativo?'Reativar':'Inativar')+' o grupo "'+nome+'"?')) return;
+  try{
+    await apiCall('PATCH','/api/mestres/grupos-despesa/'+id+'/toggle',{ativo});
+    location.reload();
+  }catch(e){alert(e.message);}
+}
+// ─── NATUREZAS GERENCIAIS ───
+function clearFormTipo() {
+  ['tipo-id','tipo-codigo','tipo-nome'].forEach(id=>document.getElementById(id).value='');
+  document.getElementById('tipo-natureza').value='DESPESA';
+  document.getElementById('tipo-ativo').value='true';
+  document.getElementById('form-tipo-title').textContent='\u2795 Nova Natureza Gerencial';
+}
+function editTipo(id,codigo,nome,natureza,ativo) {
+  document.getElementById('tipo-id').value=id;
+  document.getElementById('tipo-codigo').value=codigo;
+  document.getElementById('tipo-nome').value=nome;
+  document.getElementById('tipo-natureza').value=natureza;
+  document.getElementById('tipo-ativo').value=String(ativo);
+  document.getElementById('form-tipo-title').textContent='\u270F Editar Natureza: '+nome;
+  switchTab('tipos');
+  setTimeout(()=>document.getElementById('form-tipo').scrollIntoView({behavior:'smooth'}),100);
+}
+async function saveTipo() {
+  const id=document.getElementById('tipo-id').value;
+  const payload={codigo:document.getElementById('tipo-codigo').value.trim().toUpperCase(),nome:document.getElementById('tipo-nome').value.trim(),natureza:document.getElementById('tipo-natureza').value,ativo:document.getElementById('tipo-ativo').value==='true'};
+  if(!payload.codigo||!payload.nome){alert('Preencha c\u00f3digo e nome');return;}
+  try{
+    await apiCall(id?'PUT':'POST','/api/mestres/tipos-lancamento'+(id?'/'+id:''),payload);
+    location.reload();
+  }catch(e){alert(e.message);}
+}
+// ─── PROJETOS ───
 function clearFormProj() {
-  ['proj-id','proj-codigo','proj-nome','proj-tipo'].forEach(id=>document.getElementById(id).value='');
+  ['proj-id','proj-codigo','proj-nome'].forEach(id=>document.getElementById(id).value='');
+  document.getElementById('proj-tipo').value='';
   document.getElementById('proj-cliente').value='';
   document.getElementById('proj-ativo').value='true';
-  document.getElementById('form-proj-title').textContent='➕ Novo Projeto';
+  document.getElementById('form-proj-title').textContent='\u2795 Novo Projeto';
 }
 function editProjeto(id,codigo,nome,tipo,clienteId,ativo) {
   document.getElementById('proj-id').value=id;
@@ -5515,25 +5732,22 @@ function editProjeto(id,codigo,nome,tipo,clienteId,ativo) {
   document.getElementById('proj-tipo').value=tipo;
   document.getElementById('proj-cliente').value=clienteId;
   document.getElementById('proj-ativo').value=String(ativo);
-  document.getElementById('form-proj-title').textContent='✏ Editar Projeto: '+nome;
+  document.getElementById('form-proj-title').textContent='\u270F Editar Projeto: '+nome;
   switchTab('projetos');
-  setTimeout(()=>document.querySelector('#panel-projetos .master-form').scrollIntoView({behavior:'smooth'}),100);
+  setTimeout(()=>document.getElementById('form-proj').scrollIntoView({behavior:'smooth'}),100);
 }
 async function saveProjeto() {
   const id=document.getElementById('proj-id').value;
-  const payload={codigo:document.getElementById('proj-codigo').value.trim(),nome:document.getElementById('proj-nome').value.trim(),tipo:document.getElementById('proj-tipo').value.trim().toUpperCase()||null,cliente_id:document.getElementById('proj-cliente').value||null,ativo:document.getElementById('proj-ativo').value==='true'};
-  if(!payload.codigo||!payload.nome){alert('Preencha código e nome');return;}
+  const payload={codigo:document.getElementById('proj-codigo').value.trim(),nome:document.getElementById('proj-nome').value.trim(),tipo:document.getElementById('proj-tipo').value||null,cliente_id:document.getElementById('proj-cliente').value||null,ativo:document.getElementById('proj-ativo').value==='true'};
+  if(!payload.codigo||!payload.nome){alert('Preencha c\u00f3digo e nome');return;}
   try{
     await apiCall(id?'PUT':'POST','/api/mestres/projetos'+(id?'/'+id:''),payload);
     location.reload();
   }catch(e){alert(e.message);}
 }
 async function deleteProjeto(id, nome) {
-  if(!confirm('Inativar o projeto "'+nome+'"? Ele não aparecerá mais nas opções de seleção, mas os lançamentos existentes não serão alterados.')) return;
-  try{
-    await apiCall('DELETE','/api/mestres/projetos/'+id);
-    location.reload();
-  }catch(e){alert(e.message);}
+  if(!confirm('Inativar o projeto "'+nome+'"?')) return;
+  try{ await apiCall('DELETE','/api/mestres/projetos/'+id); location.reload(); }catch(e){alert(e.message);}
 }
 async function ativarProjeto(id, nome) {
   if(!confirm('Reativar o projeto "'+nome+'"?')) return;
@@ -5541,15 +5755,44 @@ async function ativarProjeto(id, nome) {
     const r = await fetch('/api/mestres/projetos/'+id);
     const d = await r.json();
     const p = d.data && d.data[0];
-    if(!p) throw new Error('Projeto não encontrado');
+    if(!p) throw new Error('Projeto n\u00e3o encontrado');
     await apiCall('PUT','/api/mestres/projetos/'+id, {...p, ativo: true});
     location.reload();
   }catch(e){alert(e.message);}
 }
+// ─── CENTROS DE CUSTO ───
+function clearFormCC() {
+  document.getElementById('cc-id').value='';
+  document.getElementById('cc-codigo').value='';
+  document.getElementById('cc-nome').value='';
+  document.getElementById('cc-tipo').value='ESTRUTURA';
+  document.getElementById('cc-ativo').value='true';
+  document.getElementById('form-cc-title').textContent='\u2795 Novo Centro de Custo';
+}
+function editCC(id,codigo,nome,tipo,ativo) {
+  switchTab('cc');
+  document.getElementById('cc-id').value=id;
+  document.getElementById('cc-codigo').value=codigo;
+  document.getElementById('cc-nome').value=nome;
+  document.getElementById('cc-tipo').value=tipo;
+  document.getElementById('cc-ativo').value=String(ativo);
+  document.getElementById('form-cc-title').textContent='\u270F Editar Centro de Custo: '+nome;
+  setTimeout(()=>document.getElementById('form-cc').scrollIntoView({behavior:'smooth'}),100);
+}
+async function saveCC() {
+  const id=document.getElementById('cc-id').value;
+  const payload={codigo:document.getElementById('cc-codigo').value.trim().toUpperCase(),nome:document.getElementById('cc-nome').value.trim(),tipo:document.getElementById('cc-tipo').value,ativo:document.getElementById('cc-ativo').value==='true'};
+  if(!payload.codigo||!payload.nome){alert('Preencha c\u00f3digo e nome');return;}
+  try{
+    await apiCall(id?'PUT':'POST','/api/mestres/centros-custo'+(id?'/'+id:''),payload);
+    location.reload();
+  }catch(e){alert(e.message);}
+}
+// ─── BANCOS ───
 function clearFormBanco() {
   ['banco-id','banco-codigo','banco-nome','banco-agencia','banco-conta'].forEach(id=>document.getElementById(id).value='');
   document.getElementById('banco-ativo').value='true';
-  document.getElementById('form-banco-title').textContent='➕ Novo Banco';
+  document.getElementById('form-banco-title').textContent='\u2795 Novo Banco';
 }
 function editBanco(id,codigo,nome,agencia,conta,ativo) {
   document.getElementById('banco-id').value=id;
@@ -5558,14 +5801,14 @@ function editBanco(id,codigo,nome,agencia,conta,ativo) {
   document.getElementById('banco-agencia').value=agencia;
   document.getElementById('banco-conta').value=conta;
   document.getElementById('banco-ativo').value=String(ativo);
-  document.getElementById('form-banco-title').textContent='✏ Editar Banco: '+nome;
+  document.getElementById('form-banco-title').textContent='\u270F Editar Banco: '+nome;
   switchTab('bancos');
-  setTimeout(()=>document.querySelector('#panel-bancos .master-form').scrollIntoView({behavior:'smooth'}),100);
+  setTimeout(()=>document.getElementById('form-banco').scrollIntoView({behavior:'smooth'}),100);
 }
 async function saveBanco() {
   const id=document.getElementById('banco-id').value;
   const payload={codigo:document.getElementById('banco-codigo').value.trim().toUpperCase(),nome:document.getElementById('banco-nome').value.trim(),agencia:document.getElementById('banco-agencia').value.trim()||null,conta:document.getElementById('banco-conta').value.trim()||null,ativo:document.getElementById('banco-ativo').value==='true'};
-  if(!payload.codigo||!payload.nome){alert('Preencha código e nome');return;}
+  if(!payload.codigo||!payload.nome){alert('Preencha c\u00f3digo e nome');return;}
   try{
     await apiCall(id?'PUT':'POST','/api/mestres/bancos'+(id?'/'+id:''),payload);
     location.reload();
@@ -5614,15 +5857,77 @@ async function saveBanco() {
       }
       if (entidade === 'clientes') {
         if (req.method === 'POST') {
-          const r = await pg.query('INSERT INTO clientes (codigo,nome,nome_curto,cnpj,ativo) VALUES ($1,$2,$3,$4,$5) RETURNING id', [body.codigo||null, body.nome, body.nome_curto||null, body.cnpj||null, body.ativo!==false]);
+          const r = await pg.query(
+            'INSERT INTO clientes (codigo,nome,nome_curto,cnpj,cpf,tipo,email,telefone,contato,observacoes,ativo) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id',
+            [body.codigo||null, body.nome, body.nome_curto||null, body.cnpj||null, body.cpf||null, body.tipo||'CLIENTE', body.email||null, body.telefone||null, body.contato||null, body.observacoes||null, body.ativo!==false]
+          );
           return json(res, 200, { ok: true, id: r.rows[0].id });
         }
         if (req.method === 'PUT' && id) {
-          await pg.query('UPDATE clientes SET codigo=$1,nome=$2,nome_curto=$3,cnpj=$4,ativo=$5,atualizado_em=NOW() WHERE id=$6', [body.codigo||null, body.nome, body.nome_curto||null, body.cnpj||null, body.ativo!==false, id]);
+          await pg.query(
+            'UPDATE clientes SET codigo=$1,nome=$2,nome_curto=$3,cnpj=$4,cpf=$5,tipo=$6,email=$7,telefone=$8,contato=$9,observacoes=$10,ativo=$11,atualizado_em=NOW() WHERE id=$12',
+            [body.codigo||null, body.nome, body.nome_curto||null, body.cnpj||null, body.cpf||null, body.tipo||'CLIENTE', body.email||null, body.telefone||null, body.contato||null, body.observacoes||null, body.ativo!==false, id]
+          );
+          return json(res, 200, { ok: true });
+        }
+        if (req.method === 'PATCH' && id && parts[5] === 'toggle') {
+          await pg.query('UPDATE clientes SET ativo=$1,atualizado_em=NOW() WHERE id=$2', [body.ativo!==false, id]);
+          return json(res, 200, { ok: true });
+        }
+        if (req.method === 'DELETE' && id) {
+          await pg.query('UPDATE clientes SET ativo=false,atualizado_em=NOW() WHERE id=$1', [id]);
           return json(res, 200, { ok: true });
         }
         if (req.method === 'GET') {
-          const r = await pg.query('SELECT * FROM clientes ORDER BY nome');
+          const r = await pg.query('SELECT * FROM clientes ORDER BY tipo,nome');
+          return json(res, 200, { ok: true, data: r.rows });
+        }
+      }
+      if (entidade === 'grupos-despesa') {
+        if (req.method === 'POST') {
+          const r = await pg.query(
+            'INSERT INTO grupos_despesa (codigo,nome,natureza,descricao,ativo) VALUES ($1,$2,$3,$4,$5) RETURNING id',
+            [body.codigo, body.nome, body.natureza||'DESPESA', body.descricao||null, body.ativo!==false]
+          );
+          return json(res, 200, { ok: true, id: r.rows[0].id });
+        }
+        if (req.method === 'PUT' && id) {
+          await pg.query(
+            'UPDATE grupos_despesa SET codigo=$1,nome=$2,natureza=$3,descricao=$4,ativo=$5,atualizado_em=NOW() WHERE id=$6',
+            [body.codigo, body.nome, body.natureza||'DESPESA', body.descricao||null, body.ativo!==false, id]
+          );
+          return json(res, 200, { ok: true });
+        }
+        if (req.method === 'PATCH' && id && parts[5] === 'toggle') {
+          await pg.query('UPDATE grupos_despesa SET ativo=$1,atualizado_em=NOW() WHERE id=$2', [body.ativo!==false, id]);
+          return json(res, 200, { ok: true });
+        }
+        if (req.method === 'DELETE' && id) {
+          await pg.query('UPDATE grupos_despesa SET ativo=false WHERE id=$1', [id]);
+          return json(res, 200, { ok: true });
+        }
+        if (req.method === 'GET') {
+          const r = await pg.query('SELECT * FROM grupos_despesa ORDER BY natureza,nome');
+          return json(res, 200, { ok: true, data: r.rows });
+        }
+      }
+      if (entidade === 'tipos-lancamento') {
+        if (req.method === 'POST') {
+          const r = await pg.query(
+            'INSERT INTO tipos_lancamento (codigo,nome,natureza,ativo) VALUES ($1,$2,$3,$4) RETURNING id',
+            [body.codigo, body.nome, body.natureza||'DESPESA', body.ativo!==false]
+          );
+          return json(res, 200, { ok: true, id: r.rows[0].id });
+        }
+        if (req.method === 'PUT' && id) {
+          await pg.query(
+            'UPDATE tipos_lancamento SET codigo=$1,nome=$2,natureza=$3,ativo=$4 WHERE id=$5',
+            [body.codigo, body.nome, body.natureza||'DESPESA', body.ativo!==false, id]
+          );
+          return json(res, 200, { ok: true });
+        }
+        if (req.method === 'GET') {
+          const r = await pg.query('SELECT * FROM tipos_lancamento ORDER BY natureza,nome');
           return json(res, 200, { ok: true, data: r.rows });
         }
       }
