@@ -1506,6 +1506,68 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // ─── Rotas públicas de seed (sem autenticação) ─────────────────────────────
+  if (req.method === 'POST' && (url.pathname === '/api/admin/seed-grupos-tipos' || url.pathname === '/api/admin/seed-centros-custo')) {
+    const pg = storage.getPool ? storage.getPool() : null;
+    if (!pg) { json(res, 503, { ok: false, error: 'Banco indisponível' }); return; }
+    try {
+      if (url.pathname === '/api/admin/seed-grupos-tipos') {
+        const ESTRUTURA = [
+          ['PESSOAL','Pessoal',[['PROLABORE','Pró-labore'],['SALARIOS','Salários'],['PJ_INTERNOS','Prestadores PJ Internos'],['BENEFICIOS','Benefícios'],['ASSIST_MEDICA','Assistência Médica'],['VALE_TRANSPORTE','Vale Transporte'],['VALE_REFEICAO','Vale Refeição / Alimentação'],['BONIFICACOES','Bonificações'],['FERIAS','Férias'],['DECIMO_TERCEIRO','13º Salário'],['RESCISOES','Rescisões'],['ENCARGOS_TRAB','Encargos Trabalhistas'],['ENCARGOS_PROLABORE','Encargos sobre Pró-labore'],['REEMBOLSOS_EQUIPE','Reembolsos de Equipe']]],
+          ['SERVICOS_PROJETO','Serviços de Projeto',[['CONSULTORIA_PROJ','Consultoria de Projeto'],['FACILITACAO','Facilitação / Instrutoria'],['PALESTRANTES','Palestrantes'],['MENTORES','Mentores'],['TUTORES','Tutores'],['AVALIADORES','Avaliadores'],['COORD_PROJETO','Coordenação de Projeto'],['APOIO_ADM_PROJ','Apoio Administrativo de Projeto'],['DESIGN_PROJETO','Design de Projeto'],['COMUNICACAO_PROJ','Comunicação de Projeto'],['PRODUCAO_CONTEUDO','Produção de Conteúdo'],['REVISAO_CONTEUDO','Revisão de Conteúdo'],['DESENV_MATERIAL','Desenvolvimento de Material'],['SERV_TEC_ESPEC','Serviços Técnicos Especializados'],['PRESTADORES_PROJ','Prestadores Terceirizados de Projeto']]],
+          ['PLATAFORMAS_PROJETO','Plataformas e Sistemas de Projeto',[['PLAT_DESEMPENHO','Plataforma de Gestão de Desempenho'],['PLAT_APRENDIZAGEM','Plataforma de Aprendizagem'],['PLAT_AVALIACAO','Plataforma de Avaliação'],['PLAT_PESQUISA','Plataforma de Pesquisa'],['LIC_SW_PROJETO','Licença de Software de Projeto'],['DASHBOARD_PROJ','Sistema de Relatórios / Dashboard de Projeto'],['FERR_COMUNIC_PROJ','Ferramenta de Comunicação do Projeto'],['ASSIN_DIGITAL_PROJ','Assinatura Digital vinculada a Projeto'],['HOSPEDAGEM_PROJ','Hospedagem ou Ambiente Digital de Projeto']]],
+          ['INSTRUMENTOS_TESTES','Instrumentos, Testes e Avaliações',[['TESTES_PSICOL','Testes Psicológicos'],['INVENTARIOS_COMP','Inventários Comportamentais'],['ASSESSMENT','Assessment'],['DISC','DISC'],['AVAL_PERFIL','Avaliação de Perfil'],['AVAL_COMPETENCIAS','Avaliação de Competências'],['CERTIFICACAO','Certificação de Conhecimentos'],['TESTES_ONLINE','Testes Online'],['CREDITOS_TESTES','Compra de Créditos de Testes'],['CORRECAO_LAUDO','Correção / Laudo / Relatório Técnico']]],
+          ['VIAGENS_DESLOCAMENTOS','Viagens e Deslocamentos',[['PASSAGEM_AEREA','Passagem Aérea'],['HOSPEDAGEM','Hospedagem'],['TRANSP_APLICATIVO','Transporte por Aplicativo'],['TAXI','Táxi'],['COMBUSTIVEL','Combustível'],['PEDAGIO','Pedágio'],['ESTACIONAMENTO','Estacionamento'],['LOCACAO_VEICULO','Locação de Veículo'],['SEGURO_VIAGEM','Seguro Viagem'],['BAGAGEM','Bagagem'],['REEMB_DESLOCAMENTO','Reembolso de Deslocamento'],['ALIM_VIAGEM','Alimentação em Viagem'],['DIARIAS','Diárias de Viagem']]],
+          ['EVENTOS_LOGISTICA','Eventos, Materiais e Logística de Projeto',[['LOCACAO_ESPACO','Locação de Espaço'],['COFFEE_BREAK','Coffee Break'],['ALIM_EVENTO','Alimentação de Evento'],['MATERIAL_DIDATICO','Material Didático'],['APOSTILAS','Apostilas'],['IMPRESSOS','Impressos'],['BRINDES','Brindes'],['KITS_PARTICIPANTES','Kits de Participantes'],['EQUIP_EVENTO','Equipamentos para Evento'],['AUDIOVISUAL','Audiovisual'],['FOTO_FILMAGEM','Fotografia / Filmagem'],['EQUIPE_APOIO','Equipe de Apoio'],['CREDENCIAMENTO','Credenciamento'],['CORREIOS_ENTREGA','Correios / Entrega de Materiais'],['INSUMOS_PROJETO','Insumos de Projeto']]],
+          ['TECNOLOGIA_INFO','Tecnologia da Informação',[['SOFTWARE_CORP','Software Corporativo'],['LIC_SW_INTERNO','Licença de Software Interno'],['HOSPEDAGEM_SITE','Hospedagem de Site'],['DOMINIO','Domínio'],['EMAIL_CORP','E-mail Corporativo'],['GOOGLE_WORKSPACE','Google Workspace'],['MICROSOFT_OFFICE','Microsoft / Office'],['OPENAI_CHATGPT','OpenAI / ChatGPT'],['INTERNET','Internet'],['SUPORTE_TI','Suporte Técnico'],['MANUT_SISTEMA','Manutenção de Sistema'],['EQUIP_INFORMATICA','Equipamentos de Informática'],['SEGURANCA_DIGITAL','Segurança Digital'],['BACKUP_ARMAZEN','Backup / Armazenamento']]],
+          ['MARKETING_COMUNICACAO','Marketing e Comunicação',[['DESIGN_GRAFICO','Design Gráfico'],['MIDIA_SOCIAL','Mídia Social'],['ANUNCIOS_ONLINE','Anúncios Online'],['PRODUCAO_VIDEO','Produção de Vídeo'],['FOTOGRAFIA','Fotografia'],['COPYWRITING','Copywriting'],['ASSESSORIA_IMPRENSA','Assessoria de Imprensa'],['SITE_LANDING','Site / Landing Page'],['EMAIL_MARKETING','E-mail Marketing'],['PATROCINIO','Patrocínio'],['BRINDES_MARKETING','Brindes de Marketing'],['FEIRAS_EVENTOS','Feiras e Eventos de Marketing']]],
+          ['JURIDICO','Jurídico',[['HONORARIOS_ADV','Honorários Advocatícios'],['CONTRATOS','Elaboração de Contratos'],['REGISTRO_MARCA','Registro de Marca / Patente'],['CARTORIO','Cartório / Reconhecimento'],['ASSESSORIA_JUR','Assessoria Jurídica Contínua'],['COMPLIANCE','Compliance'],['CONSULTORIA_JUR','Consultoria Jurídica Pontual']]],
+          ['CONTABILIDADE_FISCAL','Contabilidade e Fiscal',[['CONTABILIDADE','Contabilidade'],['AUDITORIA','Auditoria'],['CONSULTORIA_FISCAL','Consultoria Fiscal'],['IMPOSTO_SIMPLES','Imposto - Simples Nacional'],['IMPOSTO_IRPJ','Imposto - IRPJ'],['IMPOSTO_CSLL','Imposto - CSLL'],['IMPOSTO_PIS_COFINS','Imposto - PIS/COFINS'],['IMPOSTO_ISS','Imposto - ISS'],['IMPOSTO_INSS','Imposto - INSS'],['IMPOSTO_FGTS','FGTS'],['IMPOSTO_OUTROS','Outros Impostos e Taxas'],['DECLARACOES','Declarações Fiscais'],['PARCELAMENTOS','Parcelamentos Fiscais']]],
+          ['FINANCEIRO','Financeiro',[['TARIFAS_BANCARIAS','Tarifas Bancárias'],['JUROS_MULTAS','Juros e Multas'],['IOF','IOF'],['EMPRESTIMOS','Empréstimos'],['FINANCIAMENTOS','Financiamentos'],['ANTECIPACAO_RECEBIVEIS','Antecipação de Recebíveis'],['SEGUROS','Seguros'],['INVESTIMENTOS','Investimentos'],['RENDIMENTOS','Rendimentos'],['CAMBIO','Câmbio']]],
+          ['INFRAESTRUTURA_ESCRITORIO','Administração e Infraestrutura',[['ALUGUEL','Aluguel'],['CONDOMINIO','Condomínio'],['ENERGIA_ELETRICA','Energia Elétrica'],['AGUA','Água'],['TELEFONE_FIXO','Telefone Fixo'],['CELULAR_CORP','Celular Corporativo'],['LIMPEZA','Limpeza / Conservação'],['SEGURANCA_PATRIMONIAL','Segurança Patrimonial'],['MANUTENCAO_PREDIAL','Manutenção Predial'],['MOBILIARIO','Mobiliário'],['MATERIAL_ESCRITORIO','Material de Escritório'],['CORREIOS','Correios'],['TRANSPORTE_CORP','Transporte Corporativo']]],
+          ['CAPACITACAO_INTERNA','Capacitação Interna',[['CURSOS_EQUIPE','Cursos para Equipe'],['TREINAMENTOS','Treinamentos Internos'],['CERTIFICACOES_EQUIPE','Certificações da Equipe'],['ASSIN_PLATAFORMAS_APRENDIZAGEM','Assinaturas de Plataformas de Aprendizagem'],['COACHING_EQUIPE','Coaching da Equipe'],['EVENTOS_APRENDIZAGEM','Eventos de Aprendizagem']]],
+          ['SAUDE_BEM_ESTAR','Saúde e Bem-estar',[['PLANO_SAUDE','Plano de Saúde'],['PLANO_ODONTO','Plano Odontológico'],['GINASTICA_LABORAL','Ginástica Laboral'],['PSICOLOGIA','Psicologia / Saúde Mental'],['FARMACIA','Farmácia'],['EXAMES_MEDICOS','Exames Médicos']]],
+          ['TRANSFERENCIAS_INTERNAS','Transferências Internas',[['TRANSF_ENTRE_CONTAS','Transferência entre Contas'],['APORTE_CAPITAL','Aporte de Capital'],['RETIRADA_SOCIOS','Retirada de Sócios'],['EMPRESTIMO_MUTUO','Empréstimo Mútuo'],['DEVOLUCAO_MUTUO','Devolução de Mútuo']]],
+          ['RECEITAS_PROJETOS','Receitas de Projetos',[['RECEITA_CONSULTORIA','Receita de Consultoria'],['RECEITA_CAPACITACAO','Receita de Capacitação'],['RECEITA_ASSESSORIA','Receita de Assessoria'],['RECEITA_PESQUISA','Receita de Pesquisa'],['RECEITA_LICITACAO','Receita de Licitação'],['RECEITA_OUTROS','Outras Receitas de Projetos']]],
+          ['RECEITAS_FINANCEIRAS','Receitas Financeiras',[['JUROS_RECEBIDOS','Juros Recebidos'],['RENDIMENTOS_APLIC','Rendimentos de Aplicações'],['DIVIDENDOS','Dividendos'],['ESTORNO_RECEBIDO','Estorno Recebido']]],
+          ['OUTROS','Outros',[['OUTROS_DESPESAS','Outras Despesas'],['OUTROS_RECEITAS','Outras Receitas'],['AJUSTE_CONTABIL','Ajuste Contábil'],['DESCONTO_RECEBIDO','Desconto Recebido']]]
+        ];
+        await pg.query('DELETE FROM tipos_despesa');
+        await pg.query('DELETE FROM grupos_despesa');
+        let totalGrupos = 0, totalTipos = 0;
+        for (const [cod, nome, tipos] of ESTRUTURA) {
+          const r = await pg.query('INSERT INTO grupos_despesa(codigo,nome,ativo) VALUES($1,$2,true) ON CONFLICT(codigo) DO UPDATE SET nome=$2,ativo=true RETURNING id', [cod, nome]);
+          const gid = r.rows[0].id;
+          totalGrupos++;
+          for (const [tcod, tnome] of tipos) {
+            await pg.query('INSERT INTO tipos_despesa(codigo,nome,grupo_id,ativo) VALUES($1,$2,$3,true) ON CONFLICT(codigo) DO UPDATE SET nome=$2,grupo_id=$3,ativo=true', [tcod, tnome, gid]);
+            totalTipos++;
+          }
+        }
+        json(res, 200, { ok: true, grupos: totalGrupos, tipos: totalTipos });
+      } else {
+        const CCS = [
+          ['ESTRUTURA','ADM_GERAL','Administração Geral'],['ESTRUTURA','PESSOAL_RH','Pessoal / RH'],['ESTRUTURA','CONTABILIDADE','Contabilidade'],['ESTRUTURA','JURIDICO','Jurídico'],['ESTRUTURA','MARKETING','Marketing e Comunicação'],['ESTRUTURA','TI_SUPORTE','TI / Suporte'],['ESTRUTURA','ESCRITORIO_INFR','Escritório e Infraestrutura'],['ESTRUTURA','BENEFICIOS','Benefícios'],['ESTRUTURA','CAPACITACAO','Capacitação Interna'],['ESTRUTURA','SAUDE_BEM_ESTAR','Saúde e Bem-estar'],
+          ['FINANCEIRO','BANCO_TARIFAS','Tarifas Bancárias'],['FINANCEIRO','FINANCIAMENTOS','Financiamentos e Empréstimos'],['FINANCEIRO','IMPOSTOS','Impostos e Taxas'],['FINANCEIRO','INVESTIMENTOS','Investimentos'],
+          ['OPERACIONAL','SEBRAE_TO','SEBRAE-TO'],['OPERACIONAL','SEBRAE_AC','SEBRAE-AC'],['OPERACIONAL','SEBRAE_RO','SEBRAE-RO'],['OPERACIONAL','SEBRAE_AM','SEBRAE-AM'],['OPERACIONAL','SEBRAE_PA','SEBRAE-PA'],['OPERACIONAL','BANESE','BANESE'],['OPERACIONAL','BANRISUL','BANRISUL'],['OPERACIONAL','ENABLE','ENABLE'],['OPERACIONAL','BRB','BRB'],['OPERACIONAL','MUTUO','Mútuo / Empréstimos Internos'],['OPERACIONAL','PROJETOS_GERAIS','Projetos Gerais'],
+          ['TRANSFERENCIA','TRANSF_INTERNA','Transferência Interna'],['TRANSFERENCIA','APORTE','Aporte de Capital'],['TRANSFERENCIA','RETIRADA_SOCIOS','Retirada de Sócios'],
+          ['CONTROLE','AJUSTE','Ajuste Contábil'],['CONTROLE','ESTORNO','Estorno'],['CONTROLE','CONCILIACAO','Conciliação']
+        ];
+        await pg.query('DELETE FROM centros_de_custo');
+        let total = 0;
+        for (const [tipo, cod, nome] of CCS) {
+          await pg.query('INSERT INTO centros_de_custo(codigo,nome,tipo,ativo) VALUES($1,$2,$3,true) ON CONFLICT(codigo) DO UPDATE SET nome=$2,tipo=$3,ativo=true', [cod, nome, tipo]);
+          total++;
+        }
+        json(res, 200, { ok: true, total });
+      }
+    } catch(e) {
+      console.error('[seed-public]', e.message);
+      json(res, 500, { ok: false, error: e.message });
+    }
+    return;
+  }
+
   const user = currentUser(req, db);
   if (!user) {
     res.writeHead(302, { Location: '/login' });
