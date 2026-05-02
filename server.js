@@ -38,14 +38,18 @@ const ALIAS_RULES = {
 // CCs que NUNCA devem aparecer como cliente no dashboard
 // São custos de estrutura (overhead) ou movimentações internas
 const FORBIDDEN_AS_CLIENT = [
-  // Com acento (planilhas antigas)
+  // CCs de estrutura (não são clientes)
+  'ADM_GERAL', 'CONTABILIDADE', 'ESCRITORIO_INFRA', 'JURIDICO',
+  'MARKETING_COMUNICACAO', 'TI_SUPORTE',
+  // CCs de pessoal
+  'PROLABORE', 'SALARIOS', 'PJ_INTERNO', 'BENEFICIOS',
+  'ENCARGOS_TRABALHISTAS', 'ENCARGOS_PROLABORE',
+  // CCs financeiros / tributários
+  'BANCO_TARIFAS', 'IOF', 'MUTUO', 'PRONAMPE', 'TRIBUTOS', 'TEF',
+  // Legados (planilhas antigas)
   'ESCRITÓRIO', 'SALÁRIOS', 'JURÍDICO', 'CONTÁBIL', 'MÚTUO', 'PRÓ-LABORE',
-  // Sem acento (planilha CKM atual — códigos canônicos do banco)
   'ESCRITORIO', 'SALARIOS', 'JURIDICO', 'CONTABIL', 'MUTUO', 'PRO-LABORE',
-  'SAL_PRO-LAB_PJ', 'TI_SUPORTE', 'ADM',
-  // Movimentações internas e financeiras
-  'TEF', 'TEF_CC', 'PRONAMPE', 'BANCO', 'IOF_CC',
-  // Genéricos que não são clientes
+  'SAL_PRO-LAB_PJ', 'ADM', 'TEF_CC', 'BANCO', 'IOF_CC',
   'SALDO ATUAL', 'ADMINISTRATIVO', 'COMERCIAL', 'FINANCEIRO',
   'FISCAL', 'OPERACIONAL', 'RH', 'TI', 'IMPOSTOS',
   'MARKETING', 'INFRAESTRUTURA', 'TECNOLOGIA'
@@ -53,8 +57,18 @@ const FORBIDDEN_AS_CLIENT = [
 
 // Centros de custo padrão CKM — sempre disponíveis no datalist de edição
 const CC_PADRAO = [
-  'ADMINISTRATIVO', 'COMERCIAL', 'ESCRITÓRIO', 'FINANCEIRO', 'FISCAL',
-  'JURÍDICO', 'MÚTUO', 'OPERACIONAL', 'PRÓ-LABORE', 'RH', 'TEF', 'TI'
+  // Estrutura
+  'ADM_GERAL', 'CONTABILIDADE', 'ESCRITORIO_INFRA', 'JURIDICO',
+  'MARKETING_COMUNICACAO', 'TI_SUPORTE',
+  // Pessoal
+  'PROLABORE', 'SALARIOS', 'PJ_INTERNO', 'BENEFICIOS',
+  'ENCARGOS_TRABALHISTAS', 'ENCARGOS_PROLABORE',
+  // Operacional (clientes)
+  'BANRISUL', 'BRB', 'CESAMA', 'ENABLE', 'IGDRH', 'MARICA', 'SEBRAE_AC', 'SEBRAE_TO',
+  // Financeiro / Tributário
+  'BANCO_TARIFAS', 'IOF', 'MUTUO', 'PRONAMPE', 'TRIBUTOS',
+  // Transferência
+  'TEF'
 ];
 
 // ============================================================
