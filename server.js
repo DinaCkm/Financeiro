@@ -3898,9 +3898,9 @@ async function excluirRef(tipo,nome){
               <option value="D" ${dcStr==='D'?'selected':''}>D — Débito (saída)</option>
             </select></div>
             <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Grupo da Despesa</label>
-            <select id="el-grupo-${e.id}" style="font-size:.8rem;padding:.3rem .5rem;width:100%">${GRUPOS.map(g=>`<option value="${g}" ${(e.grupoDespesa||'')==g?'selected':''}>${g||'-- Selecione --'}</option>`).join('')}</select></div>
+            <select id="el-grupo-${e.id}" style="font-size:.8rem;padding:.3rem .5rem;width:100%" onchange="filtrarTiposNoSelect('el-grupo-${e.id}','el-tipo-${e.id}','')">${GRUPOS.map(g=>`<option value="${g.codigo}" ${(e.grupoDespesa||'')==g.codigo?'selected':''}>${g.nome||'-- Selecione --'}</option>`).join('')}</select></div>
             <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Tipo de Despesa</label>
-            <select id="el-tipo-${e.id}" style="font-size:.8rem;padding:.3rem .5rem;width:100%">${TIPOS.map(t=>`<option value="${t}" ${(e.tipoDespesa||'')==t?'selected':''}>${t||'-- Selecione --'}</option>`).join('')}</select></div>
+            <select id="el-tipo-${e.id}" style="font-size:.8rem;padding:.3rem .5rem;width:100%">${TIPOS.filter(t=>!e.grupoDespesa||t.grupo_nome===(GRUPOS.find(g=>g.codigo===e.grupoDespesa)||{}).nome).map(t=>`<option value="${t.codigo}" ${(e.tipoDespesa||'')==t.codigo?'selected':''}>${t.nome||'-- Selecione --'}</option>`).join('')}</select></div>
             <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Código (CC)</label>
             <input id="el-cc-${e.id}" list="dl-cc-lanc" value="${e.centroCusto||''}" style="font-size:.8rem;padding:.3rem .5rem;width:100%"/></div>
             <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Cliente / Fornecedor / Prestador</label>
@@ -3955,7 +3955,7 @@ async function excluirRef(tipo,nome){
       <option value="C">C — Crédito (entrada)</option>
     </select></div>
     <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Grupo da Despesa</label>
-    <select id="novo-grupo" style="font-size:.8rem;padding:.3rem .5rem;width:100%">${grupoOpts}</select></div>
+    <select id="novo-grupo" style="font-size:.8rem;padding:.3rem .5rem;width:100%" onchange="filtrarTiposNoSelect('novo-grupo','novo-tipo','')">${grupoOpts}</select></div>
     <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Tipo de Despesa</label>
     <select id="novo-tipo" style="font-size:.8rem;padding:.3rem .5rem;width:100%">${tipoOpts}</select></div>
     <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Código (CC) *</label>
@@ -4064,6 +4064,24 @@ ${paginacao}
 ${paginacao}
 
 <script>
+// Dados do cadastro injetados pelo servidor
+const TODOS_TIPOS = ${JSON.stringify(tiposDespesaCad.map(t=>({codigo:t.codigo,nome:t.nome,grupo_codigo:t.grupo_nome||''})))};
+const GRUPOS_LISTA = ${JSON.stringify(GRUPOS.map(g=>({codigo:g.codigo,nome:g.nome})))};
+
+function filtrarTiposNoSelect(grupoSelectId, tipoSelectId, valorAtual) {
+  var gSel = document.getElementById(grupoSelectId);
+  var tSel = document.getElementById(tipoSelectId);
+  if (!gSel || !tSel) return;
+  var grupoCod = gSel.value;
+  var grp = GRUPOS_LISTA.find(function(g){ return g.codigo === grupoCod; });
+  var tiposFiltrados = grp ? TODOS_TIPOS.filter(function(t){ return t.grupo_codigo === grp.nome; }) : TODOS_TIPOS;
+  var opts = '<option value="">-- Selecione o Tipo --</option>';
+  tiposFiltrados.forEach(function(t){
+    opts += '<option value="' + t.codigo + '"' + (t.codigo===valorAtual?' selected':'') + '>' + t.nome + '</option>';
+  });
+  tSel.innerHTML = opts;
+}
+
 function toggleEditLanc(id, inconsistencias) {
   const row = document.getElementById('edit-lanc-' + id);
   if (!row) return;
