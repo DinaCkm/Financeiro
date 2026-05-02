@@ -3871,9 +3871,13 @@ async function excluirRef(tipo,nome){
       const pg = storage.getPool ? storage.getPool() : null;
       if (pg) {
         ccs            = (await pg.query('SELECT codigo, nome FROM centros_de_custo WHERE ativo=true ORDER BY nome')).rows;
-        clientesCad    = (await pg.query('SELECT nome, cpf, tipo FROM clientes WHERE ativo=true ORDER BY nome')).rows;
-        // Mapa CPF/CNPJ → cliente para autocomplete
-        clientesMapCpf = clientesCad.filter(c=>c.cpf).reduce((m,c)=>{ m[c.cpf.replace(/\D/g,'')]=c; return m; }, {});
+        clientesCad    = (await pg.query('SELECT nome, cpf, cnpj, tipo FROM clientes WHERE ativo=true ORDER BY nome')).rows;
+        // Mapa CPF/CNPJ (sem máscara) → cliente para autocomplete — cobre cpf (PF) e cnpj (PJ)
+        clientesMapCpf = clientesCad.reduce((m,c)=>{
+          if(c.cpf)  m[c.cpf.replace(/\D/g,'')]  = {nome:c.nome, tipo:c.tipo||''};
+          if(c.cnpj) m[c.cnpj.replace(/\D/g,'')] = {nome:c.nome, tipo:c.tipo||''};
+          return m;
+        }, {});
         projetosCad    = (await pg.query('SELECT codigo, nome FROM projetos WHERE ativo=true ORDER BY nome')).rows;
         naturezasCad   = (await pg.query('SELECT nome FROM tipos_lancamento WHERE ativo=true ORDER BY nome')).rows;
         gruposCad      = (await pg.query('SELECT codigo, nome FROM grupos_despesa WHERE ativo=true ORDER BY nome')).rows;
