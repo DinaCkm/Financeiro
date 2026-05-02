@@ -4464,6 +4464,62 @@ ${secaoExclusoes}`, user, '/historico');
       return json(res, 500, { ok: false, error: e.message });
     }
   }
+  // ─── SEED: popular centros_de_custo ──────────────────────────────────
+  if (req.method === 'POST' && url.pathname === '/api/admin/seed-centros-custo') {
+    if (!requireAuth(req, res, db)) return;
+    const pg = storage.getPool ? storage.getPool() : null;
+    if (!pg) return json(res, 503, { ok: false, error: 'Banco indisponível' });
+    const CCS = [
+      ['ESTRUTURA','ADM_GERAL','Administração Geral'],
+      ['ESTRUTURA','PESSOAL_RH','Pessoal / RH'],
+      ['ESTRUTURA','CONTABILIDADE','Contabilidade'],
+      ['ESTRUTURA','ESCRITORIO_INFRA','Escritório e Infraestrutura'],
+      ['ESTRUTURA','JURIDICO','Jurídico'],
+      ['ESTRUTURA','MARKETING_COMUNICACAO','Marketing e Comunicação'],
+      ['ESTRUTURA','TI_SUPORTE','Tecnologia da Informação'],
+      ['FINANCEIRO','BANCO_TARIFAS','Tarifas e Despesas Bancárias'],
+      ['FINANCEIRO','TRIBUTOS','Tributos e Impostos'],
+      ['FINANCEIRO','IOF','IOF'],
+      ['FINANCEIRO','MUTUO','Mútuo — Empréstimos Sócios'],
+      ['FINANCEIRO','PRONAMPE','Pronampe — Empréstimo BB'],
+      ['FINANCEIRO','APLICACOES_FINANCEIRAS','Aplicações Financeiras'],
+      ['OPERACIONAL','SEBRAE_TO','SEBRAE-TO'],
+      ['OPERACIONAL','SEBRAE_AC','SEBRAE-AC'],
+      ['OPERACIONAL','BRB','BRB'],
+      ['OPERACIONAL','BANRISUL','BANRISUL'],
+      ['OPERACIONAL','BANESE','BANESE'],
+      ['OPERACIONAL','CESAMA','CESAMA'],
+      ['OPERACIONAL','EMBRAPII','EMBRAPII'],
+      ['OPERACIONAL','ENABLE','Enable People'],
+      ['OPERACIONAL','IGDRH','IGD-RH / IGDRH'],
+      ['OPERACIONAL','MARICA','P.M. Maricá'],
+      ['OPERACIONAL','METRO_SP','Metrô-SP'],
+      ['OPERACIONAL','SOROCABA','SOROCABA'],
+      ['OPERACIONAL','PENAPOLIS','P.M. Penápolis'],
+      ['OPERACIONAL','FRANCISCO_MORATO','P.M. Francisco Morato'],
+      ['OPERACIONAL','VAPT','VAPT'],
+      ['OPERACIONAL','B2C_MENTORIAS','B2C — Mentorias'],
+      ['OPERACIONAL','B2C_PROJETO_NAO_DETALHADO','B2C — Projeto / Contrato não detalhado'],
+      ['OPERACIONAL','COMPETENCIAS_DO_BEM','Competências do BEM'],
+      ['OPERACIONAL','ONBOARDING','Onboarding'],
+      ['OPERACIONAL','BANCO_DE_SUCESSORES','Banco de Sucessores'],
+      ['TRANSFERENCIA','TEF','Transferência entre Contas'],
+      ['CONTROLE','ESTORNOS_REEMBOLSOS','Estornos, Reembolsos e Recuperações'],
+      ['CONTROLE','A_CLASSIFICAR','A Classificar'],
+    ];
+    try {
+      await pg.query('DELETE FROM centros_de_custo');
+      for (const [tipo, codigo, nome] of CCS) {
+        await pg.query(
+          'INSERT INTO centros_de_custo (tipo, codigo, nome, ativo) VALUES ($1,$2,$3,true)',
+          [tipo, codigo, nome]
+        );
+      }
+      return json(res, 200, { ok: true, total: CCS.length });
+    } catch(e) {
+      return json(res, 500, { ok: false, error: e.message });
+    }
+  }
   // ─── IA FINANCEIRA: ANÁLISE COM JUSTIFICATIVA ─────────────────────────────
   // ─── DIAGNÓSTICO: verificar variáveis de ambiente da IA ───────────────────────
   if (req.method === 'GET' && url.pathname === '/api/ia/diag') {
