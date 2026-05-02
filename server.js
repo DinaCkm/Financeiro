@@ -4268,8 +4268,21 @@ async function criarLancamento() {
     documento: document.getElementById('novo-doc')?.value,
     descritivo: document.getElementById('novo-descritivo')?.value,
   };
+  // Validar CPF/CNPJ obrigatório e cadastrado
+  var cpfDigitado = (data.cpfCnpj || '').replace(/\D/g,'');
+  var fb = document.getElementById('novo-feedback');
+  if (!cpfDigitado || cpfDigitado.length < 11) {
+    fb.innerHTML = '<span style="color:#dc2626">⚠ Informe o CPF ou CNPJ do Cliente / Fornecedor / Prestador de Serviço.</span>';
+    document.getElementById('novo-cpf').focus();
+    return;
+  }
+  if (!CLIENTES_MAP_CPF[cpfDigitado]) {
+    fb.innerHTML = '<span style="color:#dc2626">⚠ CPF/CNPJ não encontrado. <strong>Cadastre o Cliente / Fornecedor / Prestador de Serviço</strong> antes de lançar. <a href="/cadastros-mestres" style="color:#6d28d9;font-weight:700">Cadastrar agora →</a></span>';
+    document.getElementById('novo-cpf').focus();
+    return;
+  }
   if (!data.data || !data.valor || !data.centroCusto) {
-    document.getElementById('novo-feedback').innerHTML = '<span style="color:#dc2626">⚠ Preencha Data, Código (CC) e Valor.</span>';
+    fb.innerHTML = '<span style="color:#dc2626">⚠ Preencha Data, Código (CC) e Valor.</span>';
     return;
   }
   const resp = await fetch('/api/entries', {method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify(data)});
