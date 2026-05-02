@@ -1532,8 +1532,7 @@ const server = http.createServer(async (req, res) => {
           ['RECEITAS_FINANCEIRAS','Receitas Financeiras',[['JUROS_RECEBIDOS','Juros Recebidos'],['RENDIMENTOS_APLIC','Rendimentos de Aplicações'],['DIVIDENDOS','Dividendos'],['ESTORNO_RECEBIDO','Estorno Recebido']]],
           ['OUTROS','Outros',[['OUTROS_DESPESAS','Outras Despesas'],['OUTROS_RECEITAS','Outras Receitas'],['AJUSTE_CONTABIL','Ajuste Contábil'],['DESCONTO_RECEBIDO','Desconto Recebido']]]
         ];
-        await pg.query('DELETE FROM tipos_despesa');
-        await pg.query('DELETE FROM grupos_despesa');
+        // Apenas UPSERT — nunca apaga dados existentes
         let totalGrupos = 0, totalTipos = 0;
         for (const [cod, nome, tipos] of ESTRUTURA) {
           const r = await pg.query('INSERT INTO grupos_despesa(codigo,nome,ativo) VALUES($1,$2,true) ON CONFLICT(codigo) DO UPDATE SET nome=$2,ativo=true RETURNING id', [cod, nome]);
@@ -1553,7 +1552,7 @@ const server = http.createServer(async (req, res) => {
           ['TRANSFERENCIA','TRANSF_INTERNA','Transferência Interna'],['TRANSFERENCIA','APORTE','Aporte de Capital'],['TRANSFERENCIA','RETIRADA_SOCIOS','Retirada de Sócios'],
           ['CONTROLE','AJUSTE','Ajuste Contábil'],['CONTROLE','ESTORNO','Estorno'],['CONTROLE','CONCILIACAO','Conciliação']
         ];
-        await pg.query('DELETE FROM centros_de_custo');
+        // Apenas UPSERT — nunca apaga dados existentes
         let total = 0;
         for (const [tipo, cod, nome] of CCS) {
           await pg.query('INSERT INTO centros_de_custo(codigo,nome,tipo,ativo) VALUES($1,$2,$3,true) ON CONFLICT(codigo) DO UPDATE SET nome=$2,tipo=$3,ativo=true', [cod, nome, tipo]);
