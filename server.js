@@ -4417,6 +4417,50 @@ ${secaoExclusoes}`, user, '/historico');
     return;
   }
 
+  // ─── SEED: popular grupos_despesa e tipos_despesa ──────────────────────────
+  if (req.method === 'POST' && url.pathname === '/api/admin/seed-grupos-tipos') {
+    if (!requireAuth(req, res, db)) return;
+    const pg = await getPool();
+    if (!pg) return json(res, 503, { ok: false, error: 'Banco indisponível' });
+    const ESTRUTURA = [
+      ['PESSOAL','Pessoal',[['PROLABORE','Pró-labore'],['SALARIOS','Salários'],['PJ_INTERNOS','Prestadores PJ Internos'],['BENEFICIOS','Benefícios'],['ASSIST_MEDICA','Assistência Médica'],['VALE_TRANSPORTE','Vale Transporte'],['VALE_REFEICAO','Vale Refeição / Alimentação'],['BONIFICACOES','Bonificações'],['FERIAS','Férias'],['DECIMO_TERCEIRO','13º Salário'],['RESCISOES','Rescisões'],['ENCARGOS_TRAB','Encargos Trabalhistas'],['ENCARGOS_PROLABORE','Encargos sobre Pró-labore'],['REEMBOLSOS_EQUIPE','Reembolsos de Equipe']]],
+      ['SERVICOS_PROJETO','Serviços de Projeto',[['CONSULTORIA_PROJ','Consultoria de Projeto'],['FACILITACAO','Facilitação / Instrutoria'],['PALESTRANTES','Palestrantes'],['MENTORES','Mentores'],['TUTORES','Tutores'],['AVALIADORES','Avaliadores'],['COORD_PROJETO','Coordenação de Projeto'],['APOIO_ADM_PROJ','Apoio Administrativo de Projeto'],['DESIGN_PROJETO','Design de Projeto'],['COMUNICACAO_PROJ','Comunicação de Projeto'],['PRODUCAO_CONTEUDO','Produção de Conteúdo'],['REVISAO_CONTEUDO','Revisão de Conteúdo'],['DESENV_MATERIAL','Desenvolvimento de Material'],['SERV_TEC_ESPEC','Serviços Técnicos Especializados'],['PRESTADORES_PROJ','Prestadores Terceirizados de Projeto']]],
+      ['PLATAFORMAS_PROJETO','Plataformas e Sistemas de Projeto',[['PLAT_DESEMPENHO','Plataforma de Gestão de Desempenho'],['PLAT_APRENDIZAGEM','Plataforma de Aprendizagem'],['PLAT_AVALIACAO','Plataforma de Avaliação'],['PLAT_PESQUISA','Plataforma de Pesquisa'],['LIC_SW_PROJETO','Licença de Software de Projeto'],['DASHBOARD_PROJ','Sistema de Relatórios / Dashboard de Projeto'],['FERR_COMUNIC_PROJ','Ferramenta de Comunicação do Projeto'],['ASSIN_DIGITAL_PROJ','Assinatura Digital vinculada a Projeto'],['HOSPEDAGEM_PROJ','Hospedagem ou Ambiente Digital de Projeto']]],
+      ['INSTRUMENTOS_TESTES','Instrumentos, Testes e Avaliações',[['TESTES_PSICOL','Testes Psicológicos'],['INVENTARIOS_COMP','Inventários Comportamentais'],['ASSESSMENT','Assessment'],['DISC','DISC'],['AVAL_PERFIL','Avaliação de Perfil'],['AVAL_COMPETENCIAS','Avaliação de Competências'],['CERTIFICACAO','Certificação de Conhecimentos'],['TESTES_ONLINE','Testes Online'],['CREDITOS_TESTES','Compra de Créditos de Testes'],['CORRECAO_LAUDO','Correção / Laudo / Relatório Técnico']]],
+      ['VIAGENS_DESLOCAMENTOS','Viagens e Deslocamentos',[['PASSAGEM_AEREA','Passagem Aérea'],['HOSPEDAGEM','Hospedagem'],['TRANSP_APLICATIVO','Transporte por Aplicativo'],['TAXI','Táxi'],['COMBUSTIVEL','Combustível'],['PEDAGIO','Pedágio'],['ESTACIONAMENTO','Estacionamento'],['LOCACAO_VEICULO','Locação de Veículo'],['SEGURO_VIAGEM','Seguro Viagem'],['BAGAGEM','Bagagem'],['REEMB_DESLOCAMENTO','Reembolso de Deslocamento'],['ALIM_VIAGEM','Alimentação em Viagem'],['DIARIAS','Diárias de Viagem']]],
+      ['EVENTOS_LOGISTICA','Eventos, Materiais e Logística de Projeto',[['LOCACAO_ESPACO','Locação de Espaço'],['COFFEE_BREAK','Coffee Break'],['ALIM_EVENTO','Alimentação de Evento'],['MATERIAL_DIDATICO','Material Didático'],['APOSTILAS','Apostilas'],['IMPRESSOS','Impressos'],['BRINDES','Brindes'],['KITS_PARTICIPANTES','Kits de Participantes'],['EQUIP_EVENTO','Equipamentos para Evento'],['AUDIOVISUAL','Audiovisual'],['FOTO_FILMAGEM','Fotografia / Filmagem'],['EQUIPE_APOIO','Equipe de Apoio'],['CREDENCIAMENTO','Credenciamento'],['CORREIOS_ENTREGA','Correios / Entrega de Materiais'],['INSUMOS_PROJETO','Insumos de Projeto']]],
+      ['TECNOLOGIA_INFO','Tecnologia da Informação',[['SOFTWARE_CORP','Software Corporativo'],['LIC_SW_INTERNO','Licença de Software Interno'],['HOSPEDAGEM_SITE','Hospedagem de Site'],['DOMINIO','Domínio'],['EMAIL_CORP','E-mail Corporativo'],['GOOGLE_WORKSPACE','Google Workspace'],['MICROSOFT_OFFICE','Microsoft / Office'],['OPENAI_CHATGPT','OpenAI / ChatGPT'],['INTERNET','Internet'],['SUPORTE_TI','Suporte Técnico'],['MANUT_SISTEMA','Manutenção de Sistema'],['EQUIP_INFORMATICA','Equipamentos de Informática'],['SEGURANCA_DIGITAL','Segurança Digital'],['BACKUP_ARMAZEN','Backup / Armazenamento']]],
+      ['ADMIN_INFRA','Administração e Infraestrutura',[['ALUGUEL','Aluguel'],['CONDOMINIO','Condomínio'],['ENERGIA_ELETRICA','Energia Elétrica'],['AGUA','Água'],['INTERNET_ESCRIT','Internet do Escritório'],['MATERIAL_ESCRIT','Material de Escritório'],['MOVEIS_UTENSILIOS','Móveis e Utensílios'],['MANUT_PREDIAL','Manutenção Predial'],['LIMPEZA','Limpeza'],['CORREIOS','Correios'],['CARTORIO','Cartório'],['CERT_DIGITAL','Certificado Digital'],['ASSIN_ADM','Assinaturas Administrativas'],['DESP_GERAIS_ADM','Despesas Gerais Administrativas']]],
+      ['CONTABILIDADE_FISCAL','Contabilidade e Fiscal',[['HONOR_CONTABEIS','Honorários Contábeis'],['ASSESSORIA_CONT','Assessoria Contábil'],['OBRIG_ACESSORIAS','Obrigações Acessórias'],['REGULAR_FISCAIS','Regularizações Fiscais'],['CERTIDOES','Certidões'],['DP_CONTABIL','Serviços de Departamento Pessoal Contábil'],['CONSULT_FISCAL','Consultoria Fiscal']]],
+      ['JURIDICO','Jurídico',[['HONOR_JURIDICOS','Honorários Jurídicos'],['ASSESSORIA_JUR','Assessoria Jurídica'],['ELAB_CONTRATOS','Elaboração de Contratos'],['ANALISE_CONTRAT','Análise Contratual'],['PROCESSOS_JUD','Processos Judiciais'],['CUSTAS_JUD','Custas Judiciais'],['CARTORIO_JUR','Cartório Jurídico'],['CONSULT_TRAB','Consultoria Trabalhista'],['CONSULT_SOCIE','Consultoria Societária']]],
+      ['MARKETING_COMUNICACAO','Marketing e Comunicação',[['PUBLICIDADE','Publicidade'],['GOOGLE_ADS','Google Ads'],['REDES_SOCIAIS','Redes Sociais'],['DESIGN_INSTIT','Design Institucional'],['COMUNIC_INSTIT','Comunicação Institucional'],['SITE_INSTIT','Site Institucional'],['PROD_CONT_COMERC','Produção de Conteúdo Comercial'],['MATERIAL_COMERC','Material Comercial'],['APRES_COMERCIAIS','Apresentações Comerciais'],['IDENTIDADE_VISUAL','Identidade Visual'],['ASSESSORIA_COMUNIC','Assessoria de Comunicação']]],
+      ['TRIBUTOS_IMPOSTOS','Tributos e Impostos',[['DAS','DAS'],['ISS','ISS'],['IRPJ','IRPJ'],['CSLL','CSLL'],['PIS','PIS'],['COFINS','COFINS'],['IRRF','IRRF'],['INSS','INSS'],['FGTS','FGTS'],['IMP_FEDERAIS','Impostos Federais'],['IMP_MUNICIPAIS','Impostos Municipais'],['MULTAS_FISCAIS','Multas Fiscais'],['JUROS_FISCAIS','Juros Fiscais']]],
+      ['TRIBUTOS_FATURAMENTO','Tributos sobre Faturamento',[['DAS_NF','DAS sobre NF'],['ISS_NF','ISS sobre NF'],['IRRF_RETIDO','IRRF Retido'],['PIS_RETIDO','PIS Retido'],['COFINS_RETIDO','COFINS Retido'],['CSLL_RETIDA','CSLL Retida'],['INSS_RETIDO','INSS Retido'],['RETENCOES_CLI','Retenções de Cliente'],['IMP_RECEITA_PROJ','Imposto sobre Receita de Projeto']]],
+      ['DESPESAS_BANCARIAS','Despesas Bancárias e Financeiras',[['TARIFA_BANCARIA','Tarifa Bancária'],['PACOTE_BANCARIO','Pacote de Serviços Bancários'],['TARIFA_PIX','Tarifa PIX'],['TARIFA_TED_DOC','Tarifa TED / DOC'],['TARIFA_COBRANCA','Tarifa de Cobrança'],['JUROS_BANC','Juros Bancários'],['MULTA_BANC','Multa Bancária'],['MANUT_CONTA','Manutenção de Conta'],['ANUIDADE_CARTAO','Anuidade de Cartão'],['TAXA_CARTAO','Taxa de Cartão'],['DESP_FIN_DIVERSAS','Despesas Financeiras Diversas']]],
+      ['IOF','IOF',[['IOF_BANCARIO','IOF sobre Operação Bancária'],['IOF_INTERNACIONAL','IOF sobre Compra Internacional'],['IOF_EMPRESTIMO','IOF sobre Empréstimo'],['IOF_APLICACAO','IOF sobre Aplicação'],['IOF_CARTAO','IOF sobre Cartão']]],
+      ['EMPRESTIMOS_MUTUOS','Empréstimos, Mútuos e Financiamentos',[['MUTUO_ENTRADA','Mútuo — Entrada'],['MUTUO_SAIDA','Mútuo — Saída'],['EMPRESTIMO_BANC','Empréstimo Bancário'],['PRONAMPE','Pronampe'],['AMORTIZACAO','Amortização de Empréstimo'],['JUROS_EMPRESTIMO','Juros de Empréstimo'],['ENCARGOS_EMPREST','Encargos de Empréstimo']]],
+      ['TRANSFERENCIAS','Transferências e Movimentações entre Contas',[['TRANSF_CONTAS','Transferência entre Contas'],['APLICACAO_FIN','Aplicação Financeira'],['RESGATE_APLIC','Resgate de Aplicação'],['MOV_BANCOS','Movimentação entre Bancos'],['AJUSTE_CAIXA','Ajuste de Caixa'],['SALDO_INICIAL','Saldo Inicial / Saldo Atual']]],
+      ['ESTORNOS_REEMBOLSOS','Estornos, Reembolsos e Recuperações',[['ESTORNO_DESPESA','Estorno de Despesa'],['ESTORNO_CARTAO','Estorno de Cartão'],['REEMB_RECEBIDO','Reembolso Recebido'],['REEMB_PAGO','Reembolso Pago'],['DEVOL_TAXA','Devolução de Taxa'],['DEVOL_CAUCAO','Devolução de Caução'],['RECUPERACAO_DESP','Recuperação de Despesa'],['AJUSTE_LANCAMENTO','Ajuste de Lançamento']]],
+      ['SEGUROS','Seguros',[['SEGURO_EMPRESARIAL','Seguro Empresarial'],['SEGURO_VIDA','Seguro de Vida'],['SEGURO_VIAGEM_SEG','Seguro Viagem'],['SEGURO_EQUIP','Seguro Equipamentos'],['SEGURO_RC','Seguro Responsabilidade Civil'],['SEGURO_SAUDE','Seguro Saúde']]],
+      ['A_CLASSIFICAR','A Classificar',[['SEM_INFO','Sem Informação Suficiente'],['DESC_INCOMPLETA','Descrição Incompleta'],['CC_CONFLITANTE','Centro de Custo Conflitante'],['CLI_NAO_IDENT','Cliente não Identificado'],['FORN_NAO_IDENT','Fornecedor não Identificado'],['LANC_ZERADO','Lançamento Zerado a Revisar'],['STATUS_REVISAR','Status a Revisar']]],
+    ];
+    try {
+      await pg.query('DELETE FROM tipos_despesa');
+      await pg.query('DELETE FROM grupos_despesa');
+      let totalTipos = 0;
+      for (const [gcod, gnome, tipos] of ESTRUTURA) {
+        const gr = await pg.query('INSERT INTO grupos_despesa (codigo,nome,ativo) VALUES ($1,$2,true) RETURNING id', [gcod, gnome]);
+        const gid = gr.rows[0].id;
+        for (const [tcod, tnome] of tipos) {
+          await pg.query('INSERT INTO tipos_despesa (codigo,nome,grupo_id,grupo_codigo,ativo) VALUES ($1,$2,$3,$4,true)', [tcod, tnome, gid, gcod]);
+          totalTipos++;
+        }
+      }
+      return json(res, 200, { ok: true, grupos: ESTRUTURA.length, tipos: totalTipos });
+    } catch(e) {
+      return json(res, 500, { ok: false, error: e.message });
+    }
+  }
   // ─── IA FINANCEIRA: ANÁLISE COM JUSTIFICATIVA ─────────────────────────────
   // ─── DIAGNÓSTICO: verificar variáveis de ambiente da IA ───────────────────────
   if (req.method === 'GET' && url.pathname === '/api/ia/diag') {
@@ -5239,7 +5283,7 @@ function renderHistoricoRel() {
   // ============================================================
   if (req.method === 'GET' && url.pathname === '/cadastros-mestres') {
     const user = requireAuth(req, res, db); if (!user) return;
-    let ccs = [], clientes = [], projetos = [], tipos = [], bancos = [], grupos = [];
+    let ccs = [], clientes = [], projetos = [], tipos = [], bancos = [], grupos = [], tiposDespesa = [];
     try {
       const pg = storage.getPool ? storage.getPool() : null;
       if (pg) {
@@ -5255,6 +5299,16 @@ function renderHistoricoRel() {
       const pg2 = storage.getPool ? storage.getPool() : null;
       if (pg2) grupos = (await pg2.query('SELECT * FROM grupos_despesa ORDER BY natureza, nome')).rows;
     } catch(eg) { grupos = []; }
+    // Carregar tipos de despesa vinculados aos grupos
+    try {
+      const pg3 = storage.getPool ? storage.getPool() : null;
+      if (pg3) tiposDespesa = (await pg3.query(`
+        SELECT td.*, gd.nome as grupo_nome, gd.codigo as grupo_codigo_ref
+        FROM tipos_despesa td
+        LEFT JOIN grupos_despesa gd ON gd.id = td.grupo_id
+        ORDER BY gd.nome NULLS LAST, td.nome
+      `)).rows;
+    } catch(etd) { tiposDespesa = []; }
 
     const tipoColors = { ESTRUTURA:'#5B2EFF', FINANCEIRO:'#00B8D9', OPERACIONAL:'#5ED38C', TRANSFERENCIA:'#f59e0b' };
     const natColors  = { RECEITA:'#5ED38C', DESPESA:'#ef4444', IMPOSTO:'#f59e0b', FINANCEIRO:'#00B8D9', TRANSFERENCIA:'#808080' };
@@ -5341,6 +5395,28 @@ function renderHistoricoRel() {
         <td><button class='btn btn-sm btn-outline' onclick="editBanco('${b.id}','${b.codigo}','${b.nome.replace(/'/g,"\\'")  }','${b.agencia||''}','${b.conta||''}',${b.ativo})">Editar</button></td>
       </tr>`).join('');
 
+    // Renderizar tipos de despesa agrupados por grupo
+    let renderTiposDespesa = '';
+    let grupoAtualTD = null;
+    for (const td of tiposDespesa) {
+      const enc = (s) => (s||'').replace(/'/g,"\\'");
+      if (td.grupo_nome !== grupoAtualTD) {
+        grupoAtualTD = td.grupo_nome;
+        renderTiposDespesa += `<tr style='background:#f8fafc'><td colspan='5' style='padding:.4rem .75rem;font-weight:700;font-size:.8rem;color:#5B2EFF;text-transform:uppercase;letter-spacing:.05em'>&#128193; ${td.grupo_nome || 'Sem Grupo'}</td></tr>`;
+      }
+      renderTiposDespesa += `<tr>
+        <td style='padding-left:1.5rem'><strong>${td.codigo}</strong></td>
+        <td>${td.nome}</td>
+        <td style='font-size:.82rem;color:#64748b'>${td.grupo_nome||'-'}</td>
+        <td><span class='status-dot ${td.ativo?'ativo':'inativo'}'></span>${td.ativo?'Ativo':'Inativo'}</td>
+        <td style='display:flex;gap:.4rem'>
+          <button class='btn btn-sm btn-outline' onclick="editTipoDespesa('${td.id}','${enc(td.codigo)}','${enc(td.nome)}','${td.grupo_id||''}','${enc(td.grupo_codigo||td.grupo_codigo_ref||'')}',${td.ativo})">&#9998; Editar</button>
+          ${td.ativo ? `<button class='btn btn-sm' style='background:#fee2e2;color:#991b1b;border:1px solid #fca5a5' onclick="toggleTipoDespesa('${td.id}',false,'${enc(td.nome)}')">Inativar</button>` : `<button class='btn btn-sm' style='background:#dcfce7;color:#166534;border:1px solid #86efac' onclick="toggleTipoDespesa('${td.id}',true,'${enc(td.nome)}')">Reativar</button>`}
+        </td>
+      </tr>`;
+    }
+    const grupoOptsForTD = grupos.filter(g=>g.ativo).map(g => `<option value='${g.id}' data-codigo='${g.codigo}'>${g.nome}</option>`).join('');
+
     const clienteOpts = clientes.filter(c=>c.ativo).map(c => `<option value='${c.id}'>${c.nome}${c.nome_curto?' ('+c.nome_curto+')':''}</option>`).join('');
 
     const body = `
@@ -5350,6 +5426,7 @@ function renderHistoricoRel() {
 <div class='master-tabs'>
   <button class='master-tab active' onclick="switchTab('clientes')">Clientes / Fornecedores / Prestadores (${clientes.length})</button>
   <button class='master-tab' onclick="switchTab('grupos')">Grupos de Despesa (${grupos.length})</button>
+  <button class='master-tab' onclick="switchTab('tiposdespesa')">Tipos de Despesa (${tiposDespesa.length})</button>
   <button class='master-tab' onclick="switchTab('tipos')">Naturezas Gerenciais (${tipos.length})</button>
   <button class='master-tab' onclick="switchTab('projetos')">Projetos (${projetos.length})</button>
   <button class='master-tab' onclick="switchTab('cc')">Centros de Custo (${ccs.length})</button>
@@ -5436,6 +5513,40 @@ function renderHistoricoRel() {
     <div style='overflow-x:auto'>
     <table><thead><tr><th>Natureza</th><th>C&#243;digo</th><th>Nome</th><th>Descri&#231;&#227;o</th><th>Status</th><th></th></tr></thead>
     <tbody id='tbody-grupos'>${renderGrupos}</tbody></table></div>
+  </section>
+</div>
+
+<!-- TIPOS DE DESPESA -->
+<div id='panel-tiposdespesa' class='master-panel'>
+  <div class='master-form' id='form-tipodespesa'>
+    <h3 id='form-tipodespesa-title'>&#10133; Novo Tipo de Despesa</h3>
+    <input type='hidden' id='td-id'>
+    <div class='form-grid'>
+      <label>C&#243;digo <span style='color:#ef4444'>*</span> <input id='td-codigo' placeholder='Ex: CONVENIO_MEDICO' style='text-transform:uppercase'></label>
+      <label>Nome do Tipo <span style='color:#ef4444'>*</span> <input id='td-nome' placeholder='Ex: Conv&#234;nio M&#233;dico / Plano de Sa&#250;de'></label>
+      <label>Grupo de Despesa <span style='color:#ef4444'>*</span>
+        <select id='td-grupo'>
+          <option value=''>-- Selecione o Grupo --</option>
+          ${grupoOptsForTD}
+        </select>
+      </label>
+      <label>Status <select id='td-ativo'><option value='true'>Ativo</option><option value='false'>Inativo</option></select></label>
+    </div>
+    <label style='margin-top:.5rem'>Descri&#231;&#227;o <textarea id='td-desc' rows='2' placeholder='Descreva o que este tipo de despesa inclui...' style='width:100%;padding:.5rem;border:1px solid #e2e8f0;border-radius:.5rem;font-size:.9rem'></textarea></label>
+    <div style='display:flex;gap:.75rem;flex-wrap:wrap;margin-top:.75rem'>
+      <button onclick='saveTipoDespesa()'>&#128190; Salvar</button>
+      <button class='btn-outline' onclick='clearFormTipoDespesa()'>Cancelar</button>
+    </div>
+  </div>
+  <section>
+    <div style='display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:.5rem;margin-bottom:.75rem'>
+      <h2 style='margin:0'>Tipos de Despesa cadastrados</h2>
+      <input id='td-busca' placeholder='&#128269; Buscar tipo...' style='padding:.4rem .75rem;border:1px solid #e2e8f0;border-radius:.5rem;font-size:.85rem;width:240px' oninput='filtrarTiposDespesa()'>
+    </div>
+    <p style='color:#64748b;font-size:.88rem'>Cada Tipo de Despesa pertence a um Grupo. Exemplo: Grupo <strong>Pessoal</strong> &#8594; Tipos: Conv&#234;nio M&#233;dico, Sal&#225;rio CLT, Vale Refei&#231;&#227;o...</p>
+    <div style='overflow-x:auto'>
+    <table><thead><tr><th>C&#243;digo</th><th>Nome do Tipo</th><th>Grupo</th><th>Status</th><th></th></tr></thead>
+    <tbody id='tbody-tiposdespesa'>${renderTiposDespesa}</tbody></table></div>
   </section>
 </div>
 
@@ -5568,7 +5679,7 @@ function renderHistoricoRel() {
 </div>
 
 <script>
-const TABS_ORDER = ['clientes','grupos','tipos','projetos','cc','bancos'];
+const TABS_ORDER = ['clientes','grupos','tiposdespesa','tipos','projetos','cc','bancos'];
 function switchTab(tab) {
   document.querySelectorAll('.master-tab').forEach((b,i) => b.classList.toggle('active', TABS_ORDER[i] === tab));
   document.querySelectorAll('.master-panel').forEach(p => p.classList.remove('active'));
@@ -5690,6 +5801,55 @@ async function toggleGrupo(id, ativo, nome) {
     await apiCall('PATCH','/api/mestres/grupos-despesa/'+id+'/toggle',{ativo});
     location.reload();
   }catch(e){alert(e.message);}
+}
+// ─── TIPOS DE DESPESA ───
+function clearFormTipoDespesa() {
+  ['td-id','td-codigo','td-nome','td-desc'].forEach(id=>document.getElementById(id).value='');
+  document.getElementById('td-grupo').value='';
+  document.getElementById('td-ativo').value='true';
+  document.getElementById('form-tipodespesa-title').textContent='\u2795 Novo Tipo de Despesa';
+}
+function editTipoDespesa(id,codigo,nome,grupoId,grupoCodigo,ativo) {
+  document.getElementById('td-id').value=id;
+  document.getElementById('td-codigo').value=codigo;
+  document.getElementById('td-nome').value=nome;
+  document.getElementById('td-grupo').value=grupoId;
+  document.getElementById('td-ativo').value=String(ativo);
+  document.getElementById('form-tipodespesa-title').textContent='\u270F Editar Tipo: '+nome;
+  switchTab('tiposdespesa');
+  setTimeout(()=>document.getElementById('form-tipodespesa').scrollIntoView({behavior:'smooth'}),100);
+}
+async function saveTipoDespesa() {
+  const id=document.getElementById('td-id').value;
+  const codigo=document.getElementById('td-codigo').value.trim().toUpperCase();
+  const nome=document.getElementById('td-nome').value.trim();
+  const grupoId=document.getElementById('td-grupo').value;
+  if(!codigo||!nome){alert('Preencha c\u00f3digo e nome');return;}
+  if(!grupoId){alert('Selecione o Grupo de Despesa ao qual este tipo pertence.');return;}
+  const payload={codigo,nome,grupo_id:parseInt(grupoId),descricao:document.getElementById('td-desc').value.trim()||null,ativo:document.getElementById('td-ativo').value==='true'};
+  try{
+    await apiCall(id?'PUT':'POST','/api/mestres/tipos-despesa'+(id?'/'+id:''),payload);
+    location.reload();
+  }catch(e){alert(e.message);}
+}
+async function toggleTipoDespesa(id, ativo, nome) {
+  if(!confirm((ativo?'Reativar':'Inativar')+' o tipo "'+nome+'"?')) return;
+  try{
+    await apiCall('PATCH','/api/mestres/tipos-despesa/'+id+'/toggle',{ativo});
+    location.reload();
+  }catch(e){alert(e.message);}
+}
+function filtrarTiposDespesa() {
+  const busca = document.getElementById('td-busca').value.toLowerCase();
+  let grupoHeader = null;
+  document.querySelectorAll('#tbody-tiposdespesa tr').forEach(tr => {
+    if (tr.querySelector('td[colspan]')) {
+      grupoHeader = tr;
+      return;
+    }
+    const txt = tr.textContent.toLowerCase();
+    tr.style.display = !busca || txt.includes(busca) ? '' : 'none';
+  });
 }
 // ─── NATUREZAS GERENCIAIS ───
 function clearFormTipo() {
@@ -5928,6 +6088,39 @@ async function saveBanco() {
         }
         if (req.method === 'GET') {
           const r = await pg.query('SELECT * FROM tipos_lancamento ORDER BY natureza,nome');
+          return json(res, 200, { ok: true, data: r.rows });
+        }
+      }
+      if (entidade === 'tipos-despesa') {
+        if (req.method === 'POST') {
+          const r = await pg.query(
+            'INSERT INTO tipos_despesa (codigo,nome,grupo_id,grupo_codigo,descricao,ativo) VALUES ($1,$2,$3,$4,$5,$6) RETURNING id',
+            [body.codigo, body.nome, body.grupo_id||null, body.grupo_codigo||null, body.descricao||null, body.ativo!==false]
+          );
+          return json(res, 200, { ok: true, id: r.rows[0].id });
+        }
+        if (req.method === 'PUT' && id) {
+          await pg.query(
+            'UPDATE tipos_despesa SET codigo=$1,nome=$2,grupo_id=$3,descricao=$4,ativo=$5,atualizado_em=NOW() WHERE id=$6',
+            [body.codigo, body.nome, body.grupo_id||null, body.descricao||null, body.ativo!==false, id]
+          );
+          return json(res, 200, { ok: true });
+        }
+        if (req.method === 'PATCH' && id && parts[5] === 'toggle') {
+          await pg.query('UPDATE tipos_despesa SET ativo=$1,atualizado_em=NOW() WHERE id=$2', [body.ativo!==false, id]);
+          return json(res, 200, { ok: true });
+        }
+        if (req.method === 'DELETE' && id) {
+          await pg.query('UPDATE tipos_despesa SET ativo=false WHERE id=$1', [id]);
+          return json(res, 200, { ok: true });
+        }
+        if (req.method === 'GET') {
+          const r = await pg.query(`
+            SELECT td.*, gd.nome as grupo_nome
+            FROM tipos_despesa td
+            LEFT JOIN grupos_despesa gd ON gd.id = td.grupo_id
+            ORDER BY gd.nome NULLS LAST, td.nome
+          `);
           return json(res, 200, { ok: true, data: r.rows });
         }
       }
