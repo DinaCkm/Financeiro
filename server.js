@@ -3980,6 +3980,11 @@ async function excluirRef(tipo,nome){
               ${Object.entries(MAPA_PROJETOS_CKM).map(([cod,nome])=>`<option value="${cod}" ${(e.projeto||'')==cod?'selected':''}>${nome} (${cod})</option>`).join('')}
             </select></div>           <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Valor (R$)</label>
             <input id="el-valor-${e.id}" type="number" step="0.01" value="${Math.abs(val)}" style="font-size:.8rem;padding:.3rem .5rem;width:100%"/></div>
+            <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Classificação</label>
+            <select id="el-classif-${e.id}" style="font-size:.8rem;padding:.3rem .5rem;width:100%">
+              <option value="">-- Selecione --</option>
+              ${['Despesa Direta','Despesa Indireta','Receita Direta','Receita Indireta','Movimentação Financeira','Transferência Interna'].map(c=>`<option value="${c}" ${(e.classificacao||'')==c?'selected':''}>${c}</option>`).join('')}
+            </select></div>
             <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Status</label>
             <select id="el-status-${e.id}" style="font-size:.8rem;padding:.3rem .5rem;width:100%">${STATUS_LISTA.map(s=>`<option value="${s}" ${(e.status||'')==s?'selected':''}>${STATUS_LABEL[s]||s}</option>`).join('')}</select></div>
             <div style="grid-column:span 2"><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Documento / Referência (NF, Recibo, Contrato)</label>
@@ -4038,6 +4043,16 @@ async function excluirRef(tipo,nome){
     </select></div>
     <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Valor (R$) *</label>
     <input id="novo-valor" type="number" step="0.01" placeholder="0,00" style="font-size:.8rem;padding:.3rem .5rem;width:100%"/></div>
+    <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Classificação</label>
+    <select id="novo-classif" style="font-size:.8rem;padding:.3rem .5rem;width:100%">
+      <option value="">-- Selecione --</option>
+      <option value="Despesa Direta">Despesa Direta</option>
+      <option value="Despesa Indireta">Despesa Indireta</option>
+      <option value="Receita Direta">Receita Direta</option>
+      <option value="Receita Indireta">Receita Indireta</option>
+      <option value="Movimentação Financeira">Movimentação Financeira</option>
+      <option value="Transferência Interna">Transferência Interna</option>
+    </select></div>
     <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Status</label>
     <select id="novo-status" style="font-size:.8rem;padding:.3rem .5rem;width:100%">${statusOpts}</select></div>
     <div style="grid-column:span 2"><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Documento / Referência (NF, Recibo, Contrato)</label>
@@ -4193,6 +4208,7 @@ async function salvarLancEdit(id) {
     projeto: document.getElementById('el-proj-'+id)?.value,
     valor: parseFloat(document.getElementById('el-valor-'+id)?.value || 0),
     status: document.getElementById('el-status-'+id)?.value,
+    classificacao: document.getElementById('el-classif-'+id)?.value,
     documento: document.getElementById('el-doc-'+id)?.value,
     descricao: document.getElementById('el-doc-'+id)?.value,
     descritivo: document.getElementById('el-descritivo-'+id)?.value,
@@ -4219,6 +4235,7 @@ async function criarLancamento() {
     projeto: document.getElementById('novo-proj')?.value,
     valor: parseFloat(document.getElementById('novo-valor')?.value || 0),
     status: document.getElementById('novo-status')?.value,
+    classificacao: document.getElementById('novo-classif')?.value,
     documento: document.getElementById('novo-doc')?.value,
     descritivo: document.getElementById('novo-descritivo')?.value,
   };
