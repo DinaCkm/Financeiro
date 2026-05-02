@@ -4188,12 +4188,21 @@ function autocompleteFavorecido(val) {
   if (cpfLimpo.length >= 3) {
     var matches = Object.keys(CLIENTES_MAP_CPF).filter(function(k){ return k.indexOf(cpfLimpo)===0; });
     if (matches.length > 0 && cpfLimpo.length < 14) {
-      var html = '';
+      if(sugestoes) sugestoes.innerHTML = '';
       matches.slice(0,10).forEach(function(cpfKey){
         var c = CLIENTES_MAP_CPF[cpfKey];
-        html += '<div onclick="selecionarFavorecido(\'' + cpfKey + '\',\'' + c.nome.replace(/'/g,"\\'") + '\',\'' + (c.tipo||'') + '\')" style="padding:.4rem .6rem;cursor:pointer;border-bottom:1px solid #f1f5f9;font-size:.8rem" onmouseover="this.style.background=\'#f1f5f9\'" onmouseout="this.style.background=\'\'"><strong>' + c.nome + '</strong><br><span style="color:#94a3b8;font-size:.72rem">' + cpfKey + '</span></div>';
+        var div = document.createElement('div');
+        div.setAttribute('data-cpf', cpfKey);
+        div.setAttribute('data-nome', c.nome);
+        div.setAttribute('data-tipo', c.tipo||'');
+        div.style.cssText = 'padding:.4rem .6rem;cursor:pointer;border-bottom:1px solid #f1f5f9;font-size:.8rem';
+        div.onmouseover = function(){ this.style.background='#f1f5f9'; };
+        div.onmouseout = function(){ this.style.background=''; };
+        div.onclick = function(){ selecionarFavorecido(this.getAttribute('data-cpf'), this.getAttribute('data-nome'), this.getAttribute('data-tipo')); };
+        div.innerHTML = '<strong>' + c.nome + '</strong><br><span style="color:#94a3b8;font-size:.72rem">' + cpfKey + '</span>';
+        if(sugestoes) sugestoes.appendChild(div);
       });
-      if(sugestoes){ sugestoes.innerHTML=html; sugestoes.style.display='block'; }
+      if(sugestoes) sugestoes.style.display='block';
     } else {
       if(sugestoes) sugestoes.style.display='none';
     }
