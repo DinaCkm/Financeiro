@@ -3867,7 +3867,7 @@ async function excluirRef(tipo,nome){
         <td style="font-size:.72rem;color:#7c3aed;font-weight:500">${MAPA_PROJETOS_CKM[e.projeto] ? `<span title="${e.projeto}">${MAPA_PROJETOS_CKM[e.projeto]}</span>` : (e.projeto ? `<span style="color:#94a3b8">${e.projeto}</span>` : '<span style="color:#e2e8f0">—</span>')}</td>
         <td style="font-size:.72rem;color:#94a3b8">${natLabel}</td>
         <td style="font-size:.72rem;color:#94a3b8" title="${STATUS_LABEL[status]||status}">${STATUS_LABEL[status]||status}</td>
-        <td style="text-align:center"><button onclick="event.stopPropagation();toggleEditLanc('${e.id}', ${incJson})" title="Editar lançamento" style="background:#ede9fe;color:#6d28d9;font-size:.75rem;padding:.25rem .5rem;box-shadow:none;border:1px solid #c4b5fd">✏</button></td>
+        <td style="text-align:center"><button onclick="event.stopPropagation();toggleEditLanc('${e.id}', ${incJson})" title="Editar lançamento" style="background:#ede9fe;color:#6d28d9;font-size:.75rem;padding:.25rem .5rem;box-shadow:none;border:1px solid #c4b5fd">&#9998;</button></td>
       </tr>
       <tr id="edit-lanc-${e.id}" style="display:none;background:#f8fafc">
         <td colspan="11" style="padding:.75rem 1rem">
