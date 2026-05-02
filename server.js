@@ -3840,7 +3840,7 @@ async function excluirRef(tipo,nome){
       if (precisaProjeto && !(e.projeto || '').trim()) inconsistencias.push('sem_projeto');
       if (!nat || nat === 'Pendente de Classificação') inconsistencias.push('sem_natureza');
       const temInconsistencia = inconsistencias.length > 0;
-      const incJson = JSON.stringify(inconsistencias);
+      const incJson = JSON.stringify(inconsistencias).replace(/"/g, "'");
       const dcStr = e.dc || (e.valor >= 0 ? 'C' : 'D');
       const dcCls = dcStr === 'C' ? 'color:#065f46;font-weight:700' : 'color:#991b1b;font-weight:700';
       const val = Number(e.valor || 0);
