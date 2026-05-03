@@ -1335,7 +1335,7 @@ function calculateDashboard(db) {
   const d30 = addDays(today, 30);
 
   // Todos os lançamentos ordenados por data
-  const allSorted = [...db.entries].sort((a, b) => (a.dataISO || '').localeCompare(b.dataISO || ''));
+  const allSorted = [...(db.entries || [])].sort((a, b) => (a.dataISO || '').localeCompare(b.dataISO || ''));
 
   // Lançamentos ativos (a partir do corte) — usados em todos os cálculos operacionais
   const sortedEntries = allSorted.filter(isAtivo);
@@ -2820,7 +2820,9 @@ Responda em português, de forma objetiva e direta, citando os dados específico
       );
     }
     // Calcular métricas gerais (sem filtro de período — para os cards de saldo)
-    const metrics = calculateDashboard(db);
+    // Usar os dados já buscados do PostgreSQL
+    const dbComPG = Object.assign({}, db, { entries: todosLancsDB.length > 0 ? todosLancsDB : (db.entries || []) });
+    const metrics = calculateDashboard(dbComPG);
     const totalReceitasFiltro = lancsFiltrados.filter(e=>(e.valor||0)>0).reduce((a,e)=>a+(e.valor||0),0);
     const totalDespesasFiltro = lancsFiltrados.filter(e=>(e.valor||0)<0).reduce((a,e)=>a+Math.abs(e.valor||0),0);
     const saldoFiltro = totalReceitasFiltro - totalDespesasFiltro;
@@ -5150,11 +5152,25 @@ ${secaoExclusoes}`, user, '/historico');
       const pInicio = periodo_inicio || CORTE_DATA;
       const pFim = periodo_fim || hoje;
 
+      // Buscar lançamentos do PostgreSQL
+      let todosLancsIA = [];
+      try {
+        const pgIA = storage.getPool ? storage.getPool() : null;
+        if (pgIA) {
+          const resIA = await pgIA.query(
+            `SELECT data FROM entries WHERE
+             (data->>'isTransferenciaInterna')::boolean IS NOT TRUE`
+          );
+          todosLancsIA = resIA.rows.map(r => r.data);
+        }
+      } catch(eIA) { console.error('[ia-pg]', eIA.message); }
+      // Fallback para JSON se PostgreSQL não retornou dados
+      if (!todosLancsIA.length) todosLancsIA = (db.entries || []).filter(e => !e.isTransferenciaInterna);
+
       // Filtrar lançamentos do período solicitado
-      const lancsPeriodo = db.entries.filter(e =>
+      const lancsPeriodo = todosLancsIA.filter(e =>
         (e.dataISO || '') >= pInicio &&
-        (e.dataISO || '') <= pFim &&
-        !e.isTransferenciaInterna
+        (e.dataISO || '') <= pFim
       );
 
       // Calcular resumo financeiro do período
@@ -5221,8 +5237,8 @@ ${secaoExclusoes}`, user, '/historico');
         : 'Nenhum lançamento de mútuo/Pronampe no período';
 
       // Saldo acumulado histórico (para contexto)
-      const saldoHistorico = db.entries
-        .filter(e => (e.dataISO||'') <= pFim && !e.isTransferenciaInterna)
+      const saldoHistorico = todosLancsIA
+        .filter(e => (e.dataISO||'') <= pFim)
         .reduce((a,e) => a+(e.valor||0), 0);
 
       // Lançamentos mais relevantes (maiores valores absolutos)
