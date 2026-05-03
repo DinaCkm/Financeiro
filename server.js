@@ -4147,7 +4147,7 @@ async function excluirRef(tipo,nome){
         <td style="font-size:.78rem">${nome} ${origem} ${incBadge} ${confirmarBadge}</td>
         <td style="font-size:.78rem;color:#475569" title="${(e.descritivo||e.descricao||'')}">${ desc}</td>
         <td style="${valCls};font-size:.8rem;text-align:right;font-weight:600">${valStr}</td>
-        <td style="font-size:.72rem;color:#475569" title="${e.natureza||e.classificacao||''}"><span style="display:inline-block;max-width:110px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${(e.natureza||e.classificacao||'—').replace('Despesa ','').replace('Receita ','').replace('Movimentação ','Mov. ')}</span></td>
+        <td style="font-size:.72rem;color:#475569" title="${e.natureza||e.classificacao||''}"><span style="display:inline-block;max-width:130px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${(e.natureza||e.classificacao||'—')}</span></td>
         <td style="font-size:.72rem;color:#7c3aed;font-weight:500">${MAPA_PROJETOS_CKM[e.projeto] ? `<span title="${e.projeto}">${MAPA_PROJETOS_CKM[e.projeto]}</span>` : (e.projeto ? `<span style="color:#94a3b8">${e.projeto}</span>` : '<span style="color:#e2e8f0">—</span>')}</td>
         <td style="font-size:.72rem;color:#94a3b8" title="${STATUS_LABEL[status]||status}">${STATUS_LABEL[status]||status}</td>
         <td style="text-align:center"><button onclick="event.stopPropagation();toggleEditLanc('${e.id}', ${incJson})" title="Editar lançamento" style="background:#ede9fe;color:#6d28d9;font-size:.75rem;padding:.25rem .5rem;box-shadow:none;border:1px solid #c4b5fd">&#9998;</button></td>
@@ -8610,6 +8610,44 @@ async function boot() {
           pgDb.meta.ultimoNumLanc = contador;
           console.log(`[boot] Migração concluída: ${semNumLanc.length} lançamentos numerados. Último: #${String(contador).padStart(6,'0')}`);
         }
+        // ===================================================================================
+
+        // ===== MIGRAÇÃO: unificar variantes de natureza/classificação para valores padronizados =====
+        const MAPA_NAT_BOOT = {
+          'Despesa Indireta': 'Custo Indireto',
+          'Indireto': 'Custo Indireto',
+          'Custos Indiretos': 'Custo Indireto',
+          'Custo Indireto da Estrutura': 'Custo Indireto',
+          'Despesa Indireta da Estrutura': 'Custo Indireto',
+          'Estrutura Indireta': 'Custo Indireto',
+          'Custo de Estrutura': 'Custo Indireto',
+          'Despesa de Estrutura': 'Custo Indireto',
+        };
+        let migNatCount = 0;
+        pgDb.entries.forEach(e => {
+          const nat = e.natureza || e.classificacao || '';
+          if (MAPA_NAT_BOOT[nat]) {
+            e.natureza = MAPA_NAT_BOOT[nat];
+            e.classificacao = MAPA_NAT_BOOT[nat];
+            migNatCount++;
+          }
+          if (MAPA_NAT_BOOT[e.natureza]) { e.natureza = MAPA_NAT_BOOT[e.natureza]; migNatCount++; }
+          if (MAPA_NAT_BOOT[e.classificacao]) { e.classificacao = MAPA_NAT_BOOT[e.classificacao]; migNatCount++; }
+        });
+        if (migNatCount > 0) console.log(`[boot] Migração natureza: ${migNatCount} lançamentos unificados para 'Custo Indireto'`);
+        // Também executar via SQL direto para garantir persistência no PostgreSQL
+        try {
+          const pgPool = storage.getPool ? storage.getPool() : null;
+          if (pgPool) {
+            for (const [de, para] of Object.entries(MAPA_NAT_BOOT)) {
+              await pgPool.query(
+                `UPDATE entries SET data = jsonb_set(jsonb_set(data, '{natureza}', $1::jsonb), '{classificacao}', $1::jsonb)
+                 WHERE data->>'natureza' = $2 OR data->>'classificacao' = $2`,
+                [JSON.stringify(para), de]
+              );
+            }
+          }
+        } catch(eMig) { console.error('[boot] Erro migração natureza:', eMig.message); }
         // ===================================================================================
 
         fs.writeFileSync(DB_PATH, JSON.stringify(pgDb, null, 2));
