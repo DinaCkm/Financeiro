@@ -4193,14 +4193,13 @@ async function excluirRef(tipo,nome){
           const dataLanc = e.dataISO || '';
           const aPartirMaio = dataLanc >= '2026-01-01';
           const concStatus = e.conciliacao_status || '';
-          // Se já está conciliado, mostrar ícone independente da data
+          // Estados visuais: verde=extrato confirmado, amarelo=manual sem extrato, cinza=não conciliado
           if (concStatus === 'extrato') {
-            return `<td style="text-align:center"><button onclick="event.stopPropagation();toggleConciliacao('${e.id}','extrato')" title="Conciliado via extrato bancário — clique para desfazer" style="background:none;border:none;cursor:pointer;font-size:1.3rem" aria-label="Conciliado via extrato">&#9989;</button></td>`;
+            return `<td style="text-align:center"><button onclick="event.stopPropagation();toggleConciliacao('${e.id}','extrato')" title="✅ Conciliado via extrato bancário — clique para desfazer" style="background:none;border:none;cursor:pointer;font-size:1.4rem;filter:none" aria-label="Conciliado via extrato">&#9989;</button></td>`;
           } else if (concStatus === 'manual') {
-            return `<td style="text-align:center"><button onclick="event.stopPropagation();toggleConciliacao('${e.id}','manual')" title="Conciliado manualmente — clique para desfazer" style="background:none;border:none;cursor:pointer;font-size:1.3rem" aria-label="Conciliado manualmente">&#128994;</button></td>`;
+            return `<td style="text-align:center"><button onclick="event.stopPropagation();toggleConciliacao('${e.id}','manual')" title="🟡 Conciliado manualmente (sem extrato) — clique para desfazer" style="background:none;border:none;cursor:pointer;font-size:1.4rem" aria-label="Conciliado manualmente">&#128993;</button></td>`;
           } else if (aPartirMaio) {
-            // Só mostrar botão de marcar para lançamentos a partir de 01/05
-            return `<td style="text-align:center"><button onclick="event.stopPropagation();toggleConciliacao('${e.id}','marcar')" title="Clique para marcar como conciliado manualmente" style="background:none;border:none;cursor:pointer;font-size:1.3rem;opacity:.25" aria-label="Marcar como conciliado">&#9711;</button></td>`;
+            return `<td style="text-align:center"><button onclick="event.stopPropagation();toggleConciliacao('${e.id}','marcar')" title="⭕ Não conciliado — clique para marcar como conciliado" style="background:none;border:none;cursor:pointer;font-size:1.4rem;opacity:.3" aria-label="Marcar como conciliado">&#9711;</button></td>`;
           } else {
             return '<td></td>';
           }
@@ -4671,11 +4670,11 @@ async function toggleConciliacao(id, estadoAtual) {
       if (td) {
         const q = String.fromCharCode(39);
         if (data.conciliacao_status === 'manual') {
-          td.innerHTML = '<button onclick=' + q + 'event.stopPropagation();toggleConciliacao(' + q + id + q + ',' + q + 'manual' + q + ')' + q + ' title=' + q + 'Conciliado manualmente \u2014 clique para desfazer' + q + ' style=' + q + 'background:none;border:none;cursor:pointer;font-size:1.3rem' + q + ' aria-label=' + q + 'Conciliado manualmente' + q + '>&#128994;</button>';
+          td.innerHTML = '<button onclick=' + q + 'event.stopPropagation();toggleConciliacao(' + q + id + q + ',' + q + 'manual' + q + ')' + q + ' title=' + q + '\ud83d\udfe1 Conciliado manualmente (sem extrato) \u2014 clique para desfazer' + q + ' style=' + q + 'background:none;border:none;cursor:pointer;font-size:1.4rem' + q + ' aria-label=' + q + 'Conciliado manualmente' + q + '>&#128993;</button>';
         } else if (data.conciliacao_status === 'extrato') {
-          td.innerHTML = '<button onclick=' + q + 'event.stopPropagation();toggleConciliacao(' + q + id + q + ',' + q + 'extrato' + q + ')' + q + ' title=' + q + 'Conciliado via extrato banc\u00e1rio \u2014 clique para desfazer' + q + ' style=' + q + 'background:none;border:none;cursor:pointer;font-size:1.3rem' + q + ' aria-label=' + q + 'Conciliado via extrato' + q + '>&#9989;</button>';
+          td.innerHTML = '<button onclick=' + q + 'event.stopPropagation();toggleConciliacao(' + q + id + q + ',' + q + 'extrato' + q + ')' + q + ' title=' + q + '\u2705 Conciliado via extrato banc\u00e1rio \u2014 clique para desfazer' + q + ' style=' + q + 'background:none;border:none;cursor:pointer;font-size:1.4rem' + q + ' aria-label=' + q + 'Conciliado via extrato' + q + '>&#9989;</button>';
         } else {
-          td.innerHTML = '<button onclick=' + q + 'event.stopPropagation();toggleConciliacao(' + q + id + q + ',' + q + 'marcar' + q + ')' + q + ' title=' + q + 'Clique para marcar como conciliado manualmente' + q + ' style=' + q + 'background:none;border:none;cursor:pointer;font-size:1.3rem;opacity:.25' + q + ' aria-label=' + q + 'Marcar como conciliado' + q + '>&#9711;</button>';
+          td.innerHTML = '<button onclick=' + q + 'event.stopPropagation();toggleConciliacao(' + q + id + q + ',' + q + 'marcar' + q + ')' + q + ' title=' + q + '\u2b55 N\u00e3o conciliado \u2014 clique para marcar como conciliado' + q + ' style=' + q + 'background:none;border:none;cursor:pointer;font-size:1.4rem;opacity:.3' + q + ' aria-label=' + q + 'Marcar como conciliado' + q + '>&#9711;</button>';
         }
       }
     } else {
@@ -8209,6 +8208,29 @@ async function ocultarConciliacao(id, btn) {
             if (lancamentoId) itens[idx].lancamento_id = lancamentoId;
             await pg.query('UPDATE conciliacao_extratos SET itens=$1 WHERE id=$2', [JSON.stringify(itens), extratoId]);
           }
+        }
+        // Atualizar conciliacao_status no lançamento quando conciliado via extrato
+        const lancId = lancamentoId || null;
+        if (lancId && ['OK_CONCILIADO','CONCILIADO','LANCAMENTO_CONFIRMADO'].includes(novoStatus)) {
+          try {
+            await pg.query(
+              `UPDATE entries SET data = data || '{"conciliacao_status":"extrato"}'::jsonb WHERE data->>'id' = $1`,
+              [String(lancId)]
+            );
+            // Atualizar também no db.json em memória
+            const entryInMem = db.entries.find(e => e.id === String(lancId) || String(e.numLanc) === String(lancId));
+            if (entryInMem) { entryInMem.conciliacao_status = 'extrato'; saveDb(db); }
+          } catch(eUpd) { console.error('[item-status-update-lanc]', eUpd.message); }
+        } else if (lancId && ['EM_ANALISE','DIVERGENTE','PENDENTE_CRIACAO','NAO_LANCADO'].includes(novoStatus)) {
+          // Se voltou para análise/divergente, remover conciliacao_status do lançamento
+          try {
+            await pg.query(
+              `UPDATE entries SET data = data - 'conciliacao_status' WHERE data->>'id' = $1`,
+              [String(lancId)]
+            );
+            const entryInMem = db.entries.find(e => e.id === String(lancId) || String(e.numLanc) === String(lancId));
+            if (entryInMem) { entryInMem.conciliacao_status = null; saveDb(db); }
+          } catch(eUpd) { console.error('[item-status-remove-lanc]', eUpd.message); }
         }
       }
       return json(res, 200, { ok: true });
