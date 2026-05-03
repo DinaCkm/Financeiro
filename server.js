@@ -6110,10 +6110,13 @@ function renderHistoricoRel() {
 
       // Colunas
       ws.columns = [
+        { header: 'Nº',                      key: 'num',     width: 10 },
         { header: 'Data',                    key: 'data',    width: 14 },
         { header: 'D/C',                     key: 'dc',      width: 6  },
         { header: 'Centro de Custo',         key: 'cc',      width: 20 },
         { header: 'Cliente / Fornecedor',    key: 'nome',    width: 35 },
+        { header: 'CPF / CNPJ',              key: 'cpfcnpj', width: 20 },
+        { header: 'Projeto',                 key: 'proj',    width: 25 },
         { header: 'Descritivo',              key: 'desc',    width: 50 },
         { header: 'Natureza',                key: 'nat',     width: 25 },
         { header: 'Status',                  key: 'status',  width: 14 },
@@ -6143,7 +6146,7 @@ function renderHistoricoRel() {
 
       for (const [cc, itens] of grupos) {
         // Linha de cabeçalho do grupo
-        const grpRow = ws.addRow([`📁 ${cc}`, '', '', '', `${itens.length} lançamento(s)`, '', '', '']);
+        const grpRow = ws.addRow([`📁 ${cc}`, '', '', '', `${itens.length} lançamento(s)`, '', '', '', '', '', '']);
         grpRow.eachCell(cell => {
           cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE2E8F0' } };
           cell.font = { bold: true, size: 10, color: { argb: 'FF1E40AF' } };
@@ -6154,37 +6157,42 @@ function renderHistoricoRel() {
         for (const e of itens) {
           const dc = e.dc || (e.valor >= 0 ? 'C' : 'D');
           const nome = e.cliente || e.parceiro || e.projeto || '-';
+          const numLanc = e.numLanc ? '#' + String(e.numLanc).padStart(6, '0') : '-';
           const row = ws.addRow([
+            numLanc,
             e.dataISO || e.data || '-',
             dc,
             e.centroCusto || '-',
             nome,
+            e.cpfCnpj || e.cpf || e.cnpj || '-',
+            e.projeto || '-',
             e.descricao || '-',
             e.natureza || '-',
             e.status || '-',
             e.valor || 0
           ]);
           // Formatar valor
-          row.getCell(8).numFmt = 'R$ #,##0.00;[Red]-R$ #,##0.00';
-          row.getCell(8).alignment = { horizontal: 'right' };
+          row.getCell(11).numFmt = 'R$ #,##0.00;[Red]-R$ #,##0.00';
+          row.getCell(11).alignment = { horizontal: 'right' };
           // Cor da linha por D/C
           if (dc === 'C') {
-            row.getCell(8).font = { color: { argb: 'FF065F46' } };
+            row.getCell(11).font = { color: { argb: 'FF065F46' } };
           } else {
-            row.getCell(8).font = { color: { argb: 'FF991B1B' } };
+            row.getCell(11).font = { color: { argb: 'FF991B1B' } };
           }
-          row.getCell(2).alignment = { horizontal: 'center' };
+          row.getCell(3).alignment = { horizontal: 'center' };
+          row.getCell(1).alignment = { horizontal: 'center' };
           subtotal += (e.valor || 0);
           rowIdx++;
         }
 
         // Linha de subtotal do grupo
-        const subRow = ws.addRow(['', '', '', '', '', `Subtotal ${cc}:`, '', subtotal]);
-        subRow.getCell(6).font = { bold: true, size: 10 };
-        subRow.getCell(6).alignment = { horizontal: 'right' };
-        subRow.getCell(8).numFmt = 'R$ #,##0.00;[Red]-R$ #,##0.00';
-        subRow.getCell(8).font = { bold: true, color: { argb: subtotal >= 0 ? 'FF065F46' : 'FF991B1B' } };
-        subRow.getCell(8).alignment = { horizontal: 'right' };
+        const subRow = ws.addRow(['', '', '', '', '', '', '', '', `Subtotal ${cc}:`, '', subtotal]);
+        subRow.getCell(9).font = { bold: true, size: 10 };
+        subRow.getCell(9).alignment = { horizontal: 'right' };
+        subRow.getCell(11).numFmt = 'R$ #,##0.00;[Red]-R$ #,##0.00';
+        subRow.getCell(11).font = { bold: true, color: { argb: subtotal >= 0 ? 'FF065F46' : 'FF991B1B' } };
+        subRow.getCell(11).alignment = { horizontal: 'right' };
         subRow.eachCell(cell => {
           cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF8FAFC' } };
           cell.border = { top: { style: 'thin', color: { argb: 'FFCBD5E1' } }, bottom: { style: 'medium', color: { argb: 'FFCBD5E1' } } };
@@ -6197,14 +6205,14 @@ function renderHistoricoRel() {
       }
 
       // Linha de total geral
-      const totRow = ws.addRow(['TOTAL GERAL', '', '', `${filtrados.length} lançamentos`, '', `Entradas: R$ ${totalEntradas.toLocaleString('pt-BR',{minimumFractionDigits:2})}`, '', totalGeral]);
+      const totRow = ws.addRow(['TOTAL GERAL', '', '', `${filtrados.length} lançamentos`, '', '', '', '', `Entradas: R$ ${totalEntradas.toLocaleString('pt-BR',{minimumFractionDigits:2})}`, '', totalGeral]);
       totRow.eachCell(cell => {
         cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1E293B' } };
         cell.font = { bold: true, color: { argb: 'FFFFFFFF' }, size: 11 };
       });
-      totRow.getCell(8).numFmt = 'R$ #,##0.00;[Red]-R$ #,##0.00';
-      totRow.getCell(8).font = { bold: true, color: { argb: totalGeral >= 0 ? 'FF86EFAC' : 'FFFCA5A5' }, size: 11 };
-      totRow.getCell(8).alignment = { horizontal: 'right' };
+      totRow.getCell(11).numFmt = 'R$ #,##0.00;[Red]-R$ #,##0.00';
+      totRow.getCell(11).font = { bold: true, color: { argb: totalGeral >= 0 ? 'FF86EFAC' : 'FFFCA5A5' }, size: 11 };
+      totRow.getCell(11).alignment = { horizontal: 'right' };
 
       // Gerar buffer e enviar
       const buffer = await wb.xlsx.writeBuffer();
