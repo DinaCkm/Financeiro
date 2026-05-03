@@ -7828,6 +7828,8 @@ async function uploadExtrato() {
   // ============================================================
   if (req.method === 'GET' && url.pathname === '/conciliacao/detalhe') {
     const user = requireAuth(req, res, db); if (!user) return;
+    const pg = storage.getPool ? storage.getPool() : null;
+    if (!pg) { res.writeHead(302,{Location:'/conciliacao'}); res.end(); return; }
     const extratoId = parseInt(url.searchParams.get('id') || '0');
     if (!extratoId) { res.writeHead(302,{Location:'/conciliacao'}); res.end(); return; }
 
