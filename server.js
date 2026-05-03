@@ -5976,13 +5976,11 @@ function renderHistoricoRel() {
       const pg = storage.getPool ? storage.getPool() : null;
       let todasEntries = [];
       if (pg) {
-        const r = await pg.query('SELECT * FROM entries ORDER BY data_iso ASC, id ASC');
+        const r = await pg.query("SELECT id, data FROM entries ORDER BY data->>'dataISO' ASC, id ASC");
         todasEntries = r.rows.map(row => ({
-          id: row.id, data: row.data, dataISO: row.data_iso, dc: row.dc,
-          centroCusto: row.centro_custo, cliente: row.cliente, parceiro: row.parceiro,
-          projeto: row.projeto, descricao: row.descricao, natureza: row.natureza,
-          valor: parseFloat(row.valor) || 0, status: row.status,
-          isTransferenciaInterna: row.is_transferencia_interna
+          id: row.id,
+          ...row.data,
+          valor: parseFloat((row.data && row.data.valor) || 0)
         }));
       } else {
         todasEntries = db.entries || [];
