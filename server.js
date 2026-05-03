@@ -1035,9 +1035,17 @@ function reviewCards(list, allEntries) {
       const NATUREZAS_GERENCIAIS = ['Receita Operacional','Custo Direto','Custo Indireto','Receita Financeira','Movimentação Financeira','Transferência Interna','Pendente de Classificação'];
       const natOpts = NATUREZAS_GERENCIAIS
         .map((n) => `<option value='${n}' ${n === (e.naturezaGerencial||e.natureza||'Pendente de Classificação') ? 'selected' : ''}>${n}</option>`).join('');
-      const STATUS_LISTA = ['PG','AG','RE','RT','TF','NT','ZZ','OK','RG','XF','AP','DE','MK','NR','BQ','CR','RD','importado','pendente','ok','cancelado','revisado'];
-      const statusOpts = STATUS_LISTA
-        .map((s) => `<option value='${s}' ${s === (e.status||'PG') ? 'selected' : ''}>${s}</option>`).join('');
+      const STATUS_NOVOS = [
+        ['PENDENTE','Pendente'],['PAGO','Pago'],['RECEBIDO','Recebido'],
+        ['CANCELADO','Cancelado'],['ESTORNADO','Estornado'],['DEVOLVIDO','Devolvido'],
+        ['RENEGOCIADO','Renegociado'],['NAO_REALIZADO','Não realizado'],['CONFIRMADO','Confirmado']
+      ];
+      const STATUS_LEGADO = ['PG','AG','RE','RT','TF','NT','ZZ','OK','RG','XF','AP','DE','MK','NR','BQ','CR','RD','importado','pendente','ok','cancelado','revisado'];
+      const statusAtual = e.status || 'PENDENTE';
+      const statusOpts = [
+        ...STATUS_NOVOS.map(([cod,label]) => `<option value='${cod}' ${statusAtual===cod?'selected':''}>${label}</option>`),
+        ...(STATUS_LEGADO.includes(statusAtual) ? [`<option value='${statusAtual}' selected disabled style='color:#94a3b8'>${statusAtual} (legado)</option>`] : [])
+      ].join('');
 
       return `
         <tr class='entry-view-row' id='view-${eId}'
@@ -3916,17 +3924,32 @@ async function excluirRef(tipo,nome){
     const NATUREZAS = naturezasCad.map(r => r.nome);
     const GRUPOS = gruposCad;
     const TIPOS = tiposDespesaCad;
-    const STATUS_LISTA = ['PG','AG','RE','RT','TF','NT','ZZ','OK','RG','XF','AP','DE','MK','NR','BQ','CR','RD','importado','pendente','ok','cancelado','revisado'];
+    // Status novos (ativos para novos lançamentos)
+    const STATUS_NOVOS = [
+      ['PENDENTE','Pendente'],['PAGO','Pago'],['RECEBIDO','Recebido'],
+      ['CANCELADO','Cancelado'],['ESTORNADO','Estornado'],['DEVOLVIDO','Devolvido'],
+      ['RENEGOCIADO','Renegociado'],['NAO_REALIZADO','Não realizado'],['CONFIRMADO','Confirmado']
+    ];
+    // Status legados (mantidos apenas para exibição de lançamentos antigos)
+    const STATUS_LEGADO_LISTA = ['PG','AG','RE','RT','TF','NT','ZZ','OK','RG','XF','AP','DE','MK','NR','BQ','CR','RD','importado','pendente','ok','cancelado','revisado'];
     const STATUS_LABEL = {
-      PG: 'PG (Pago)', AG: 'AG (Aguardando)', RE: 'RE (Recebido)', RT: 'RT (Retido)',
-      TF: 'TF (Transferência)', NT: 'NT (Não Tributado)', ZZ: 'ZZ (Cancelado)',
-      OK: 'OK (Confirmado)', RG: 'RG (Renegociado)', XF: 'XF (Estornado)',
-      AP: 'AP (A Pagar)', DE: 'DE (Devolvido)', MK: 'MK (Marketing)',
-      NR: 'NR (Não Realizado)', BQ: 'BQ (Bloqueado)', CR: 'CR (Crédito)',
-      RD: 'RD (Redigitado)', importado: 'Importado', pendente: 'Pendente',
-      ok: 'OK (Confirmado)', cancelado: 'Cancelado', revisado: 'Revisado'
+      PENDENTE:'Pendente', PAGO:'Pago', RECEBIDO:'Recebido', CANCELADO:'Cancelado',
+      ESTORNADO:'Estornado', DEVOLVIDO:'Devolvido', RENEGOCIADO:'Renegociado',
+      NAO_REALIZADO:'Não realizado', CONFIRMADO:'Confirmado',
+      // Legados (para exibição)
+      PG:'PG (Pago)', AG:'AG (Aguardando)', RE:'RE (Recebido)', RT:'RT (Retido)',
+      TF:'TF (Transferência)', NT:'NT (Não Tributado)', ZZ:'ZZ (Cancelado)',
+      OK:'OK (Confirmado)', RG:'RG (Renegociado)', XF:'XF (Estornado)',
+      AP:'AP (A Pagar)', DE:'DE (Devolvido)', MK:'MK (Marketing)',
+      NR:'NR (Não Realizado)', BQ:'BQ (Bloqueado)', CR:'CR (Crédito)',
+      RD:'RD (Redigitado)', importado:'Importado', pendente:'Pendente (legado)',
+      ok:'OK (legado)', cancelado:'Cancelado (legado)', revisado:'Revisado (legado)'
     };
-    const statusOpts = STATUS_LISTA.map(s => `<option value="${s}">${STATUS_LABEL[s]||s}</option>`).join('');
+    // statusOpts: apenas os novos (para formulário de novo lançamento)
+    const statusOpts = STATUS_NOVOS.map(([cod,label]) => `<option value="${cod}">${label}</option>`).join('');
+    // statusOptsAll: novos + legados (para filtro de pesquisa)
+    const statusOptsAll = STATUS_NOVOS.map(([cod,label]) => `<option value="${cod}">${label}</option>`).join('') +
+      STATUS_LEGADO_LISTA.map(s => `<option value="${s}" style="color:#94a3b8">${STATUS_LABEL[s]||s} ★</option>`).join('');
     // Opts do cadastro
     const grupoOpts = '<option value="">Todos</option>' + GRUPOS.map(g => `<option value="${g.codigo}" ${qCC===g.codigo?'selected':''}>${g.nome}</option>`).join('');
     const tipoOpts  = '<option value="">Todos</option>' + TIPOS.map(t => `<option value="${t.codigo}">${t.grupo_nome ? t.grupo_nome+' → ' : ''}${t.nome}</option>`).join('');
@@ -4019,7 +4042,10 @@ async function excluirRef(tipo,nome){
               ${['Despesa Direta','Despesa Indireta','Receita Direta','Receita Indireta','Movimentação Financeira','Transferência Interna'].map(c=>`<option value="${c}" ${(e.classificacao||'')==c?'selected':''}>${c}</option>`).join('')}
             </select></div>
             <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Status</label>
-            <select id="el-status-${e.id}" style="font-size:.8rem;padding:.3rem .5rem;width:100%">${STATUS_LISTA.map(s=>`<option value="${s}" ${(e.status||'')==s?'selected':''}>${STATUS_LABEL[s]||s}</option>`).join('')}</select></div>
+            <select id="el-status-${e.id}" style="font-size:.8rem;padding:.3rem .5rem;width:100%">
+              ${STATUS_NOVOS.map(([cod,label])=>`<option value="${cod}" ${(e.status||'')==cod?'selected':''}>${label}</option>`).join('')}
+              ${STATUS_LEGADO_LISTA.includes(e.status||'') ? `<optgroup label="─ Legado ─"><option value="${e.status}" selected style="color:#94a3b8">${STATUS_LABEL[e.status]||e.status} (legado)</option></optgroup>` : ''}
+            </select></div>
             <div style="grid-column:span 2"><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Documento / Referência (NF, Recibo, Contrato)</label>
             <input id="el-doc-${e.id}" value="${(e.documento||e.descricao||'').replace(/"/g,'&quot;')}" style="font-size:.8rem;padding:.3rem .5rem;width:100%"/></div>
             <div style="grid-column:span 2"><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Descritivo (finalidade do gasto)</label>
@@ -4183,7 +4209,10 @@ async function excluirRef(tipo,nome){
     <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Status</label>
     <select name="status" style="font-size:.8rem;padding:.3rem .5rem;width:100%">
       <option value="">Todos</option>
-      ${STATUS_LISTA.map(s => `<option value="${s}" ${qStatus===s?'selected':''}>${s}</option>`).join('')}
+      ${STATUS_NOVOS.map(([cod,label]) => `<option value="${cod}" ${qStatus===cod?'selected':''}>${label}</option>`).join('')}
+      <optgroup label="─── Status legados ───">
+      ${STATUS_LEGADO_LISTA.map(s => `<option value="${s}" ${qStatus===s?'selected':''} style="color:#94a3b8">${STATUS_LABEL[s]||s}</option>`).join('')}
+      </optgroup>
     </select></div>
     <div style="display:flex;gap:.4rem;align-items:flex-end">
       <input type="hidden" name="inc" value="${qInc}">
