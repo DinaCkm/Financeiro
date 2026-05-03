@@ -7872,6 +7872,7 @@ async function uploadExtrato() {
             for (const row of rLanc.rows) {
               lancamentosMap[row.id] = row.data || {};
               lancamentosMap[row.id]._id = row.id;
+              lancamentosMap[row.id]._numLanc = (row.data && row.data.numLanc) ? row.data.numLanc : null;
             }
           }
         }
@@ -8028,13 +8029,20 @@ async function uploadExtrato() {
         : it.status==='OK_CONCILIADO'
         ? '<span style="color:#059669;font-weight:700">✔️ OK — Conciliado</span>'
         : '<span style="color:#059669;font-weight:700">✅ Conciliado</span>';
+      const lancConc = lancamentosMap[it.lancamento_id] || {};
+      const numLancConc = lancConc._numLanc || null;
+      const linkLancConc = it.lancamento_id
+        ? (numLancConc
+            ? '<a href="/lancamentos?num='+numLancConc+'" target="_blank" style="color:#3b82f6;font-size:.78rem;font-weight:600">🔗 Ver #'+String(numLancConc).padStart(6,'0')+'</a>'
+            : '<a href="/lancamentos?q='+encodeURIComponent(it.memo||'')+'" target="_blank" style="color:#3b82f6;font-size:.78rem">🔗 Ver lançamento</a>')
+        : '';
       return '<tr id="cc-row-'+i+'" style="border-bottom:1px solid #dcfce7">'
         +'<td style="padding:.4rem .6rem;font-size:.82rem;white-space:nowrap">'+fmtData(it.dataISO)+'</td>'
         +'<td style="padding:.4rem .6rem;font-size:.82rem;font-weight:700;color:'+cor+'">'+it.dc+'</td>'
         +'<td style="padding:.4rem .6rem;font-size:.82rem;max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="'+esc(it.memo)+'">'+esc(it.memo||'-')+'</td>'
         +'<td style="padding:.4rem .6rem;font-size:.82rem;text-align:right;font-weight:700;color:'+cor+'">'+fmtVal(it.valor)+'</td>'
         +'<td style="padding:.4rem .6rem">'+statusLabel+'</td>'
-        +'<td style="padding:.4rem .6rem">'+(it.lancamento_id ? '<a href="/lancamentos?id='+it.lancamento_id+'" style="color:#3b82f6;font-size:.78rem">Ver lançamento</a>' : '')+'</td>'
+        +'<td style="padding:.4rem .6rem">'+linkLancConc+'</td>'
         +'</tr>';
     }).join('');
 
