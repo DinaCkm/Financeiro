@@ -2621,6 +2621,34 @@ Responda em português, de forma objetiva e direta, citando os dados específico
   }
 
 
+  // GET /api/entries/check-recorrencia — verificar se já existem lançamentos com os 3 indicadores
+  if (req.method === 'GET' && url.pathname === '/api/entries/check-recorrencia') {
+    const user = requireAuth(req, res, db);
+    if (!user) return;
+    const favorecido = (url.searchParams.get('favorecido') || '').trim().toUpperCase();
+    const cc = (url.searchParams.get('cc') || '').trim().toUpperCase();
+    const tipo = (url.searchParams.get('tipo') || '').trim().toUpperCase();
+    let count = 0;
+    try {
+      const pg = storage.getPool ? storage.getPool() : null;
+      if (pg) {
+        const result = await pg.query(
+          `SELECT COUNT(*) FROM entries WHERE UPPER(TRIM(favorecido)) = $1 AND UPPER(TRIM(centro_custo)) = $2 AND UPPER(TRIM(tipo_despesa)) = $3`,
+          [favorecido, cc, tipo]
+        );
+        count = parseInt(result.rows[0]?.count || 0, 10);
+      } else {
+        count = (db.entries || []).filter(function(e) {
+          return (e.favorecido||'').trim().toUpperCase() === favorecido &&
+                 (e.centroCusto||'').trim().toUpperCase() === cc &&
+                 (e.tipoDespesa||'').trim().toUpperCase() === tipo;
+        }).length;
+      }
+    } catch(e) { count = 0; }
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    return res.end(JSON.stringify({ count }));
+  }
+
   // POST /api/entries — criar novo lançamento manual
   if (req.method === 'POST' && url.pathname === '/api/entries') {
     const user = requireAuth(req, res, db);
@@ -4071,6 +4099,41 @@ async function excluirRef(tipo,nome){
     <div style="grid-column:span 2"><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Descritivo (finalidade do gasto)</label>
     <input id="novo-descritivo" placeholder="Ex: Serviço de hospedagem para manutenção da presença digital" style="font-size:.8rem;padding:.3rem .5rem;width:100%"/></div>
   </div>
+
+  <!-- RECORRÊNCIA -->
+  <div style="margin-top:1rem;padding:1rem;background:#f8fafc;border-radius:.5rem;border:1px solid #e2e8f0">
+    <div style="display:flex;align-items:center;gap:1rem;flex-wrap:wrap">
+      <div>
+        <label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">🔁 Recorrência</label><br>
+        <select id="novo-recorrencia" onchange="toggleRecorrencia()" style="font-size:.8rem;padding:.3rem .5rem;min-width:140px">
+          <option value="nao">Não recorrente</option>
+          <option value="mensal">Mensal</option>
+          <option value="quinzenal">Quinzenal</option>
+        </select>
+      </div>
+      <div id="bloco-data-fim" style="display:none">
+        <label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Data de Fim *</label><br>
+        <input id="novo-data-fim" type="date" onchange="atualizarPreviaRecorrencia()" style="font-size:.8rem;padding:.3rem .5rem"/>
+      </div>
+      <div id="bloco-previa" style="display:none;flex:1;min-width:200px">
+        <label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Prévia das datas</label>
+        <div id="previa-datas" style="font-size:.78rem;color:#475569;margin-top:.25rem;max-height:80px;overflow-y:auto;background:#fff;border:1px solid #e2e8f0;border-radius:.3rem;padding:.3rem .5rem"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL DE CONFIRMAÇÃO DE RECORRÊNCIA -->
+  <div id="modal-recorrencia" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.5);z-index:9999;align-items:center;justify-content:center">
+    <div style="background:#fff;border-radius:.75rem;padding:1.5rem;max-width:500px;width:90%;box-shadow:0 20px 60px rgba(0,0,0,.3)">
+      <h3 style="margin:0 0 1rem;color:#dc2626;font-size:1rem">⚠ Lançamentos Recorrentes Já Existem</h3>
+      <div id="modal-recorrencia-msg" style="font-size:.85rem;color:#374151;margin-bottom:1rem;line-height:1.5"></div>
+      <div style="display:flex;gap:.5rem;justify-content:flex-end">
+        <button onclick="document.getElementById('modal-recorrencia').style.display='none'" style="background:#e2e8f0;color:#475569;box-shadow:none;padding:.4rem 1rem">Cancelar</button>
+        <button onclick="confirmarCriacaoRecorrente()" style="background:#dc2626;padding:.4rem 1rem">Sim, criar mesmo assim</button>
+      </div>
+    </div>
+  </div>
+
   <div style="display:flex;gap:.5rem;margin-top:1rem">
     <button onclick="criarLancamento()" style="background:#059669;padding:.5rem 1.2rem">✓ Salvar Lançamento</button>
     <button onclick="document.getElementById('form-novo').style.display='none'" style="background:#e2e8f0;color:#475569;box-shadow:none">Cancelar</button>
@@ -4302,6 +4365,82 @@ async function salvarLancEdit(id) {
     alert('Erro ao salvar. Tente novamente.');
   }
 }
+// ── RECORRÊNCIA ─────────────────────────────────────────────────────────
+var _dadosRecorrente = null; // armazena dados para confirmar após modal
+
+function toggleRecorrencia() {
+  var rec = document.getElementById('novo-recorrencia').value;
+  var blocoFim = document.getElementById('bloco-data-fim');
+  var blocoPrevia = document.getElementById('bloco-previa');
+  if (rec === 'nao') {
+    blocoFim.style.display = 'none';
+    blocoPrevia.style.display = 'none';
+  } else {
+    blocoFim.style.display = 'block';
+    blocoPrevia.style.display = 'flex';
+    atualizarPreviaRecorrencia();
+  }
+}
+
+function gerarDatasRecorrencia(dataInicio, dataFim, frequencia) {
+  var datas = [];
+  var cur = new Date(dataInicio + 'T12:00:00');
+  var fim = new Date(dataFim + 'T12:00:00');
+  if (isNaN(cur) || isNaN(fim) || cur > fim) return datas;
+  while (cur <= fim) {
+    datas.push(cur.toISOString().slice(0,10));
+    if (frequencia === 'mensal') {
+      cur = new Date(cur);
+      cur.setMonth(cur.getMonth() + 1);
+    } else if (frequencia === 'quinzenal') {
+      cur = new Date(cur);
+      cur.setDate(cur.getDate() + 15);
+    } else break;
+  }
+  return datas;
+}
+
+function atualizarPreviaRecorrencia() {
+  var dataInicio = document.getElementById('novo-data').value;
+  var dataFim = document.getElementById('novo-data-fim').value;
+  var freq = document.getElementById('novo-recorrencia').value;
+  var el = document.getElementById('previa-datas');
+  if (!dataInicio || !dataFim || freq === 'nao') { if(el) el.innerHTML = ''; return; }
+  var datas = gerarDatasRecorrencia(dataInicio, dataFim, freq);
+  if (!el) return;
+  if (datas.length === 0) {
+    el.innerHTML = '<span style="color:#dc2626">Data de fim deve ser após a data de início.</span>';
+    return;
+  }
+  el.innerHTML = '<strong>' + datas.length + ' lançamento(s):</strong> ' +
+    datas.map(function(d){ return d.split('-').reverse().join('/'); }).join(' · ');
+}
+
+async function confirmarCriacaoRecorrente() {
+  document.getElementById('modal-recorrencia').style.display = 'none';
+  if (_dadosRecorrente) await _executarCriacaoLancamentos(_dadosRecorrente);
+}
+
+async function _executarCriacaoLancamentos(payload) {
+  var fb = document.getElementById('novo-feedback');
+  var datas = payload.datas;
+  var base = payload.base;
+  fb.innerHTML = '<span style="color:#2563eb">⏳ Criando ' + datas.length + ' lançamento(s)...</span>';
+  var erros = 0;
+  for (var i = 0; i < datas.length; i++) {
+    var lanc = Object.assign({}, base, { data: datas[i], dataISO: datas[i] });
+    var resp = await fetch('/api/entries', {method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify(lanc)});
+    if (!resp.ok) erros++;
+  }
+  if (erros === 0) {
+    fb.innerHTML = '<span style="color:#059669">✓ ' + datas.length + ' lançamento(s) criado(s) com sucesso!</span>';
+    setTimeout(() => location.reload(), 1500);
+  } else {
+    fb.innerHTML = '<span style="color:#dc2626">⚠ ' + erros + ' erro(s) ao criar lançamentos. Verifique e tente novamente.</span>';
+  }
+}
+// ── FIM RECORRÊNCIA ───────────────────────────────────────────────────────
+
 async function criarLancamento() {
   const data = {
     data: document.getElementById('novo-data')?.value,
@@ -4336,12 +4475,70 @@ async function criarLancamento() {
     fb.innerHTML = '<span style="color:#dc2626">⚠ Preencha Data, Código (CC) e Valor.</span>';
     return;
   }
-  const resp = await fetch('/api/entries', {method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify(data)});
-  if (resp.ok) {
-    document.getElementById('novo-feedback').innerHTML = '<span style="color:#059669">✓ Lançamento criado com sucesso!</span>';
-    setTimeout(() => location.reload(), 1200);
+  var recorrencia = document.getElementById('novo-recorrencia')?.value || 'nao';
+
+  // ── LANÇAMENTO SIMPLES (não recorrente) ──
+  if (recorrencia === 'nao') {
+    const resp = await fetch('/api/entries', {method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify(data)});
+    if (resp.ok) {
+      document.getElementById('novo-feedback').innerHTML = '<span style="color:#059669">✓ Lançamento criado com sucesso!</span>';
+      setTimeout(() => location.reload(), 1200);
+    } else {
+      document.getElementById('novo-feedback').innerHTML = '<span style="color:#dc2626">Erro ao criar. Tente novamente.</span>';
+    }
+    return;
+  }
+
+  // ── LANÇAMENTO RECORRENTE ──
+  var dataFim = document.getElementById('novo-data-fim')?.value;
+  if (!dataFim) {
+    fb.innerHTML = '<span style="color:#dc2626">⚠ Informe a Data de Fim para lançamentos recorrentes.</span>';
+    document.getElementById('novo-data-fim').focus();
+    return;
+  }
+  var datas = gerarDatasRecorrencia(data.data, dataFim, recorrencia);
+  if (datas.length === 0) {
+    fb.innerHTML = '<span style="color:#dc2626">⚠ A Data de Fim deve ser posterior à Data de Início.</span>';
+    return;
+  }
+
+  // Verificar os 3 indicadores: favorecido + centroCusto + tipoDespesa
+  var favorecidoNorm = (data.favorecido || '').trim().toUpperCase();
+  var ccNorm = (data.centroCusto || '').trim().toUpperCase();
+  var tipoNorm = (data.tipoDespesa || '').trim().toUpperCase();
+  var jaExistem = 0;
+  if (typeof TODOS_LANCAMENTOS_RESUMO !== 'undefined') {
+    jaExistem = TODOS_LANCAMENTOS_RESUMO.filter(function(l){
+      return (l.favorecido||'').trim().toUpperCase() === favorecidoNorm &&
+             (l.centroCusto||'').trim().toUpperCase() === ccNorm &&
+             (l.tipoDespesa||'').trim().toUpperCase() === tipoNorm;
+    }).length;
   } else {
-    document.getElementById('novo-feedback').innerHTML = '<span style="color:#dc2626">Erro ao criar. Tente novamente.</span>';
+    // Consultar via API
+    try {
+      var chk = await fetch('/api/entries/check-recorrencia?favorecido=' + encodeURIComponent(data.favorecido||'') + '&cc=' + encodeURIComponent(data.centroCusto||'') + '&tipo=' + encodeURIComponent(data.tipoDespesa||''));
+      if (chk.ok) { var chkData = await chk.json(); jaExistem = chkData.count || 0; }
+    } catch(e) { jaExistem = 0; }
+  }
+
+  var payload = { datas: datas, base: data };
+
+  if (jaExistem > 0) {
+    // Mostrar modal de confirmação
+    _dadosRecorrente = payload;
+    var msg = document.getElementById('modal-recorrencia-msg');
+    if (msg) msg.innerHTML =
+      'Já existem <strong>' + jaExistem + ' lançamento(s)</strong> para:<br>' +
+      '<ul style="margin:.5rem 0;padding-left:1.2rem">' +
+      '<li>Cliente/Fornecedor: <strong>' + (data.favorecido||'—') + '</strong></li>' +
+      '<li>Centro de Custo: <strong>' + (data.centroCusto||'—') + '</strong></li>' +
+      '<li>Tipo de Lançamento: <strong>' + (data.tipoDespesa||'—') + '</strong></li>' +
+      '</ul>' +
+      'Deseja mesmo criar mais <strong>' + datas.length + ' lançamento(s) recorrentes</strong>?';
+    var modal = document.getElementById('modal-recorrencia');
+    if (modal) { modal.style.display = 'flex'; }
+  } else {
+    await _executarCriacaoLancamentos(payload);
   }
 }
 async function excluirLanc(id) {
