@@ -5875,9 +5875,9 @@ function renderHistoricoRel() {
 
       // Cabecalho do CC
       tabelaHTML += '<tr style="background:#1e40af;color:#fff;border-top:3px solid #0f172a">' +
-        '<td colspan="' + (NCOLS-1) + '" style="font-weight:700;font-size:.82rem;padding:.5rem .75rem">&#128193; ' + cc +
-        ' <span style="font-weight:400;font-size:.75rem;opacity:.8">(' + todosItensCC.length + ' lan\u00e7amento' + (todosItensCC.length!==1?'s':'') + ')</span></td>' +
-        '<td style="' + subColorCC + ';text-align:right;padding:.5rem .75rem;font-size:.82rem;background:#1e40af;color:' + (subtotalCC>=0?'#86efac':'#fca5a5') + '">' + fmtBRL(subtotalCC) + '</td>' +
+        '<td colspan="' + (NCOLS-1) + '" style="font-weight:700;font-size:.82rem;padding:.5rem .75rem;color:#fff">&#128193; ' + cc +
+        ' <span style="font-weight:400;font-size:.75rem;color:#c7d2fe">(' + todosItensCC.length + ' lan\u00e7amento' + (todosItensCC.length!==1?'s':'') + ')</span></td>' +
+        '<td style="text-align:right;padding:.5rem .75rem;font-size:.82rem;font-weight:700;background:#1e40af;color:' + (subtotalCC>=0?'#86efac':'#fca5a5') + '">' + fmtBRL(subtotalCC) + '</td>' +
         '</tr>';
 
       for (const [mes, itens] of mesesMap) {
