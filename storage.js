@@ -84,6 +84,21 @@ function createPostgresStorage(databaseUrl) {
         expires_at TIMESTAMPTZ NOT NULL,
         created_at TIMESTAMPTZ DEFAULT now()
       );
+      CREATE TABLE IF NOT EXISTS app_meta (
+        key TEXT PRIMARY KEY,
+        value JSONB NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS audit_log (
+        id TEXT PRIMARY KEY,
+        ts TIMESTAMPTZ NOT NULL DEFAULT now(),
+        entry_id TEXT,
+        usuario TEXT NOT NULL,
+        campo TEXT NOT NULL,
+        de TEXT,
+        para TEXT,
+        tipo TEXT DEFAULT 'lancamento',
+        created_at TIMESTAMPTZ DEFAULT now()
+      );
     `);
   }
 
@@ -186,15 +201,22 @@ function createPostgresStorage(databaseUrl) {
     },
 
     async loadDb() {
-      const [users, uploads, entries, issues, reviewRegistry, savedRules, manualAdjustments] = await Promise.all([
+      const [users, uploads, entries, issues, reviewRegistry, savedRules, manualAdjustments, metaRows] = await Promise.all([
         pool.query('SELECT id, email, password, role FROM users ORDER BY created_at'),
         pool.query('SELECT id, file_name, uploaded_at, row_count FROM uploads ORDER BY uploaded_at'),
         loadCollection('SELECT data FROM entries'),
         loadCollection('SELECT data FROM issues'),
         loadCollection('SELECT data FROM review_registry'),
         loadCollection('SELECT data FROM saved_rules'),
-        loadCollection('SELECT data FROM manual_adjustments')
+        loadCollection('SELECT data FROM manual_adjustments'),
+        pool.query('SELECT key, value FROM app_meta')
       ]);
+
+      // Reconstruir objeto meta a partir das linhas key/value
+      const meta = {};
+      for (const row of metaRows.rows) {
+        meta[row.key] = row.value;
+      }
 
       return {
         users: users.rows.map((r) => ({ id: r.id, email: r.email, password: r.password, role: r.role })),
@@ -205,7 +227,8 @@ function createPostgresStorage(databaseUrl) {
         issues,
         reviewRegistry,
         savedRules,
-        manualAdjustments
+        manualAdjustments,
+        meta
       };
     },
 
@@ -290,6 +313,17 @@ function createPostgresStorage(databaseUrl) {
                SELECT * FROM unnest($1::text[], $2::jsonb[])
                ON CONFLICT (id) DO NOTHING`,
               [cIds, cDatas]
+            );
+          }
+        }
+
+        // Meta (ultimoNumLanc e outros valores de controle)
+        if (db.meta && typeof db.meta === 'object') {
+          for (const [key, value] of Object.entries(db.meta)) {
+            await client.query(
+              `INSERT INTO app_meta (key, value) VALUES ($1, $2::jsonb)
+               ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
+              [key, JSON.stringify(value)]
             );
           }
         }

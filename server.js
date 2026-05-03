@@ -38,14 +38,18 @@ const ALIAS_RULES = {
 // CCs que NUNCA devem aparecer como cliente no dashboard
 // São custos de estrutura (overhead) ou movimentações internas
 const FORBIDDEN_AS_CLIENT = [
-  // Com acento (planilhas antigas)
+  // CCs de estrutura (não são clientes)
+  'ADM_GERAL', 'CONTABILIDADE', 'ESCRITORIO_INFRA', 'JURIDICO',
+  'MARKETING_COMUNICACAO', 'TI_SUPORTE',
+  // CCs de pessoal
+  'PROLABORE', 'SALARIOS', 'PJ_INTERNO', 'BENEFICIOS',
+  'ENCARGOS_TRABALHISTAS', 'ENCARGOS_PROLABORE',
+  // CCs financeiros / tributários
+  'BANCO_TARIFAS', 'IOF', 'MUTUO', 'PRONAMPE', 'TRIBUTOS', 'TEF',
+  // Legados (planilhas antigas)
   'ESCRITÓRIO', 'SALÁRIOS', 'JURÍDICO', 'CONTÁBIL', 'MÚTUO', 'PRÓ-LABORE',
-  // Sem acento (planilha CKM atual — códigos canônicos do banco)
   'ESCRITORIO', 'SALARIOS', 'JURIDICO', 'CONTABIL', 'MUTUO', 'PRO-LABORE',
-  'SAL_PRO-LAB_PJ', 'TI_SUPORTE', 'ADM',
-  // Movimentações internas e financeiras
-  'TEF', 'TEF_CC', 'PRONAMPE', 'BANCO', 'IOF_CC',
-  // Genéricos que não são clientes
+  'SAL_PRO-LAB_PJ', 'ADM', 'TEF_CC', 'BANCO', 'IOF_CC',
   'SALDO ATUAL', 'ADMINISTRATIVO', 'COMERCIAL', 'FINANCEIRO',
   'FISCAL', 'OPERACIONAL', 'RH', 'TI', 'IMPOSTOS',
   'MARKETING', 'INFRAESTRUTURA', 'TECNOLOGIA'
@@ -53,8 +57,18 @@ const FORBIDDEN_AS_CLIENT = [
 
 // Centros de custo padrão CKM — sempre disponíveis no datalist de edição
 const CC_PADRAO = [
-  'ADMINISTRATIVO', 'COMERCIAL', 'ESCRITÓRIO', 'FINANCEIRO', 'FISCAL',
-  'JURÍDICO', 'MÚTUO', 'OPERACIONAL', 'PRÓ-LABORE', 'RH', 'TEF', 'TI'
+  // Estrutura
+  'ADM_GERAL', 'CONTABILIDADE', 'ESCRITORIO_INFRA', 'JURIDICO',
+  'MARKETING_COMUNICACAO', 'TI_SUPORTE',
+  // Pessoal
+  'PROLABORE', 'SALARIOS', 'PJ_INTERNO', 'BENEFICIOS',
+  'ENCARGOS_TRABALHISTAS', 'ENCARGOS_PROLABORE',
+  // Operacional (clientes)
+  'BANRISUL', 'BRB', 'CESAMA', 'ENABLE', 'IGDRH', 'MARICA', 'SEBRAE_AC', 'SEBRAE_TO',
+  // Financeiro / Tributário
+  'BANCO_TARIFAS', 'IOF', 'MUTUO', 'PRONAMPE', 'TRIBUTOS',
+  // Transferência
+  'TEF'
 ];
 
 // ============================================================
@@ -85,6 +99,8 @@ const MAPA_CLIENTES_CKM = {
   '1.19': 'TCU',
   '1.20': 'IGDR'
 };
+// Mapa de projetos — carregado dinamicamente do PostgreSQL no boot
+// Valores padrão usados como fallback quando o banco não está disponível
 const MAPA_PROJETOS_CKM = {
   '4.1': 'Treinamentos/Assessment/Cursos',
   '4.2': 'Palestra',
@@ -99,6 +115,18 @@ const MAPA_PROJETOS_CKM = {
   '4.11': 'Estágio Probatório',
   '4.12': 'Concurso Público'
 };
+// Função para recarregar o mapa do banco (chamada no boot e após criar/editar projetos)
+async function recarregarMapaProjetos(pg) {
+  try {
+    const r = await pg.query('SELECT codigo, nome FROM projetos WHERE ativo=true ORDER BY codigo');
+    // Limpar entradas existentes e repopular com dados do banco
+    Object.keys(MAPA_PROJETOS_CKM).forEach(k => delete MAPA_PROJETOS_CKM[k]);
+    r.rows.forEach(p => { if (p.codigo && p.nome) MAPA_PROJETOS_CKM[p.codigo] = p.nome; });
+    console.log(`[projetos] Mapa recarregado: ${r.rows.length} projetos ativos`);
+  } catch(e) {
+    console.warn('[projetos] Não foi possível recarregar mapa:', e.message);
+  }
+}
 const MAPA_TIPOS_DESPESA_CKM = {
   '5.1': 'Prestador de Serviços/Consultoria',
   '5.2': 'Logística/Deslocamento/Alimentação',
@@ -181,24 +209,46 @@ function saveDb(db) {
 }
 
 // ===== AUDITORIA: registra alterações campo a campo em cada lançamento =====
-// Estrutura de cada registro: { id, ts, usuario, campo, de, para }
+// Salva no PostgreSQL (audit_log) quando disponível, e também no JSON (compatibilidade)
+async function registrarAuditoriaAsync(pg, db, entryId, usuario, changes, entryAntes, tipo) {
+  if (!db.auditLog) db.auditLog = [];
+  const ts = new Date().toISOString();
+  const user = usuario || 'sistema';
+  for (const [campo, novoValor] of Object.entries(changes)) {
+    const valorAnterior = entryAntes ? entryAntes[campo] : undefined;
+    if (String(valorAnterior ?? '') === String(novoValor ?? '')) continue;
+    const registro = {
+      id: crypto.randomUUID(), ts,
+      entryId: entryId || null,
+      usuario: user, campo,
+      de: String(valorAnterior ?? ''),
+      para: String(novoValor ?? ''),
+      tipo: tipo || 'lancamento'
+    };
+    db.auditLog.push(registro);
+    if (pg) {
+      try {
+        await pg.query(
+          `INSERT INTO audit_log (id, ts, entry_id, usuario, campo, de, para, tipo)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT DO NOTHING`,
+          [registro.id, registro.ts, registro.entryId, registro.usuario,
+           registro.campo, registro.de, registro.para, registro.tipo]
+        );
+      } catch(e) { /* tabela pode não existir ainda — ignora silenciosamente */ }
+    }
+  }
+}
+
+// Versão síncrona mantida para compatibilidade com código legado
 function registrarAuditoria(db, entryId, usuario, changes, entryAntes) {
   if (!db.auditLog) db.auditLog = [];
   const ts = new Date().toISOString();
   const user = usuario || 'sistema';
   for (const [campo, novoValor] of Object.entries(changes)) {
     const valorAnterior = entryAntes ? entryAntes[campo] : undefined;
-    // Só registra se houve mudança real
     if (String(valorAnterior ?? '') === String(novoValor ?? '')) continue;
-    db.auditLog.push({
-      id: crypto.randomUUID(),
-      ts,
-      entryId,
-      usuario: user,
-      campo,
-      de: valorAnterior ?? '',
-      para: novoValor ?? ''
-    });
+    db.auditLog.push({ id: crypto.randomUUID(), ts, entryId, usuario: user, campo,
+      de: valorAnterior ?? '', para: novoValor ?? '' });
   }
 }
 
@@ -209,17 +259,8 @@ function registrarAuditoriaRevisao(db, registroId, nomeOficial, usuario, changes
   for (const [campo, novoValor] of Object.entries(changes)) {
     const valorAnterior = registroAntes ? registroAntes[campo] : undefined;
     if (String(valorAnterior ?? '') === String(novoValor ?? '')) continue;
-    db.auditLog.push({
-      id: crypto.randomUUID(),
-      ts,
-      registroId,
-      nomeOficial,
-      usuario: user,
-      campo,
-      de: valorAnterior ?? '',
-      para: novoValor ?? '',
-      tipo: 'revisao'
-    });
+    db.auditLog.push({ id: crypto.randomUUID(), ts, registroId, nomeOficial,
+      usuario: user, campo, de: valorAnterior ?? '', para: novoValor ?? '', tipo: 'revisao' });
   }
 }
 
@@ -891,7 +932,6 @@ function page(title, body, user, activePage) {
   const navLinks = user ? [
     ['/', 'Home', ''],
     ['/upload', 'Upload', ''],
-    ['/pendencias', 'Pré-análise', ''],
     ['/fatura', 'Fatura', ''],
     ['/lancamentos', '✏ Lançamentos', ''],
     ['/historico', 'Histórico', ''],
@@ -1007,9 +1047,23 @@ function reviewCards(list, allEntries) {
       const NATUREZAS_GERENCIAIS = ['Receita Operacional','Custo Direto','Custo Indireto','Receita Financeira','Movimentação Financeira','Transferência Interna','Pendente de Classificação'];
       const natOpts = NATUREZAS_GERENCIAIS
         .map((n) => `<option value='${n}' ${n === (e.naturezaGerencial||e.natureza||'Pendente de Classificação') ? 'selected' : ''}>${n}</option>`).join('');
-      const STATUS_LISTA = ['PG','AG','RE','RT','TF','NT','ZZ','OK','RG','XF','AP','DE','MK','NR','BQ','CR','RD','importado','pendente','ok','cancelado','revisado'];
-      const statusOpts = STATUS_LISTA
-        .map((s) => `<option value='${s}' ${s === (e.status||'PG') ? 'selected' : ''}>${s}</option>`).join('');
+      const STATUS_NOVOS = [
+        ['PENDENTE','Pendente — Lançamento criado, mas ainda não concluído'],
+        ['PAGO','Pago — Despesa já paga'],
+        ['RECEBIDO','Recebido — Receita já recebida'],
+        ['CANCELADO','Cancelado — Cancelado antes de se efetivar'],
+        ['ESTORNADO','Estornado — Revertido contabilmente/financeiramente'],
+        ['DEVOLVIDO','Devolvido — Valor devolvido ao cliente ou do fornecedor'],
+        ['RENEGOCIADO','Renegociado — Título ou obrigação renegociada'],
+        ['NAO_REALIZADO','Não realizado — Previsto, mas não aconteceu'],
+        ['CONFIRMADO','Confirmado — Validado, mas ainda não liquidado']
+      ];
+      const STATUS_LEGADO = ['PG','AG','RE','RT','TF','NT','ZZ','OK','RG','XF','AP','DE','MK','NR','BQ','CR','RD','importado','pendente','ok','cancelado','revisado'];
+      const statusAtual = e.status || 'PENDENTE';
+      const statusOpts = [
+        ...STATUS_NOVOS.map(([cod,label]) => `<option value='${cod}' ${statusAtual===cod?'selected':''}>${label}</option>`),
+        ...(STATUS_LEGADO.includes(statusAtual) ? [`<option value='${statusAtual}' selected disabled style='color:#94a3b8'>${statusAtual} (legado)</option>`] : [])
+      ].join('');
 
       return `
         <tr class='entry-view-row' id='view-${eId}'
@@ -1142,7 +1196,7 @@ function reviewCards(list, allEntries) {
             <thead><tr>
               <th style='white-space:nowrap'>Data</th>
               <th style='white-space:nowrap'>Tipo</th>
-              <th>Código</th>
+              <th>Centro de Custo</th>
               <th>Cliente / Fornecedor / Prestador</th>
               <th>Descritivo</th>
               <th>Natureza</th>
@@ -1281,7 +1335,7 @@ function calculateDashboard(db) {
   const d30 = addDays(today, 30);
 
   // Todos os lançamentos ordenados por data
-  const allSorted = [...db.entries].sort((a, b) => (a.dataISO || '').localeCompare(b.dataISO || ''));
+  const allSorted = [...(db.entries || [])].sort((a, b) => (a.dataISO || '').localeCompare(b.dataISO || ''));
 
   // Lançamentos ativos (a partir do corte) — usados em todos os cálculos operacionais
   const sortedEntries = allSorted.filter(isAtivo);
@@ -1425,7 +1479,7 @@ function entriesTable(entries) {
     <td>${e.natureza || '-'}</td>
     <td>${e.status || '-'}</td>
   </tr>`).join('');
-  return `<table><thead><tr><th>Data</th><th>Tipo</th><th>Código</th><th>Cliente / Fornecedor / Prestador</th><th>Descritivo</th><th>Natureza</th><th style="text-align:right">Valor</th></tr></thead><tbody>${rows || '<tr><td colspan="7">Sem lançamentos no recorte.</td></tr>'}</tbody></table>`;
+  return `<table><thead><tr><th>Data</th><th>Tipo</th><th>Centro de Custo</th><th>Cliente / Fornecedor / Prestador</th><th>Descritivo</th><th>Natureza</th><th style="text-align:right">Valor</th></tr></thead><tbody>${rows || '<tr><td colspan="7">Sem lançamentos no recorte.</td></tr>'}</tbody></table>`;
 }
 
 const server = http.createServer(async (req, res) => {
@@ -1475,6 +1529,67 @@ const server = http.createServer(async (req, res) => {
     }
     res.writeHead(302, { 'Set-Cookie': buildSessionCookie(req, '', 0), Location: '/login' });
     res.end();
+    return;
+  }
+
+  // ─── Rotas públicas de seed (sem autenticação) ─────────────────────────────
+  if (req.method === 'POST' && (url.pathname === '/api/admin/seed-grupos-tipos' || url.pathname === '/api/admin/seed-centros-custo')) {
+    const pg = storage.getPool ? storage.getPool() : null;
+    if (!pg) { json(res, 503, { ok: false, error: 'Banco indisponível' }); return; }
+    try {
+      if (url.pathname === '/api/admin/seed-grupos-tipos') {
+        const ESTRUTURA = [
+          ['PESSOAL','Pessoal',[['PROLABORE','Pró-labore'],['SALARIOS','Salários'],['PJ_INTERNOS','Prestadores PJ Internos'],['BENEFICIOS','Benefícios'],['ASSIST_MEDICA','Assistência Médica'],['VALE_TRANSPORTE','Vale Transporte'],['VALE_REFEICAO','Vale Refeição / Alimentação'],['BONIFICACOES','Bonificações'],['FERIAS','Férias'],['DECIMO_TERCEIRO','13º Salário'],['RESCISOES','Rescisões'],['ENCARGOS_TRAB','Encargos Trabalhistas'],['ENCARGOS_PROLABORE','Encargos sobre Pró-labore'],['REEMBOLSOS_EQUIPE','Reembolsos de Equipe']]],
+          ['SERVICOS_PROJETO','Serviços de Projeto',[['CONSULTORIA_PROJ','Consultoria de Projeto'],['FACILITACAO','Facilitação / Instrutoria'],['PALESTRANTES','Palestrantes'],['MENTORES','Mentores'],['TUTORES','Tutores'],['AVALIADORES','Avaliadores'],['COORD_PROJETO','Coordenação de Projeto'],['APOIO_ADM_PROJ','Apoio Administrativo de Projeto'],['DESIGN_PROJETO','Design de Projeto'],['COMUNICACAO_PROJ','Comunicação de Projeto'],['PRODUCAO_CONTEUDO','Produção de Conteúdo'],['REVISAO_CONTEUDO','Revisão de Conteúdo'],['DESENV_MATERIAL','Desenvolvimento de Material'],['SERV_TEC_ESPEC','Serviços Técnicos Especializados'],['PRESTADORES_PROJ','Prestadores Terceirizados de Projeto']]],
+          ['PLATAFORMAS_PROJETO','Plataformas e Sistemas de Projeto',[['PLAT_DESEMPENHO','Plataforma de Gestão de Desempenho'],['PLAT_APRENDIZAGEM','Plataforma de Aprendizagem'],['PLAT_AVALIACAO','Plataforma de Avaliação'],['PLAT_PESQUISA','Plataforma de Pesquisa'],['LIC_SW_PROJETO','Licença de Software de Projeto'],['DASHBOARD_PROJ','Sistema de Relatórios / Dashboard de Projeto'],['FERR_COMUNIC_PROJ','Ferramenta de Comunicação do Projeto'],['ASSIN_DIGITAL_PROJ','Assinatura Digital vinculada a Projeto'],['HOSPEDAGEM_PROJ','Hospedagem ou Ambiente Digital de Projeto']]],
+          ['INSTRUMENTOS_TESTES','Instrumentos, Testes e Avaliações',[['TESTES_PSICOL','Testes Psicológicos'],['INVENTARIOS_COMP','Inventários Comportamentais'],['ASSESSMENT','Assessment'],['DISC','DISC'],['AVAL_PERFIL','Avaliação de Perfil'],['AVAL_COMPETENCIAS','Avaliação de Competências'],['CERTIFICACAO','Certificação de Conhecimentos'],['TESTES_ONLINE','Testes Online'],['CREDITOS_TESTES','Compra de Créditos de Testes'],['CORRECAO_LAUDO','Correção / Laudo / Relatório Técnico']]],
+          ['VIAGENS_DESLOCAMENTOS','Viagens e Deslocamentos',[['PASSAGEM_AEREA','Passagem Aérea'],['HOSPEDAGEM','Hospedagem'],['TRANSP_APLICATIVO','Transporte por Aplicativo'],['TAXI','Táxi'],['COMBUSTIVEL','Combustível'],['PEDAGIO','Pedágio'],['ESTACIONAMENTO','Estacionamento'],['LOCACAO_VEICULO','Locação de Veículo'],['SEGURO_VIAGEM','Seguro Viagem'],['BAGAGEM','Bagagem'],['REEMB_DESLOCAMENTO','Reembolso de Deslocamento'],['ALIM_VIAGEM','Alimentação em Viagem'],['DIARIAS','Diárias de Viagem']]],
+          ['EVENTOS_LOGISTICA','Eventos, Materiais e Logística de Projeto',[['LOCACAO_ESPACO','Locação de Espaço'],['COFFEE_BREAK','Coffee Break'],['ALIM_EVENTO','Alimentação de Evento'],['MATERIAL_DIDATICO','Material Didático'],['APOSTILAS','Apostilas'],['IMPRESSOS','Impressos'],['BRINDES','Brindes'],['KITS_PARTICIPANTES','Kits de Participantes'],['EQUIP_EVENTO','Equipamentos para Evento'],['AUDIOVISUAL','Audiovisual'],['FOTO_FILMAGEM','Fotografia / Filmagem'],['EQUIPE_APOIO','Equipe de Apoio'],['CREDENCIAMENTO','Credenciamento'],['CORREIOS_ENTREGA','Correios / Entrega de Materiais'],['INSUMOS_PROJETO','Insumos de Projeto']]],
+          ['TECNOLOGIA_INFO','Tecnologia da Informação',[['SOFTWARE_CORP','Software Corporativo'],['LIC_SW_INTERNO','Licença de Software Interno'],['HOSPEDAGEM_SITE','Hospedagem de Site'],['DOMINIO','Domínio'],['EMAIL_CORP','E-mail Corporativo'],['GOOGLE_WORKSPACE','Google Workspace'],['MICROSOFT_OFFICE','Microsoft / Office'],['OPENAI_CHATGPT','OpenAI / ChatGPT'],['INTERNET','Internet'],['SUPORTE_TI','Suporte Técnico'],['MANUT_SISTEMA','Manutenção de Sistema'],['EQUIP_INFORMATICA','Equipamentos de Informática'],['SEGURANCA_DIGITAL','Segurança Digital'],['BACKUP_ARMAZEN','Backup / Armazenamento']]],
+          ['MARKETING_COMUNICACAO','Marketing e Comunicação',[['DESIGN_GRAFICO','Design Gráfico'],['MIDIA_SOCIAL','Mídia Social'],['ANUNCIOS_ONLINE','Anúncios Online'],['PRODUCAO_VIDEO','Produção de Vídeo'],['FOTOGRAFIA','Fotografia'],['COPYWRITING','Copywriting'],['ASSESSORIA_IMPRENSA','Assessoria de Imprensa'],['SITE_LANDING','Site / Landing Page'],['EMAIL_MARKETING','E-mail Marketing'],['PATROCINIO','Patrocínio'],['BRINDES_MARKETING','Brindes de Marketing'],['FEIRAS_EVENTOS','Feiras e Eventos de Marketing']]],
+          ['JURIDICO','Jurídico',[['HONORARIOS_ADV','Honorários Advocatícios'],['CONTRATOS','Elaboração de Contratos'],['REGISTRO_MARCA','Registro de Marca / Patente'],['CARTORIO','Cartório / Reconhecimento'],['ASSESSORIA_JUR','Assessoria Jurídica Contínua'],['COMPLIANCE','Compliance'],['CONSULTORIA_JUR','Consultoria Jurídica Pontual']]],
+          ['CONTABILIDADE_FISCAL','Contabilidade e Fiscal',[['CONTABILIDADE','Contabilidade'],['AUDITORIA','Auditoria'],['CONSULTORIA_FISCAL','Consultoria Fiscal'],['IMPOSTO_SIMPLES','Imposto - Simples Nacional'],['IMPOSTO_IRPJ','Imposto - IRPJ'],['IMPOSTO_CSLL','Imposto - CSLL'],['IMPOSTO_PIS_COFINS','Imposto - PIS/COFINS'],['IMPOSTO_ISS','Imposto - ISS'],['IMPOSTO_INSS','Imposto - INSS'],['IMPOSTO_FGTS','FGTS'],['IMPOSTO_OUTROS','Outros Impostos e Taxas'],['DECLARACOES','Declarações Fiscais'],['PARCELAMENTOS','Parcelamentos Fiscais']]],
+          ['FINANCEIRO','Financeiro',[['TARIFAS_BANCARIAS','Tarifas Bancárias'],['JUROS_MULTAS','Juros e Multas'],['IOF','IOF'],['EMPRESTIMOS','Empréstimos'],['FINANCIAMENTOS','Financiamentos'],['ANTECIPACAO_RECEBIVEIS','Antecipação de Recebíveis'],['SEGUROS','Seguros'],['INVESTIMENTOS','Investimentos'],['RENDIMENTOS','Rendimentos'],['CAMBIO','Câmbio']]],
+          ['INFRAESTRUTURA_ESCRITORIO','Administração e Infraestrutura',[['ALUGUEL','Aluguel'],['CONDOMINIO','Condomínio'],['ENERGIA_ELETRICA','Energia Elétrica'],['AGUA','Água'],['TELEFONE_FIXO','Telefone Fixo'],['CELULAR_CORP','Celular Corporativo'],['LIMPEZA','Limpeza / Conservação'],['SEGURANCA_PATRIMONIAL','Segurança Patrimonial'],['MANUTENCAO_PREDIAL','Manutenção Predial'],['MOBILIARIO','Mobiliário'],['MATERIAL_ESCRITORIO','Material de Escritório'],['CORREIOS','Correios'],['TRANSPORTE_CORP','Transporte Corporativo']]],
+          ['CAPACITACAO_INTERNA','Capacitação Interna',[['CURSOS_EQUIPE','Cursos para Equipe'],['TREINAMENTOS','Treinamentos Internos'],['CERTIFICACOES_EQUIPE','Certificações da Equipe'],['ASSIN_PLATAFORMAS_APRENDIZAGEM','Assinaturas de Plataformas de Aprendizagem'],['COACHING_EQUIPE','Coaching da Equipe'],['EVENTOS_APRENDIZAGEM','Eventos de Aprendizagem']]],
+          ['SAUDE_BEM_ESTAR','Saúde e Bem-estar',[['PLANO_SAUDE','Plano de Saúde'],['PLANO_ODONTO','Plano Odontológico'],['GINASTICA_LABORAL','Ginástica Laboral'],['PSICOLOGIA','Psicologia / Saúde Mental'],['FARMACIA','Farmácia'],['EXAMES_MEDICOS','Exames Médicos']]],
+          ['TRANSFERENCIAS_INTERNAS','Transferências Internas',[['TRANSF_ENTRE_CONTAS','Transferência entre Contas'],['APORTE_CAPITAL','Aporte de Capital'],['RETIRADA_SOCIOS','Retirada de Sócios'],['EMPRESTIMO_MUTUO','Empréstimo Mútuo'],['DEVOLUCAO_MUTUO','Devolução de Mútuo']]],
+          ['RECEITAS_PROJETOS','Receitas de Projetos',[['RECEITA_CONSULTORIA','Receita de Consultoria'],['RECEITA_CAPACITACAO','Receita de Capacitação'],['RECEITA_ASSESSORIA','Receita de Assessoria'],['RECEITA_PESQUISA','Receita de Pesquisa'],['RECEITA_LICITACAO','Receita de Licitação'],['RECEITA_OUTROS','Outras Receitas de Projetos']]],
+          ['RECEITAS_FINANCEIRAS','Receitas Financeiras',[['JUROS_RECEBIDOS','Juros Recebidos'],['RENDIMENTOS_APLIC','Rendimentos de Aplicações'],['DIVIDENDOS','Dividendos'],['ESTORNO_RECEBIDO','Estorno Recebido']]],
+          ['OUTROS','Outros',[['OUTROS_DESPESAS','Outras Despesas'],['OUTROS_RECEITAS','Outras Receitas'],['AJUSTE_CONTABIL','Ajuste Contábil'],['DESCONTO_RECEBIDO','Desconto Recebido']]]
+        ];
+        // Apenas UPSERT — nunca apaga dados existentes
+        let totalGrupos = 0, totalTipos = 0;
+        for (const [cod, nome, tipos] of ESTRUTURA) {
+          const r = await pg.query('INSERT INTO grupos_despesa(codigo,nome,ativo) VALUES($1,$2,true) ON CONFLICT(codigo) DO UPDATE SET nome=$2,ativo=true RETURNING id', [cod, nome]);
+          const gid = r.rows[0].id;
+          totalGrupos++;
+          for (const [tcod, tnome] of tipos) {
+            await pg.query('INSERT INTO tipos_despesa(codigo,nome,grupo_id,ativo) VALUES($1,$2,$3,true) ON CONFLICT(codigo) DO UPDATE SET nome=$2,grupo_id=$3,ativo=true', [tcod, tnome, gid]);
+            totalTipos++;
+          }
+        }
+        json(res, 200, { ok: true, grupos: totalGrupos, tipos: totalTipos });
+      } else {
+        const CCS = [
+          ['ESTRUTURA','ADM_GERAL','Administração Geral'],['ESTRUTURA','PESSOAL_RH','Pessoal / RH'],['ESTRUTURA','CONTABILIDADE','Contabilidade'],['ESTRUTURA','JURIDICO','Jurídico'],['ESTRUTURA','MARKETING','Marketing e Comunicação'],['ESTRUTURA','TI_SUPORTE','TI / Suporte'],['ESTRUTURA','ESCRITORIO_INFR','Escritório e Infraestrutura'],['ESTRUTURA','BENEFICIOS','Benefícios'],['ESTRUTURA','CAPACITACAO','Capacitação Interna'],['ESTRUTURA','SAUDE_BEM_ESTAR','Saúde e Bem-estar'],
+          ['FINANCEIRO','BANCO_TARIFAS','Tarifas Bancárias'],['FINANCEIRO','FINANCIAMENTOS','Financiamentos e Empréstimos'],['FINANCEIRO','IMPOSTOS','Impostos e Taxas'],['FINANCEIRO','INVESTIMENTOS','Investimentos'],
+          ['OPERACIONAL','SEBRAE_TO','SEBRAE-TO'],['OPERACIONAL','SEBRAE_AC','SEBRAE-AC'],['OPERACIONAL','SEBRAE_RO','SEBRAE-RO'],['OPERACIONAL','SEBRAE_AM','SEBRAE-AM'],['OPERACIONAL','SEBRAE_PA','SEBRAE-PA'],['OPERACIONAL','BANESE','BANESE'],['OPERACIONAL','BANRISUL','BANRISUL'],['OPERACIONAL','ENABLE','ENABLE'],['OPERACIONAL','BRB','BRB'],['OPERACIONAL','MUTUO','Mútuo / Empréstimos Internos'],['OPERACIONAL','PROJETOS_GERAIS','Projetos Gerais'],
+          ['TRANSFERENCIA','TRANSF_INTERNA','Transferência Interna'],['TRANSFERENCIA','APORTE','Aporte de Capital'],['TRANSFERENCIA','RETIRADA_SOCIOS','Retirada de Sócios'],
+          ['CONTROLE','AJUSTE','Ajuste Contábil'],['CONTROLE','ESTORNO','Estorno'],['CONTROLE','CONCILIACAO','Conciliação']
+        ];
+        // Apenas UPSERT — nunca apaga dados existentes
+        let total = 0;
+        for (const [tipo, cod, nome] of CCS) {
+          await pg.query('INSERT INTO centros_de_custo(codigo,nome,tipo,ativo) VALUES($1,$2,$3,true) ON CONFLICT(codigo) DO UPDATE SET nome=$2,tipo=$3,ativo=true', [cod, nome, tipo]);
+          total++;
+        }
+        json(res, 200, { ok: true, total });
+      }
+    } catch(e) {
+      console.error('[seed-public]', e.message);
+      json(res, 500, { ok: false, error: e.message });
+    }
     return;
   }
 
@@ -1742,6 +1857,14 @@ async function enviarArquivo(){
         (e.status === 'AG') && !e.conciliado
       ).length;
 
+      // Atribuir numLanc sequencial permanente a cada entry do upload
+      if (!db.meta) db.meta = {};
+      entries.forEach(e => {
+        if (!e.numLanc) {
+          db.meta.ultimoNumLanc = (db.meta.ultimoNumLanc || 0) + 1;
+          e.numLanc = db.meta.ultimoNumLanc;
+        }
+      });
       const issues = buildIssues(entries, db).map((i) => ({ ...i, id: crypto.randomUUID(), uploadId: upload.id, status: 'aberta' }));
       const registry = buildReviewRegistry(entries);
       db.uploads.push(upload);
@@ -2313,9 +2436,9 @@ async function perguntarIA(cardId){
 
     try {
       const { OpenAI } = require('openai');
-      const openai = new OpenAI();
+      const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY, baseURL: process.env.OPENAI_BASE_URL || undefined });
       const completion = await openai.chat.completions.create({
-        model: 'gemini-2.5-flash',
+        model: 'gpt-4.1-mini',
         messages: [{ role: 'user', content: prompt }],
         temperature: 0.2,
         max_tokens: 300
@@ -2406,7 +2529,7 @@ async function perguntarIA(cardId){
     if (loteIA.length > 0) {
       try {
         const { OpenAI } = require('openai');
-        const openai = new OpenAI();
+        const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY, baseURL: process.env.OPENAI_BASE_URL || undefined });
 
         // Montar contexto de exemplos já revisados
         const revisados = db.reviewRegistry.filter(r => r.statusRevisao === 'revisado' && r.tipoFinal && r.tipoFinal !== 'Pendente de Classificação').slice(0, 50);
@@ -2420,7 +2543,7 @@ async function perguntarIA(cardId){
         const prompt = 'Você é um assistente financeiro da empresa CKM Consultoria. Classifique cada nome abaixo em um dos tipos: ' + tipos.join(', ') + '.\n\nExemplos de cadastros já classificados na empresa:\n' + exemplosCtx + '\n\nNomes para classificar:\n' + listaParaIA + '\n\nResponda APENAS em JSON válido, array com objetos {"nome": "...", "tipo": "...", "confianca": "alta|media|baixa"}.\nUse "baixa" quando não tiver certeza. Retorne exatamente ' + loteIA.length + ' objetos, na mesma ordem.';
 
         const completion = await openai.chat.completions.create({
-          model: 'gemini-2.5-flash',
+          model: 'gpt-4.1-mini',
           messages: [{ role: 'user', content: prompt }],
           temperature: 0.1,
           max_tokens: 2000
@@ -2508,9 +2631,9 @@ Pergunta do usuário: ${pergunta}
 Responda em português, de forma objetiva e direta, citando os dados específicos encontrados na planilha.`;
     try {
       const { OpenAI } = require('openai');
-      const openai = new OpenAI();
+      const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY, baseURL: process.env.OPENAI_BASE_URL || undefined });
       const completion = await openai.chat.completions.create({
-        model: 'gemini-2.5-flash',
+        model: 'gpt-4.1-mini',
         messages: [{ role: 'user', content: prompt }],
         temperature: 0.1,
         max_tokens: 600
@@ -2523,6 +2646,34 @@ Responda em português, de forma objetiva e direta, citando os dados específico
     }
   }
 
+
+  // GET /api/entries/check-recorrencia — verificar se já existem lançamentos com os 3 indicadores
+  if (req.method === 'GET' && url.pathname === '/api/entries/check-recorrencia') {
+    const user = requireAuth(req, res, db);
+    if (!user) return;
+    const favorecido = (url.searchParams.get('favorecido') || '').trim().toUpperCase();
+    const cc = (url.searchParams.get('cc') || '').trim().toUpperCase();
+    const tipo = (url.searchParams.get('tipo') || '').trim().toUpperCase();
+    let count = 0;
+    try {
+      const pg = storage.getPool ? storage.getPool() : null;
+      if (pg) {
+        const result = await pg.query(
+          `SELECT COUNT(*) FROM entries WHERE UPPER(TRIM(favorecido)) = $1 AND UPPER(TRIM(centro_custo)) = $2 AND UPPER(TRIM(tipo_despesa)) = $3`,
+          [favorecido, cc, tipo]
+        );
+        count = parseInt(result.rows[0]?.count || 0, 10);
+      } else {
+        count = (db.entries || []).filter(function(e) {
+          return (e.favorecido||'').trim().toUpperCase() === favorecido &&
+                 (e.centroCusto||'').trim().toUpperCase() === cc &&
+                 (e.tipoDespesa||'').trim().toUpperCase() === tipo;
+        }).length;
+      }
+    } catch(e) { count = 0; }
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    return res.end(JSON.stringify({ count }));
+  }
 
   // POST /api/entries — criar novo lançamento manual
   if (req.method === 'POST' && url.pathname === '/api/entries') {
@@ -2636,16 +2787,42 @@ Responda em português, de forma objetiva e direta, citando os dados específico
     const filtroFim = url.searchParams.get('ate') || hoje;
     const visao = url.searchParams.get('visao') || 'resultado'; // 'fluxo' ou 'resultado'
 
+    // Buscar lançamentos do PostgreSQL
+    let lancsFiltrados = [];
+    let todosLancsDB = [];
+    try {
+      const pgDash = storage.getPool ? storage.getPool() : null;
+      if (pgDash) {
+        const resF = await pgDash.query(
+          `SELECT data FROM entries WHERE
+           (data->>'dataISO') >= $1 AND (data->>'dataISO') <= $2
+           AND (data->>'isTransferenciaInterna')::boolean IS NOT TRUE
+           AND UPPER(TRIM(data->>'centroCusto')) != 'SALDO ATUAL'`,
+          [filtroInicio, filtroFim]
+        );
+        lancsFiltrados = resF.rows.map(r => r.data);
+        const resT = await pgDash.query(
+          `SELECT data FROM entries WHERE
+           (data->>'isTransferenciaInterna')::boolean IS NOT TRUE
+           AND UPPER(TRIM(data->>'centroCusto')) != 'SALDO ATUAL'`
+        );
+        todosLancsDB = resT.rows.map(r => r.data);
+      }
+    } catch(e) { console.error('[dashboard-pg]', e.message); }
+    // Fallback para JSON se PostgreSQL não retornou dados
+    if (!lancsFiltrados.length && !todosLancsDB.length) {
+      lancsFiltrados = (db.entries || []).filter(e =>
+        (e.dataISO||'') >= filtroInicio && (e.dataISO||'') <= filtroFim &&
+        !e.isTransferenciaInterna && (e.centroCusto||'').toUpperCase().trim() !== 'SALDO ATUAL'
+      );
+      todosLancsDB = (db.entries || []).filter(e =>
+        !e.isTransferenciaInterna && (e.centroCusto||'').toUpperCase().trim() !== 'SALDO ATUAL'
+      );
+    }
     // Calcular métricas gerais (sem filtro de período — para os cards de saldo)
-    const metrics = calculateDashboard(db);
-
-    // Calcular métricas filtradas pelo período selecionado
-    const lancsFiltrados = db.entries.filter(e =>
-      (e.dataISO||'') >= filtroInicio &&
-      (e.dataISO||'') <= filtroFim &&
-      !e.isTransferenciaInterna &&
-      (e.centroCusto||'').toUpperCase().trim() !== 'SALDO ATUAL'
-    );
+    // Usar os dados já buscados do PostgreSQL
+    const dbComPG = Object.assign({}, db, { entries: todosLancsDB.length > 0 ? todosLancsDB : (db.entries || []) });
+    const metrics = calculateDashboard(dbComPG);
     const totalReceitasFiltro = lancsFiltrados.filter(e=>(e.valor||0)>0).reduce((a,e)=>a+(e.valor||0),0);
     const totalDespesasFiltro = lancsFiltrados.filter(e=>(e.valor||0)<0).reduce((a,e)=>a+Math.abs(e.valor||0),0);
     const saldoFiltro = totalReceitasFiltro - totalDespesasFiltro;
@@ -2711,10 +2888,7 @@ Responda em português, de forma objetiva e direta, citando os dados específico
     }
 
     // Todos os lançamentos (sem filtro de data), exceto TEF e SALDO ATUAL
-    const todosLancs = db.entries.filter(e =>
-      !e.isTransferenciaInterna &&
-      (e.centroCusto||'').toUpperCase().trim() !== 'SALDO ATUAL'
-    );
+    const todosLancs = todosLancsDB;
 
     const porAno = {}; // { '2021': { OPERACIONAL: {}, ESTRUTURA: {}, FINANCEIRO: {} }, ... }
 
@@ -2727,6 +2901,8 @@ Responda em português, de forma objetiva e direta, citando os dados específico
         porAno[ano] = {};
         TIPOS_ORDEM.forEach(t => { porAno[ano][t] = {}; });
       }
+      // Garantir que o tipo existe no objeto do ano (proteção contra tipos inesperados)
+      if (!porAno[ano][tipo]) porAno[ano][tipo] = {};
       if (tipo === 'OPERACIONAL') {
         const empresa = clienteEfetivo(e);
         const projeto = projetoEfetivo(e);
@@ -3143,7 +3319,7 @@ function openDrawer(view, de, ate) {
       if (isMutuo) {
         body.innerHTML = '<table><thead><tr><th>Data</th><th>Descrição</th><th>Tipo</th><th style="text-align:right">Valor</th><th style="text-align:right">Saldo devedor</th></tr></thead><tbody>' + rows + '</tbody></table>';
       } else {
-        body.innerHTML = '<table><thead><tr><th>Data</th><th>Tipo</th><th>Código</th><th>Cliente / Fornecedor / Prestador</th><th>Descritivo</th><th style="text-align:right">Valor</th></tr></thead><tbody>' + rows + '</tbody></table>';
+        body.innerHTML = '<table><thead><tr><th>Data</th><th>Tipo</th><th>Centro de Custo</th><th>Cliente / Fornecedor / Prestador</th><th>Descritivo</th><th style="text-align:right">Valor</th></tr></thead><tbody>' + rows + '</tbody></table>';
       }
     })
     .catch(err => {
@@ -3426,7 +3602,7 @@ function renderResultado(data) {
   div.innerHTML = '<h3 style="margin-bottom:.75rem">Itens extraídos da fatura (' + data.itens.length + ')</h3>' +
     '<p style="font-size:.82rem;color:var(--gray-600);margin-bottom:.75rem">Itens em amarelo foram deixados como <strong>Pendente</strong> pela IA. Revise e ajuste antes de confirmar.</p>' +
     '<div style="overflow-x:auto;margin-bottom:1rem"><table style="min-width:800px"><thead><tr>' +
-    '<th>Data</th><th>Tipo</th><th>Código</th><th>Cliente / Fornecedor / Prestador</th><th>Descritivo</th><th>Natureza</th><th style="text-align:right">Valor</th><th>Projeto</th><th>Obs. IA</th>' +
+    '<th>Data</th><th>Tipo</th><th>Centro de Custo</th><th>Cliente / Fornecedor / Prestador</th><th>Descritivo</th><th>Natureza</th><th style="text-align:right">Valor</th><th>Projeto</th><th>Obs. IA</th>' +
     '</tr></thead><tbody>' + rows + '</tbody></table></div>' +
     '<div style="background:#fef2f2;border:1px solid #fecaca;border-radius:8px;padding:.75rem 1rem;margin-bottom:1rem">' +
     '<strong style="font-size:.85rem;color:#991b1b">⚠ Atenção:</strong> <span style="font-size:.82rem;color:#7f1d1d">Ao confirmar, o lançamento original de R$ ' + Number(data.valorOriginal||0).toFixed(2) + ' será <strong>removido</strong> e substituído pelos ' + data.itens.length + ' itens acima. Esta ação não pode ser desfeita.</span>' +
@@ -3523,9 +3699,9 @@ Regras:
 - Ignore linhas de total, subtotal, pagamento anterior e saldo`;
     try {
       const { OpenAI } = require('openai');
-      const openai = new OpenAI();
+      const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY, baseURL: process.env.OPENAI_BASE_URL || undefined });
       const completion = await openai.chat.completions.create({
-        model: 'gemini-2.5-flash',
+        model: 'gpt-4.1-mini',
         messages: [{ role: 'user', content: prompt }],
         temperature: 0.1,
         max_tokens: 4000
@@ -3556,21 +3732,26 @@ Regras:
     if (entryIdx === -1) return json(res, 404, { error: 'Lançamento não encontrado' });
     const original = db.entries[entryIdx];
     // Criar novos lançamentos detalhados no lugar do original
-    const novosLancamentos = itens.map((item) => ({
-      id: crypto.randomUUID(),
-      data: item.data || original.data,
-      dataISO: item.data || original.dataISO,
-      descricao: item.descricao || '-',
-      valor: -Math.abs(Number(item.valor || 0)), // débitos do cartão são negativos
-      natureza: item.natureza || 'Pendente',
-      centroCusto: item.centroCusto || original.centroCusto || '',
-      projeto: item.projeto || '',
-      conta: original.conta || '',
-      status: item.natureza === 'Pendente' ? 'pendente' : 'ok',
-      origem: 'fatura_cartao',
-      cartao: original.descricao || 'Cartão',
-      entryOriginalId: entryId
-    }));
+    if (!db.meta) db.meta = {};
+    const novosLancamentos = itens.map((item) => {
+      db.meta.ultimoNumLanc = (db.meta.ultimoNumLanc || 0) + 1;
+      return {
+        id: crypto.randomUUID(),
+        numLanc: db.meta.ultimoNumLanc,
+        data: item.data || original.data,
+        dataISO: item.data || original.dataISO,
+        descricao: item.descricao || '-',
+        valor: -Math.abs(Number(item.valor || 0)), // débitos do cartão são negativos
+        natureza: item.natureza || 'Pendente',
+        centroCusto: item.centroCusto || original.centroCusto || '',
+        projeto: item.projeto || '',
+        conta: original.conta || '',
+        status: item.natureza === 'Pendente' ? 'pendente' : 'ok',
+        origem: 'fatura_cartao',
+        cartao: original.descricao || 'Cartão',
+        entryOriginalId: entryId
+      };
+    });
     // Remover o lançamento original e inserir os detalhados
     db.entries.splice(entryIdx, 1, ...novosLancamentos);
     saveDb(db);
@@ -3703,12 +3884,15 @@ async function excluirRef(tipo,nome){
     const qDC = url.searchParams.get('dc') || '';
     const qStatus = url.searchParams.get('status') || '';
     const qCpf = (url.searchParams.get('cpf') || '').toLowerCase().trim();
+    const qProjeto = (url.searchParams.get('projeto') || '').trim();
+    const qNumLanc = url.searchParams.get('num') ? parseInt(url.searchParams.get('num'), 10) : null;
     const qInc = url.searchParams.get('inc') || ''; // filtro de inconsistência
     const page_num = Math.max(1, parseInt(url.searchParams.get('p') || '1', 10));
     const PAGE_SIZE = 50;
 
     // Filtrar lançamentos
     let entries = db.entries.filter(e => {
+      if (qNumLanc && e.numLanc !== qNumLanc) return false;
       if (q) {
         const txt = [e.descricao, e.documento, e.descritivo, e.cliente, e.favorecido, e.parceiro, e.projeto, e.centroCusto, e.cpfCnpj].join(' ').toLowerCase();
         if (!txt.includes(q)) return false;
@@ -3721,6 +3905,7 @@ async function excluirRef(tipo,nome){
       if (qDC && (e.dc || (e.valor >= 0 ? 'C' : 'D')) !== qDC) return false;
       if (qStatus && (e.status || '') !== qStatus) return false;
       if (qCpf && !(e.cpfCnpj || '').toLowerCase().includes(qCpf)) return false;
+      if (qProjeto && (e.projeto || '') !== qProjeto) return false;
       // Filtros de inconsistência
       if (qInc === 'sem_cc' && (e.centroCusto || '').trim()) return false;
       if (qInc === 'sem_nome' && (e.favorecido || e.cliente || e.parceiro || '').trim()) return false;
@@ -3757,39 +3942,89 @@ async function excluirRef(tipo,nome){
     const totalPages = Math.ceil(total / PAGE_SIZE) || 1;
     const paginated = entries.slice((page_num - 1) * PAGE_SIZE, page_num * PAGE_SIZE);
 
-    // Datalists para autocomplete
-    const ccs = [...new Set(db.entries.map(e => e.centroCusto).filter(Boolean))].sort();
-    const clientes = [...new Set(db.entries.map(e => e.favorecido || e.cliente || e.parceiro).filter(Boolean))].sort();
+    // Datalists para autocomplete — CCs: apenas os oficiais cadastrados no banco
+    // ── Listas de filtro: 100% originadas dos cadastros (banco) ──────────────
+    let ccs = [], clientesCad = [], clientesMapCpf = {}, projetosCad = [], naturezasCad = [], gruposCad = [], tiposDespesaCad = [], bancosCad = [], contratosCad = [];
     const contas = [...new Set(db.entries.map(e => e.conta).filter(Boolean))].sort();
-    const projetos = [...new Set(db.entries.map(e => e.projeto).filter(Boolean))].sort();
-
-    const NATUREZAS = ['Receita Operacional','Custo Direto','Custo Indireto','Receita Financeira','Movimentação Financeira','Transferência Interna','Pendente de Classificação'];
-    const GRUPOS = ['','Pessoal','Sistemas e Tecnologia','Serviços Terceirizados','Despesas Financeiras','Despesas Administrativas','Receita de Contrato','Rendimentos Financeiros','Custo de Projeto'];
-    const TIPOS = ['','Salário / Pró-labore','Serviço PJ','Software / Licença','Hospedagem','Assessoria Contábil','Assessoria Jurídica','Assessoria de Marketing','Terceiros / Consultoria','Tarifa Bancária','Imposto / Tributo','Aluguel','Internet / Telefonia','Material de Escritório','Reembolso','Receita de Contrato','Rendimento Financeiro','Custo Operacional de Projeto','Outros'];
-    const STATUS_LISTA = ['PG','AG','RE','RT','TF','NT','ZZ','OK','RG','XF','AP','DE','MK','NR','BQ','CR','RD','importado','pendente','ok','cancelado','revisado'];
+    try {
+      const pg = storage.getPool ? storage.getPool() : null;
+      if (pg) {
+        ccs            = (await pg.query('SELECT codigo, nome FROM centros_de_custo WHERE ativo=true ORDER BY nome')).rows;
+        clientesCad    = (await pg.query('SELECT nome, cpf, cnpj, tipo FROM clientes WHERE ativo=true ORDER BY nome')).rows;
+        // Mapa CPF/CNPJ (sem máscara) → cliente para autocomplete — cobre cpf (PF) e cnpj (PJ)
+        clientesMapCpf = clientesCad.reduce((m,c)=>{
+          if(c.cpf)  m[c.cpf.replace(/\D/g,'')]  = {nome:c.nome, tipo:c.tipo||''};
+          if(c.cnpj) m[c.cnpj.replace(/\D/g,'')] = {nome:c.nome, tipo:c.tipo||''};
+          return m;
+        }, {});
+        projetosCad    = (await pg.query('SELECT codigo, nome FROM projetos WHERE ativo=true ORDER BY nome')).rows;
+        naturezasCad   = (await pg.query('SELECT nome FROM tipos_lancamento WHERE ativo=true ORDER BY nome')).rows;
+        gruposCad      = (await pg.query('SELECT codigo, nome FROM grupos_despesa WHERE ativo=true ORDER BY nome')).rows;
+        tiposDespesaCad= (await pg.query('SELECT td.codigo, td.nome, td.grupo_id, gd.nome as grupo_nome, gd.codigo as grupo_cod FROM tipos_despesa td LEFT JOIN grupos_despesa gd ON gd.id=td.grupo_id WHERE td.ativo=true ORDER BY gd.nome NULLS LAST, td.nome')).rows;
+        bancosCad      = (await pg.query('SELECT codigo, nome FROM bancos WHERE ativo=true ORDER BY nome')).rows;
+        contratosCad   = (await pg.query(`SELECT ct.id, ct.numero, ct.descricao, ct.valor_total, ct.data_inicio, ct.data_fim, ct.status, cl.nome as cliente_nome, cl.id as cliente_id FROM contratos ct LEFT JOIN clientes cl ON ct.cliente_id=cl.id WHERE ct.status='Ativo' ORDER BY cl.nome, ct.numero`)).rows;
+      }
+    } catch(e) { console.error('[lancamentos-filtros]', e.message); }
+    const NATUREZAS = naturezasCad.map(r => r.nome);
+    const GRUPOS = gruposCad;
+    const TIPOS = tiposDespesaCad;
+    // Status novos (ativos para novos lançamentos)
+    const STATUS_NOVOS = [
+      ['PENDENTE','Pendente — Lançamento criado, mas ainda não concluído'],
+      ['PAGO','Pago — Despesa já paga'],
+      ['RECEBIDO','Recebido — Receita já recebida'],
+      ['CANCELADO','Cancelado — Cancelado antes de se efetivar'],
+      ['ESTORNADO','Estornado — Revertido contabilmente/financeiramente'],
+      ['DEVOLVIDO','Devolvido — Valor devolvido ao cliente ou do fornecedor'],
+      ['RENEGOCIADO','Renegociado — Título ou obrigação renegociada'],
+      ['NAO_REALIZADO','Não realizado — Previsto, mas não aconteceu'],
+      ['CONFIRMADO','Confirmado — Validado, mas ainda não liquidado']
+    ];
+    // Status legados (mantidos apenas para exibição de lançamentos antigos)
+    const STATUS_LEGADO_LISTA = ['PG','AG','RE','RT','TF','NT','ZZ','OK','RG','XF','AP','DE','MK','NR','BQ','CR','RD','importado','pendente','ok','cancelado','revisado'];
     const STATUS_LABEL = {
-      PG: 'PG (Pago)', AG: 'AG (Aguardando)', RE: 'RE (Recebido)', RT: 'RT (Retido)',
-      TF: 'TF (Transferência)', NT: 'NT (Não Tributado)', ZZ: 'ZZ (Cancelado)',
-      OK: 'OK (Confirmado)', RG: 'RG (Renegociado)', XF: 'XF (Estornado)',
-      AP: 'AP (A Pagar)', DE: 'DE (Devolvido)', MK: 'MK (Marketing)',
-      NR: 'NR (Não Realizado)', BQ: 'BQ (Bloqueado)', CR: 'CR (Crédito)',
-      RD: 'RD (Redigitado)', importado: 'Importado', pendente: 'Pendente',
-      ok: 'OK (Confirmado)', cancelado: 'Cancelado', revisado: 'Revisado'
+      PENDENTE:'Pendente', PAGO:'Pago', RECEBIDO:'Recebido', CANCELADO:'Cancelado',
+      ESTORNADO:'Estornado', DEVOLVIDO:'Devolvido', RENEGOCIADO:'Renegociado',
+      NAO_REALIZADO:'Não realizado', CONFIRMADO:'Confirmado',
+      // Legados (para exibição)
+      PG:'PG (Pago)', AG:'AG (Aguardando)', RE:'RE (Recebido)', RT:'RT (Retido)',
+      TF:'TF (Transferência)', NT:'NT (Não Tributado)', ZZ:'ZZ (Cancelado)',
+      OK:'OK (Confirmado)', RG:'RG (Renegociado)', XF:'XF (Estornado)',
+      AP:'AP (A Pagar)', DE:'DE (Devolvido)', MK:'MK (Marketing)',
+      NR:'NR (Não Realizado)', BQ:'BQ (Bloqueado)', CR:'CR (Crédito)',
+      RD:'RD (Redigitado)', importado:'Importado', pendente:'Pendente (legado)',
+      ok:'OK (legado)', cancelado:'Cancelado (legado)', revisado:'Revisado (legado)'
     };
-    const statusOpts = STATUS_LISTA.map(s => `<option value="${s}">${STATUS_LABEL[s]||s}</option>`).join('');
-    const grupoOpts = GRUPOS.map(g => `<option value="${g}">${g || '-- Selecione --'}</option>`).join('');
-    const tipoOpts = TIPOS.map(t => `<option value="${t}">${t || '-- Selecione --'}</option>`).join('');
-    const natOpts = NATUREZAS.map(n => `<option value="${n}">${n}</option>`).join('');
-    const dlCC = ccs.map(c => `<option value="${c}">`).join('');
-    const dlClientes = clientes.map(c => `<option value="${c}">`).join('');
-    const dlContas = contas.map(c => `<option value="${c}">`).join('');
-    const dlProjetos = projetos.map(c => `<option value="${c}">`).join('');
+    // statusOpts: apenas os novos (para formulário de novo lançamento)
+    const statusOpts = STATUS_NOVOS.map(([cod,label]) => `<option value="${cod}">${label}</option>`).join('');
+    // statusOptsAll: novos + legados (para filtro de pesquisa)
+    const statusOptsAll = STATUS_NOVOS.map(([cod,label]) => `<option value="${cod}">${label}</option>`).join('') +
+      STATUS_LEGADO_LISTA.map(s => `<option value="${s}" style="color:#94a3b8">${STATUS_LABEL[s]||s} ★</option>`).join('');
+    // Opts do cadastro
+    const grupoOpts = '<option value="">Todos</option>' + GRUPOS.map(g => `<option value="${g.codigo}" ${qCC===g.codigo?'selected':''}>${g.nome}</option>`).join('');
+    const tipoOpts  = '<option value="">Todos</option>' + TIPOS.map(t => `<option value="${t.codigo}">${t.grupo_nome ? t.grupo_nome+' → ' : ''}${t.nome}</option>`).join('');
+    const natOpts   = '<option value="">Todas</option>' + NATUREZAS.map(n => `<option value="${n}" ${qNat===n?'selected':''}>${n}</option>`).join('');
+    const dlCC      = ccs.map(c => `<option value="${c.codigo}" label="${c.nome}">`).join('');
+    const dlClientes= clientesCad.map(c => `<option value="${c.nome}">`).join('');
+    const dlContas  = bancosCad.length > 0
+      ? bancosCad.map(b => `<option value="${b.nome}">`).join('')
+      : contas.map(c => `<option value="${c}">`).join('');
+    // Projetos do cadastro
+    const dlProjetos     = projetosCad.map(p => `<option value="${p.codigo}" label="${p.nome} (${p.codigo})">`).join('');
+    const dlProjetosNome = projetosCad.map(p => `<option value="${p.codigo}">${p.nome} (${p.codigo})</option>`).join('');
+    // Mapa de contratos por nome do cliente (para select dinâmico no formulário)
+    const CONTRATOS_MAP = contratosCad.reduce((m, ct) => {
+      const key = (ct.cliente_nome || '').trim();
+      if (!m[key]) m[key] = [];
+      m[key].push({ id: ct.id, numero: ct.numero, descricao: ct.descricao || '', valor: ct.valor_total || 0 });
+      return m;
+    }, {});
 
     // Paginação
     const paginacao = totalPages > 1 ? `<div style="display:flex;gap:.5rem;align-items:center;margin-top:1rem;flex-wrap:wrap">
-      ${page_num > 1 ? `<a href="?p=${page_num-1}&q=${encodeURIComponent(q)}&data=${qData}&data_fim=${qDataFim}&cc=${encodeURIComponent(qCC)}&cliente=${encodeURIComponent(qCliente)}&nat=${encodeURIComponent(qNat)}&dc=${qDC}&status=${qStatus}&cpf=${encodeURIComponent(qCpf)}" style="padding:.3rem .7rem;background:#e2e8f0;border-radius:6px;text-decoration:none;color:#475569">← Anterior</a>` : ''}
+      ${page_num > 1 ? `<a href="?p=${page_num-1}&q=${encodeURIComponent(q)}&data=${qData}&data_fim=${qDataFim}&cc=${encodeURIComponent(qCC)}&cliente=${encodeURIComponent(qCliente)}&nat=${encodeURIComponent(qNat)}&dc=${qDC}&status=${qStatus}&cpf=${encodeURIComponent(qCpf)}&projeto=${encodeURIComponent(qProjeto)}" style="padding:.3rem .7rem;background:#e2e8f0;border-radius:6px;text-decoration:none;color:#475569">← Anterior</a>` : ''}
       <span style="color:#64748b;font-size:.85rem">Página ${page_num} de ${totalPages} (${total} lançamentos)</span>
-      ${page_num < totalPages ? `<a href="?p=${page_num+1}&q=${encodeURIComponent(q)}&data=${qData}&data_fim=${qDataFim}&cc=${encodeURIComponent(qCC)}&cliente=${encodeURIComponent(qCliente)}&nat=${encodeURIComponent(qNat)}&dc=${qDC}&status=${qStatus}&cpf=${encodeURIComponent(qCpf)}" style="padding:.3rem .7rem;background:#e2e8f0;border-radius:6px;text-decoration:none;color:#475569">Próxima →</a>` : ''}
+      ${page_num < totalPages ? `<a href="?p=${page_num+1}&q=${encodeURIComponent(q)}&data=${qData}&data_fim=${qDataFim}&cc=${encodeURIComponent(qCC)}&cliente=${encodeURIComponent(qCliente)}&nat=${encodeURIComponent(qNat)}&dc=${qDC}&status=${qStatus}&cpf=${encodeURIComponent(qCpf)}&projeto=${encodeURIComponent(qProjeto)}" style="padding:.3rem .7rem;background:#e2e8f0;border-radius:6px;text-decoration:none;color:#475569">Próxima →</a>` : ''}
     </div>` : `<div style="color:#64748b;font-size:.85rem;margin-top:.5rem">${total} lançamento(s) encontrado(s)</div>`;
 
     // Linhas da tabela
@@ -3801,9 +4036,8 @@ async function excluirRef(tipo,nome){
       if (!(e.centroCusto || '').trim()) inconsistencias.push('sem_cc');
       if (!(e.favorecido || e.cliente || e.parceiro || '').trim()) inconsistencias.push('sem_nome');
       if (precisaProjeto && !(e.projeto || '').trim()) inconsistencias.push('sem_projeto');
-      if (!nat || nat === 'Pendente de Classificação') inconsistencias.push('sem_natureza');
       const temInconsistencia = inconsistencias.length > 0;
-      const incJson = JSON.stringify(inconsistencias);
+      const incJson = JSON.stringify(inconsistencias).replace(/"/g, "'");
       const dcStr = e.dc || (e.valor >= 0 ? 'C' : 'D');
       const dcCls = dcStr === 'C' ? 'color:#065f46;font-weight:700' : 'color:#991b1b;font-weight:700';
       const val = Number(e.valor || 0);
@@ -3815,23 +4049,24 @@ async function excluirRef(tipo,nome){
       const natLabel = (e.naturezaGerencial || e.natureza || '-').slice(0, 20);
       const status = e.status || '-';
       const origem = e.origem === 'manual' ? '<span style="font-size:.65rem;background:#dbeafe;color:#1e40af;padding:.1rem .3rem;border-radius:4px">MANUAL</span>' : '';
-      const incBadge = temInconsistencia ? `<span title="${inconsistencias.map(i=>({sem_cc:'Sem CC',sem_nome:'Sem Cliente/Fornecedor/Prestador',sem_projeto:'Sem projeto',sem_natureza:'Sem natureza'}[i]||i)).join(', ')}" style="font-size:.6rem;background:#fee2e2;color:#991b1b;padding:.1rem .3rem;border-radius:4px;cursor:help">⚠ ${inconsistencias.length}</span>` : '';
+      const incBadge = temInconsistencia ? `<span title="${inconsistencias.map(i=>({sem_cc:'Sem CC',sem_nome:'Sem Cliente/Fornecedor/Prestador',sem_projeto:'Sem projeto'}[i]||i)).join(', ')}" style="font-size:.6rem;background:#fee2e2;color:#991b1b;padding:.1rem .3rem;border-radius:4px;cursor:help">⚠ ${inconsistencias.length}</span>` : '';
       const confirmarBadge = e.pendente_confirmacao ? `<span title="${(e.motivo_confirmacao||'Aguardando confirmação').replace(/"/g,'&quot;')}" style="font-size:.6rem;background:#fef3c7;color:#92400e;padding:.1rem .3rem;border-radius:4px;cursor:help">🕐 Confirmar</span>` : '';
       const rowBg = e.pendente_confirmacao ? 'background:#fffbeb;border-left:3px solid #f59e0b' : (temInconsistencia ? 'background:#fffbeb' : '');
-      const numStr = e.numLanc ? `<span style="font-size:.65rem;color:#94a3b8;font-family:monospace">#${String(e.numLanc).padStart(6,'0')}</span>` : '';
+      const numStr = e.numLanc ? `<span style="font-family:monospace;font-size:.78rem;font-weight:700;color:#1d4ed8">#${String(e.numLanc).padStart(6,'0')}</span>` : '<span style="color:#94a3b8;font-size:.72rem">—</span>';
       return `<tr id="row-${e.id}" style="border-bottom:1px solid #f1f5f9;cursor:pointer;${rowBg}" onclick="toggleEditLanc('${e.id}', ${incJson})">
-        <td style="white-space:nowrap;color:#64748b;font-size:.8rem">${e.dataISO || '-'} ${numStr}</td>
+        <td style="white-space:nowrap;text-align:center;padding:.5rem .4rem">${numStr}</td>
+        <td style="white-space:nowrap;color:#64748b;font-size:.8rem">${e.dataISO || '-'}</td>
         <td style="${dcCls};font-size:.78rem;text-align:center">${dcStr}</td>
         <td style="color:#64748b;font-size:.78rem">${cc}</td>
         <td style="font-size:.78rem">${nome} ${origem} ${incBadge} ${confirmarBadge}</td>
         <td style="font-size:.78rem;color:#475569" title="${(e.descritivo||e.descricao||'')}">${ desc}</td>
         <td style="${valCls};font-size:.8rem;text-align:right;font-weight:600">${valStr}</td>
-        <td style="font-size:.72rem;color:#94a3b8">${natLabel}</td>
+        <td style="font-size:.72rem;color:#7c3aed;font-weight:500">${MAPA_PROJETOS_CKM[e.projeto] ? `<span title="${e.projeto}">${MAPA_PROJETOS_CKM[e.projeto]}</span>` : (e.projeto ? `<span style="color:#94a3b8">${e.projeto}</span>` : '<span style="color:#e2e8f0">—</span>')}</td>
         <td style="font-size:.72rem;color:#94a3b8" title="${STATUS_LABEL[status]||status}">${STATUS_LABEL[status]||status}</td>
-        <td style="text-align:center"><button onclick="event.stopPropagation();toggleEditLanc('${e.id}', ${incJson})" title="Editar lançamento" style="background:#ede9fe;color:#6d28d9;font-size:.75rem;padding:.25rem .5rem;box-shadow:none;border:1px solid #c4b5fd">✏</button></td>
+        <td style="text-align:center"><button onclick="event.stopPropagation();toggleEditLanc('${e.id}', ${incJson})" title="Editar lançamento" style="background:#ede9fe;color:#6d28d9;font-size:.75rem;padding:.25rem .5rem;box-shadow:none;border:1px solid #c4b5fd">&#9998;</button></td>
       </tr>
       <tr id="edit-lanc-${e.id}" style="display:none;background:#f8fafc">
-        <td colspan="9" style="padding:.75rem 1rem">
+        <td colspan="10" style="padding:.75rem 1rem">
           <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:.75rem">
             <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Data</label>
             <input id="el-data-${e.id}" value="${e.dataISO||''}" type="date" style="font-size:.8rem;padding:.3rem .5rem;width:100%"/></div>
@@ -3840,12 +4075,10 @@ async function excluirRef(tipo,nome){
               <option value="C" ${dcStr==='C'?'selected':''}>C — Crédito (entrada)</option>
               <option value="D" ${dcStr==='D'?'selected':''}>D — Débito (saída)</option>
             </select></div>
-            <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Natureza Gerencial</label>
-            <select id="el-nat-${e.id}" style="font-size:.8rem;padding:.3rem .5rem;width:100%">${NATUREZAS.map(n=>`<option value="${n}" ${(e.naturezaGerencial||e.natureza||'')==n?'selected':''}>${n}</option>`).join('')}</select></div>
             <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Grupo da Despesa</label>
-            <select id="el-grupo-${e.id}" style="font-size:.8rem;padding:.3rem .5rem;width:100%">${GRUPOS.map(g=>`<option value="${g}" ${(e.grupoDespesa||'')==g?'selected':''}>${g||'-- Selecione --'}</option>`).join('')}</select></div>
+            <select id="el-grupo-${e.id}" style="font-size:.8rem;padding:.3rem .5rem;width:100%" onchange="filtrarTiposNoSelect('el-grupo-${e.id}','el-tipo-${e.id}','')">${GRUPOS.map(g=>`<option value="${g.codigo}" ${(e.grupoDespesa||'')==g.codigo?'selected':''}>${g.nome||'-- Selecione --'}</option>`).join('')}</select></div>
             <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Tipo de Despesa</label>
-            <select id="el-tipo-${e.id}" style="font-size:.8rem;padding:.3rem .5rem;width:100%">${TIPOS.map(t=>`<option value="${t}" ${(e.tipoDespesa||'')==t?'selected':''}>${t||'-- Selecione --'}</option>`).join('')}</select></div>
+            <select id="el-tipo-${e.id}" style="font-size:.8rem;padding:.3rem .5rem;width:100%">${TIPOS.filter(t=>!e.grupoDespesa||t.grupo_nome===(GRUPOS.find(g=>g.codigo===e.grupoDespesa)||{}).nome).map(t=>`<option value="${t.codigo}" ${(e.tipoDespesa||'')==t.codigo?'selected':''}>${t.nome||'-- Selecione --'}</option>`).join('')}</select></div>
             <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Código (CC)</label>
             <input id="el-cc-${e.id}" list="dl-cc-lanc" value="${e.centroCusto||''}" style="font-size:.8rem;padding:.3rem .5rem;width:100%"/></div>
             <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Cliente / Fornecedor / Prestador</label>
@@ -3855,11 +4088,21 @@ async function excluirRef(tipo,nome){
             <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Conta / Banco</label>
             <input id="el-conta-${e.id}" list="dl-contas-lanc" value="${e.conta||''}" style="font-size:.8rem;padding:.3rem .5rem;width:100%"/></div>
             <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Projeto</label>
-            <input id="el-proj-${e.id}" list="dl-projetos-lanc" value="${e.projeto||''}" style="font-size:.8rem;padding:.3rem .5rem;width:100%"/></div>
-            <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Valor (R$)</label>
+            <select id="el-proj-${e.id}" style="font-size:.8rem;padding:.3rem .5rem;width:100%">
+              <option value="">-- Selecione o Projeto --</option>
+              ${Object.entries(MAPA_PROJETOS_CKM).map(([cod,nome])=>`<option value="${cod}" ${(e.projeto||'')==cod?'selected':''}>${nome} (${cod})</option>`).join('')}
+            </select></div>           <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Valor (R$)</label>
             <input id="el-valor-${e.id}" type="number" step="0.01" value="${Math.abs(val)}" style="font-size:.8rem;padding:.3rem .5rem;width:100%"/></div>
+            <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Classificação</label>
+            <select id="el-classif-${e.id}" style="font-size:.8rem;padding:.3rem .5rem;width:100%">
+              <option value="">-- Selecione --</option>
+              ${['Despesa Direta','Despesa Indireta','Receita Direta','Receita Indireta','Movimentação Financeira','Transferência Interna'].map(c=>`<option value="${c}" ${(e.classificacao||'')==c?'selected':''}>${c}</option>`).join('')}
+            </select></div>
             <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Status</label>
-            <select id="el-status-${e.id}" style="font-size:.8rem;padding:.3rem .5rem;width:100%">${STATUS_LISTA.map(s=>`<option value="${s}" ${(e.status||'')==s?'selected':''}>${STATUS_LABEL[s]||s}</option>`).join('')}</select></div>
+            <select id="el-status-${e.id}" style="font-size:.8rem;padding:.3rem .5rem;width:100%">
+              ${STATUS_NOVOS.map(([cod,label])=>`<option value="${cod}" ${(e.status||'')==cod?'selected':''}>${label}</option>`).join('')}
+              ${STATUS_LEGADO_LISTA.includes(e.status||'') ? `<optgroup label="─ Legado ─"><option value="${e.status}" selected style="color:#94a3b8">${STATUS_LABEL[e.status]||e.status} (legado)</option></optgroup>` : ''}
+            </select></div>
             <div style="grid-column:span 2"><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Documento / Referência (NF, Recibo, Contrato)</label>
             <input id="el-doc-${e.id}" value="${(e.documento||e.descricao||'').replace(/"/g,'&quot;')}" style="font-size:.8rem;padding:.3rem .5rem;width:100%"/></div>
             <div style="grid-column:span 2"><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Descritivo (finalidade do gasto)</label>
@@ -3879,6 +4122,7 @@ async function excluirRef(tipo,nome){
 <datalist id="dl-clientes-lanc">${dlClientes}</datalist>
 <datalist id="dl-contas-lanc">${dlContas}</datalist>
 <datalist id="dl-projetos-lanc">${dlProjetos}</datalist>
+<datalist id="dl-projetos-nome-lanc">${dlProjetosNome}</datalist>
 
 <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1.5rem;flex-wrap:wrap;gap:.75rem">
   <h1 style="margin:0">✏ Gestão de Lançamentos</h1>
@@ -3896,31 +4140,89 @@ async function excluirRef(tipo,nome){
       <option value="D">D — Débito (saída)</option>
       <option value="C">C — Crédito (entrada)</option>
     </select></div>
-    <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Natureza Gerencial *</label>
-    <select id="novo-nat" style="font-size:.8rem;padding:.3rem .5rem;width:100%">${natOpts}</select></div>
+    <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Classificação</label>
+    <select id="novo-classif" style="font-size:.8rem;padding:.3rem .5rem;width:100%">
+      <option value="">-- Selecione --</option>
+      <option value="Despesa Direta">Despesa Direta</option>
+      <option value="Despesa Indireta">Despesa Indireta</option>
+      <option value="Receita Direta">Receita Direta</option>
+      <option value="Receita Indireta">Receita Indireta</option>
+      <option value="Movimentação Financeira">Movimentação Financeira</option>
+      <option value="Transferência Interna">Transferência Interna</option>
+    </select></div>
+    <div>
+      <label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">CPF / CNPJ</label>
+      <div style="position:relative">
+        <input id="novo-cpf" placeholder="Digite CPF ou CNPJ (somente números)" oninput="autocompleteFavorecido(this.value)" onblur="setTimeout(function(){var d=document.getElementById('cpf-sugestoes');if(d)d.style.display='none';},200)" autocomplete="off" style="font-size:.8rem;padding:.3rem .5rem;width:100%"/>
+        <div id="cpf-sugestoes" style="display:none;position:absolute;top:100%;left:0;right:0;background:#fff;border:1px solid #cbd5e1;border-radius:6px;box-shadow:0 4px 12px rgba(0,0,0,.1);z-index:9999;max-height:200px;overflow-y:auto"></div>
+      </div>
+      <div id="novo-cpf-aviso" style="font-size:.72rem;margin-top:.2rem"></div>
+    </div>
+    <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Cliente / Fornecedor / Prestador</label>
+    <input id="novo-cliente" readonly placeholder="Preenchido automaticamente pelo CPF/CNPJ" style="font-size:.8rem;padding:.3rem .5rem;width:100%;background:#f1f5f9;color:#475569;cursor:not-allowed"/></div>
+    <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Projeto</label>
+    <select id="novo-proj" style="font-size:.8rem;padding:.3rem .5rem;width:100%">
+      <option value="">-- Selecione o Projeto --</option>
+      ${projetosCad.map(p=>`<option value="${p.codigo}">${p.nome} (${p.codigo})</option>`).join('')}
+    </select></div>
     <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Grupo da Despesa</label>
-    <select id="novo-grupo" style="font-size:.8rem;padding:.3rem .5rem;width:100%">${grupoOpts}</select></div>
+    <select id="novo-grupo" style="font-size:.8rem;padding:.3rem .5rem;width:100%" onchange="filtrarTiposNoSelect('novo-grupo','novo-tipo','')">${grupoOpts}</select></div>
     <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Tipo de Despesa</label>
     <select id="novo-tipo" style="font-size:.8rem;padding:.3rem .5rem;width:100%">${tipoOpts}</select></div>
     <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Código (CC) *</label>
     <input id="novo-cc" list="dl-cc-lanc" placeholder="Ex: ESCRITORIO" style="font-size:.8rem;padding:.3rem .5rem;width:100%"/></div>
-    <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Cliente / Fornecedor / Prestador</label>
-    <input id="novo-cliente" list="dl-clientes-lanc" placeholder="Ex: VIVO, SEBRAE-AC" style="font-size:.8rem;padding:.3rem .5rem;width:100%"/></div>
-    <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">CPF / CNPJ</label>
-    <input id="novo-cpf" placeholder="000.000.000-00" style="font-size:.8rem;padding:.3rem .5rem;width:100%"/></div>
     <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Conta / Banco</label>
     <input id="novo-conta" list="dl-contas-lanc" placeholder="Ex: Itaú PJ" style="font-size:.8rem;padding:.3rem .5rem;width:100%"/></div>
-    <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Projeto</label>
-    <input id="novo-proj" list="dl-projetos-lanc" placeholder="Ex: BRB-PDL" style="font-size:.8rem;padding:.3rem .5rem;width:100%"/></div>
     <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Valor (R$) *</label>
     <input id="novo-valor" type="number" step="0.01" placeholder="0,00" style="font-size:.8rem;padding:.3rem .5rem;width:100%"/></div>
     <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Status</label>
     <select id="novo-status" style="font-size:.8rem;padding:.3rem .5rem;width:100%">${statusOpts}</select></div>
-    <div style="grid-column:span 2"><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Documento / Referência (NF, Recibo, Contrato)</label>
-    <input id="novo-doc" placeholder="Ex: NF 11921943 - Contrato 42156427" style="font-size:.8rem;padding:.3rem .5rem;width:100%"/></div>
+    <div style="grid-column:span 2" id="bloco-doc">
+      <label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase" id="label-doc">Documento / Referência (NF, Recibo, Contrato)</label>
+      <input id="novo-doc" placeholder="Ex: NF 11921943 - Contrato 42156427" style="font-size:.8rem;padding:.3rem .5rem;width:100%"/>
+      <select id="novo-doc-contrato" style="font-size:.8rem;padding:.3rem .5rem;width:100%;display:none">
+        <option value="">-- Selecione o Contrato --</option>
+      </select>
+      <span id="doc-sem-contrato" style="font-size:.75rem;color:#f59e0b;display:none">&#9888; Nenhum contrato ativo cadastrado para este cliente. <a href='/contratos' target='_blank' style='color:#2563eb'>Cadastrar agora</a></span>
+    </div>
     <div style="grid-column:span 2"><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Descritivo (finalidade do gasto)</label>
     <input id="novo-descritivo" placeholder="Ex: Serviço de hospedagem para manutenção da presença digital" style="font-size:.8rem;padding:.3rem .5rem;width:100%"/></div>
   </div>
+
+  <!-- RECORRÊNCIA -->
+  <div style="margin-top:1rem;padding:1rem;background:#f8fafc;border-radius:.5rem;border:1px solid #e2e8f0">
+    <div style="display:flex;align-items:center;gap:1rem;flex-wrap:wrap">
+      <div>
+        <label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">🔁 Recorrência</label><br>
+        <select id="novo-recorrencia" onchange="toggleRecorrencia()" style="font-size:.8rem;padding:.3rem .5rem;min-width:140px">
+          <option value="nao">Não recorrente</option>
+          <option value="mensal">Mensal</option>
+          <option value="quinzenal">Quinzenal</option>
+        </select>
+      </div>
+      <div id="bloco-data-fim" style="display:none">
+        <label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Data de Fim *</label><br>
+        <input id="novo-data-fim" type="date" onchange="atualizarPreviaRecorrencia()" style="font-size:.8rem;padding:.3rem .5rem"/>
+      </div>
+      <div id="bloco-previa" style="display:none;flex:1;min-width:200px">
+        <label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Prévia das datas</label>
+        <div id="previa-datas" style="font-size:.78rem;color:#475569;margin-top:.25rem;max-height:80px;overflow-y:auto;background:#fff;border:1px solid #e2e8f0;border-radius:.3rem;padding:.3rem .5rem"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL DE CONFIRMAÇÃO DE RECORRÊNCIA -->
+  <div id="modal-recorrencia" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.5);z-index:9999;align-items:center;justify-content:center">
+    <div style="background:#fff;border-radius:.75rem;padding:1.5rem;max-width:500px;width:90%;box-shadow:0 20px 60px rgba(0,0,0,.3)">
+      <h3 style="margin:0 0 1rem;color:#dc2626;font-size:1rem">⚠ Lançamentos Recorrentes Já Existem</h3>
+      <div id="modal-recorrencia-msg" style="font-size:.85rem;color:#374151;margin-bottom:1rem;line-height:1.5"></div>
+      <div style="display:flex;gap:.5rem;justify-content:flex-end">
+        <button onclick="document.getElementById('modal-recorrencia').style.display='none'" style="background:#e2e8f0;color:#475569;box-shadow:none;padding:.4rem 1rem">Cancelar</button>
+        <button onclick="confirmarCriacaoRecorrente()" style="background:#dc2626;padding:.4rem 1rem">Sim, criar mesmo assim</button>
+      </div>
+    </div>
+  </div>
+
   <div style="display:flex;gap:.5rem;margin-top:1rem">
     <button onclick="criarLancamento()" style="background:#059669;padding:.5rem 1.2rem">✓ Salvar Lançamento</button>
     <button onclick="document.getElementById('form-novo').style.display='none'" style="background:#e2e8f0;color:#475569;box-shadow:none">Cancelar</button>
@@ -3934,7 +4236,6 @@ async function excluirRef(tipo,nome){
   <a href="/lancamentos?inc=sem_cc" style="font-size:.75rem;padding:.3rem .7rem;background:${qInc==='sem_cc'?'#dc2626':'#fee2e2'};color:${qInc==='sem_cc'?'#fff':'#991b1b'};border-radius:6px;text-decoration:none;font-weight:600">⚠ Sem CC (${cntSemCC})</a>
   <a href="/lancamentos?inc=sem_nome" style="font-size:.75rem;padding:.3rem .7rem;background:${qInc==='sem_nome'?'#dc2626':'#fee2e2'};color:${qInc==='sem_nome'?'#fff':'#991b1b'};border-radius:6px;text-decoration:none;font-weight:600">⚠ Sem Cliente/Fornecedor (${cntSemNome})</a>
   <a href="/lancamentos?inc=sem_projeto" style="font-size:.75rem;padding:.3rem .7rem;background:${qInc==='sem_projeto'?'#dc2626':'#fee2e2'};color:${qInc==='sem_projeto'?'#fff':'#991b1b'};border-radius:6px;text-decoration:none;font-weight:600">⚠ Sem Projeto (${cntSemProjeto})</a>
-  <a href="/lancamentos?inc=sem_natureza" style="font-size:.75rem;padding:.3rem .7rem;background:${qInc==='sem_natureza'?'#dc2626':'#fee2e2'};color:${qInc==='sem_natureza'?'#fff':'#991b1b'};border-radius:6px;text-decoration:none;font-weight:600">⚠ Sem Natureza (${cntSemNatureza})</a>
   <a href="/lancamentos?inc=sem_cpf" style="font-size:.75rem;padding:.3rem .7rem;background:${qInc==='sem_cpf'?'#dc2626':'#fee2e2'};color:${qInc==='sem_cpf'?'#fff':'#991b1b'};border-radius:6px;text-decoration:none;font-weight:600">⚠ Sem CPF/CNPJ (${cntSemCpf})</a>
   ${cntAConfirmar > 0 ? `<a href="/lancamentos?inc=a_confirmar" style="font-size:.75rem;padding:.3rem .7rem;background:${qInc==='a_confirmar'?'#d97706':'#fef3c7'};color:${qInc==='a_confirmar'?'#fff':'#92400e'};border-radius:6px;text-decoration:none;font-weight:600">🕐 A Confirmar (${cntAConfirmar})</a>` : ''}
   ${qInc ? '<a href="/lancamentos" style="font-size:.75rem;padding:.3rem .7rem;background:#e2e8f0;color:#475569;border-radius:6px;text-decoration:none">✕ Limpar filtro</a>' : ''}
@@ -3943,6 +4244,8 @@ async function excluirRef(tipo,nome){
 <!-- FILTROS DE PESQUISA -->
 <form method="GET" action="/lancamentos" style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:12px;padding:1rem;margin-bottom:1rem">
   <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:.5rem;align-items:end">
+    <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Nº do Lançamento</label>
+    <input name="num" type="number" value="${url.searchParams.get('num')||''}" placeholder="Ex: 4121" style="font-size:.8rem;padding:.3rem .5rem;width:100%" min="1"/></div>
     <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Busca geral</label>
     <input name="q" value="${q}" placeholder="Nome, descrição, NF..." style="font-size:.8rem;padding:.3rem .5rem;width:100%"/></div>
     <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Data início</label>
@@ -3955,10 +4258,10 @@ async function excluirRef(tipo,nome){
     <input name="cliente" list="dl-clientes-lanc" value="${qCliente}" placeholder="Ex: SEBRAE, VIVO" style="font-size:.8rem;padding:.3rem .5rem;width:100%"/></div>
     <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">CPF / CNPJ</label>
     <input name="cpf" value="${qCpf}" placeholder="000.000.000-00" style="font-size:.8rem;padding:.3rem .5rem;width:100%"/></div>
-    <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Natureza</label>
-    <select name="nat" style="font-size:.8rem;padding:.3rem .5rem;width:100%">
-      <option value="">Todas</option>
-      ${NATUREZAS.map(n => `<option value="${n}" ${qNat===n?'selected':''}>${n}</option>`).join('')}
+    <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Projeto</label>
+    <select name="projeto" style="font-size:.8rem;padding:.3rem .5rem;width:100%">
+      <option value="">Todos</option>
+      ${projetosCad.map(p => `<option value="${p.codigo}" ${qProjeto===p.codigo?'selected':''}>${p.nome}</option>`).join('')}
     </select></div>
     <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">D/C</label>
     <select name="dc" style="font-size:.8rem;padding:.3rem .5rem;width:100%">
@@ -3969,7 +4272,10 @@ async function excluirRef(tipo,nome){
     <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Status</label>
     <select name="status" style="font-size:.8rem;padding:.3rem .5rem;width:100%">
       <option value="">Todos</option>
-      ${STATUS_LISTA.map(s => `<option value="${s}" ${qStatus===s?'selected':''}>${s}</option>`).join('')}
+      ${STATUS_NOVOS.map(([cod,label]) => `<option value="${cod}" ${qStatus===cod?'selected':''}>${label}</option>`).join('')}
+      <optgroup label="─── Status legados ───">
+      ${STATUS_LEGADO_LISTA.map(s => `<option value="${s}" ${qStatus===s?'selected':''} style="color:#94a3b8">${STATUS_LABEL[s]||s}</option>`).join('')}
+      </optgroup>
     </select></div>
     <div style="display:flex;gap:.4rem;align-items:flex-end">
       <input type="hidden" name="inc" value="${qInc}">
@@ -3986,23 +4292,148 @@ ${paginacao}
 <table style="width:100%;border-collapse:collapse">
   <thead>
     <tr style="background:#f1f5f9;font-size:.75rem;text-transform:uppercase;color:#64748b">
+      <th style="padding:.5rem .75rem;text-align:center;white-space:nowrap">Nº</th>
       <th style="padding:.5rem .75rem;text-align:left">Data</th>
       <th style="padding:.5rem .75rem;text-align:center">Tipo</th>
-      <th style="padding:.5rem .75rem;text-align:left">Código</th>
+      <th style="padding:.5rem .75rem;text-align:left">Centro de Custo</th>
       <th style="padding:.5rem .75rem;text-align:left">Cliente / Fornecedor / Prestador</th>
       <th style="padding:.5rem .75rem;text-align:left">Descritivo</th>
       <th style="padding:.5rem .75rem;text-align:right">Valor</th>
-      <th style="padding:.5rem .75rem;text-align:left">Natureza</th>
+      <th style="padding:.5rem .75rem;text-align:left">Projeto</th>
       <th style="padding:.5rem .75rem;text-align:left">Status</th>
       <th style="padding:.5rem .75rem;text-align:center">Ação</th>
     </tr>
   </thead>
-  <tbody>${rows || '<tr><td colspan="9" style="text-align:center;padding:2rem;color:#94a3b8">Nenhum lançamento encontrado com os filtros aplicados.</td></tr>'}</tbody>
+  <tbody>${rows || '<tr><td colspan="10" style="text-align:center;padding:2rem;color:#94a3b8">Nenhum lançamento encontrado com os filtros aplicados.</td></tr>'}</tbody>
 </table>
 </div>
 ${paginacao}
 
 <script>
+// Dados do cadastro injetados pelo servidor
+const TODOS_TIPOS = ${JSON.stringify(tiposDespesaCad.map(t=>({codigo:t.codigo,nome:t.nome,grupo_cod:t.grupo_cod||'',grupo_nome:t.grupo_nome||''})))};
+const GRUPOS_LISTA = ${JSON.stringify(GRUPOS.map(g=>({codigo:g.codigo,nome:g.nome})))};
+// Mapa CPF/CNPJ (sem máscara) → { nome, tipo } para autocomplete no formulário
+const CLIENTES_MAP_CPF = ${JSON.stringify(clientesMapCpf)};
+// Mapa NOME → { cpf, tipo } para autocomplete inverso
+const CLIENTES_MAP_NOME = ${JSON.stringify(clientesCad.reduce((m,c)=>{ m[c.nome]={cpf:c.cpf||'',tipo:c.tipo||''}; return m; }, {}))};
+// Mapa NOME_CLIENTE → [contratos] para select dinâmico no formulário
+const CONTRATOS_POR_CLIENTE = ${JSON.stringify(CONTRATOS_MAP)};
+function atualizarContratoSelect(nomeCliente, tipoCliente) {
+  var inputDoc = document.getElementById('novo-doc');
+  var selectDoc = document.getElementById('novo-doc-contrato');
+  var avisoSem = document.getElementById('doc-sem-contrato');
+  var labelDoc = document.getElementById('label-doc');
+  if (!inputDoc || !selectDoc) return;
+  // Apenas para clientes do tipo CLIENTE
+  if ((tipoCliente||'').toUpperCase() === 'CLIENTE') {
+    var contratos = CONTRATOS_POR_CLIENTE[nomeCliente] || [];
+    if (contratos.length > 0) {
+      selectDoc.innerHTML = '<option value="">-- Selecione o Contrato --</option>' +
+        contratos.map(function(ct){
+          var label = ct.numero + (ct.descricao ? ' — ' + ct.descricao : '');
+          return '<option value="' + ct.numero + '">' + label + '</option>';
+        }).join('');
+      inputDoc.style.display = 'none';
+      selectDoc.style.display = 'block';
+      if(avisoSem) avisoSem.style.display = 'none';
+      if(labelDoc) labelDoc.textContent = 'Contrato *';
+    } else {
+      inputDoc.style.display = 'none';
+      selectDoc.style.display = 'none';
+      if(avisoSem) avisoSem.style.display = 'block';
+      if(labelDoc) labelDoc.textContent = 'Contrato';
+    }
+  } else {
+    // Para fornecedores/prestadores: campo de texto livre
+    inputDoc.style.display = 'block';
+    selectDoc.style.display = 'none';
+    if(avisoSem) avisoSem.style.display = 'none';
+    if(labelDoc) labelDoc.textContent = 'Documento / Referência (NF, Recibo, Contrato)';
+  }
+}
+function selecionarFavorecido(cpf, nome, tipo) {
+  var campoCpf = document.getElementById('novo-cpf');
+  var campoNome = document.getElementById('novo-cliente');
+  var aviso = document.getElementById('novo-cpf-aviso');
+  var sugestoes = document.getElementById('cpf-sugestoes');
+  if(campoCpf) campoCpf.value = cpf;
+  if(campoNome) campoNome.value = nome;
+  if(aviso) aviso.innerHTML = '<span style="color:#059669">\u2713 ' + (tipo||'Cadastrado') + '</span>';
+  if(sugestoes) sugestoes.style.display = 'none';
+  // Atualizar campo de contrato conforme tipo do cliente
+  atualizarContratoSelect(nome, tipo);
+}
+function autocompleteFavorecido(val) {
+  var cpfLimpo = val.replace(/\D/g,'');
+  var aviso = document.getElementById('novo-cpf-aviso');
+  var campoNome = document.getElementById('novo-cliente');
+  var sugestoes = document.getElementById('cpf-sugestoes');
+  // Limpar se vazio
+  if (cpfLimpo.length === 0) {
+    if(aviso) aviso.innerHTML='';
+    if(campoNome) campoNome.value='';
+    if(sugestoes) sugestoes.style.display='none';
+    return;
+  }
+  // A partir de 3 digitos: mostrar sugestoes
+  if (cpfLimpo.length >= 3) {
+    var matches = Object.keys(CLIENTES_MAP_CPF).filter(function(k){ return k.indexOf(cpfLimpo)===0; });
+    if (matches.length > 0 && cpfLimpo.length < 14) {
+      if(sugestoes) sugestoes.innerHTML = '';
+      matches.slice(0,10).forEach(function(cpfKey){
+        var c = CLIENTES_MAP_CPF[cpfKey];
+        var div = document.createElement('div');
+        div.setAttribute('data-cpf', cpfKey);
+        div.setAttribute('data-nome', c.nome);
+        div.setAttribute('data-tipo', c.tipo||'');
+        div.style.cssText = 'padding:.4rem .6rem;cursor:pointer;border-bottom:1px solid #f1f5f9;font-size:.8rem';
+        div.onmouseover = function(){ this.style.background='#f1f5f9'; };
+        div.onmouseout = function(){ this.style.background=''; };
+        div.onclick = function(){ selecionarFavorecido(this.getAttribute('data-cpf'), this.getAttribute('data-nome'), this.getAttribute('data-tipo')); };
+        div.innerHTML = '<strong>' + c.nome + '</strong><br><span style="color:#94a3b8;font-size:.72rem">' + cpfKey + '</span>';
+        if(sugestoes) sugestoes.appendChild(div);
+      });
+      if(sugestoes) sugestoes.style.display='block';
+    } else {
+      if(sugestoes) sugestoes.style.display='none';
+    }
+  }
+  // Correspondencia exata (11 digitos CPF ou 14 digitos CNPJ)
+  if (cpfLimpo.length === 11 || cpfLimpo.length === 14) {
+    var cli = CLIENTES_MAP_CPF[cpfLimpo];
+    if (cli) {
+      if(campoNome) campoNome.value = cli.nome;
+      if(aviso) aviso.innerHTML = '<span style="color:#059669">\u2713 ' + (cli.tipo||'Cadastrado') + '</span>';
+      if(sugestoes) sugestoes.style.display='none';
+    } else {
+      if(campoNome) campoNome.value = '';
+      if(aviso) aviso.innerHTML = '<span style="color:#dc2626">\u26a0 CPF/CNPJ n\u00e3o encontrado no cadastro. <a href="/cadastros-mestres" style="color:#6d28d9">Cadastrar agora</a></span>';
+    }
+  }
+}
+function autocompletePorNome(val) {
+  var cli = CLIENTES_MAP_NOME[val];
+  if (cli && cli.cpf) {
+    var campoCpf = document.getElementById('novo-cpf');
+    if(campoCpf) campoCpf.value = cli.cpf;
+    var aviso = document.getElementById('novo-cpf-aviso');
+    if(aviso) aviso.innerHTML = '<span style="color:#059669">\u2713 ' + (cli.tipo||'Cadastrado') + '</span>';
+  }
+}
+function filtrarTiposNoSelect(grupoSelectId, tipoSelectId, valorAtual) {
+  var gSel = document.getElementById(grupoSelectId);
+  var tSel = document.getElementById(tipoSelectId);
+  if (!gSel || !tSel) return;
+  var grupoCod = gSel.value;
+  var tiposFiltrados = grupoCod ? TODOS_TIPOS.filter(function(t){ return t.grupo_cod === grupoCod; }) : TODOS_TIPOS;
+  var opts = '<option value="">-- Selecione o Tipo --</option>';
+  tiposFiltrados.forEach(function(t){
+    opts += '<option value="' + t.codigo + '"' + (t.codigo===valorAtual?' selected':'') + '>' + t.nome + '</option>';
+  });
+  tSel.innerHTML = opts;
+}
+
 function toggleEditLanc(id, inconsistencias) {
   const row = document.getElementById('edit-lanc-' + id);
   if (!row) return;
@@ -4014,10 +4445,9 @@ function toggleEditLanc(id, inconsistencias) {
       sem_cc: 'el-cc-' + id,
       sem_nome: 'el-cliente-' + id,
       sem_projeto: 'el-proj-' + id,
-      sem_natureza: 'el-nat-' + id,
     };
     // Resetar todos primeiro
-    ['el-cc-','el-cliente-','el-proj-','el-nat-'].forEach(p => {
+    ['el-cc-','el-cliente-','el-proj-'].forEach(p => {
       const el = document.getElementById(p + id);
       if (el) { el.style.borderColor = ''; el.style.background = ''; }
     });
@@ -4040,8 +4470,6 @@ async function salvarLancEdit(id) {
     data: document.getElementById('el-data-'+id)?.value,
     dataISO: document.getElementById('el-data-'+id)?.value,
     dc: document.getElementById('el-dc-'+id)?.value,
-    natureza: document.getElementById('el-nat-'+id)?.value,
-    naturezaGerencial: document.getElementById('el-nat-'+id)?.value,
     grupoDespesa: document.getElementById('el-grupo-'+id)?.value,
     tipoDespesa: document.getElementById('el-tipo-'+id)?.value,
     centroCusto: document.getElementById('el-cc-'+id)?.value,
@@ -4052,6 +4480,7 @@ async function salvarLancEdit(id) {
     projeto: document.getElementById('el-proj-'+id)?.value,
     valor: parseFloat(document.getElementById('el-valor-'+id)?.value || 0),
     status: document.getElementById('el-status-'+id)?.value,
+    classificacao: document.getElementById('el-classif-'+id)?.value,
     documento: document.getElementById('el-doc-'+id)?.value,
     descricao: document.getElementById('el-doc-'+id)?.value,
     descritivo: document.getElementById('el-descritivo-'+id)?.value,
@@ -4065,11 +4494,86 @@ async function salvarLancEdit(id) {
     alert('Erro ao salvar. Tente novamente.');
   }
 }
+// ── RECORRÊNCIA ─────────────────────────────────────────────────────────
+var _dadosRecorrente = null; // armazena dados para confirmar após modal
+
+function toggleRecorrencia() {
+  var rec = document.getElementById('novo-recorrencia').value;
+  var blocoFim = document.getElementById('bloco-data-fim');
+  var blocoPrevia = document.getElementById('bloco-previa');
+  if (rec === 'nao') {
+    blocoFim.style.display = 'none';
+    blocoPrevia.style.display = 'none';
+  } else {
+    blocoFim.style.display = 'block';
+    blocoPrevia.style.display = 'flex';
+    atualizarPreviaRecorrencia();
+  }
+}
+
+function gerarDatasRecorrencia(dataInicio, dataFim, frequencia) {
+  var datas = [];
+  var cur = new Date(dataInicio + 'T12:00:00');
+  var fim = new Date(dataFim + 'T12:00:00');
+  if (isNaN(cur) || isNaN(fim) || cur > fim) return datas;
+  while (cur <= fim) {
+    datas.push(cur.toISOString().slice(0,10));
+    if (frequencia === 'mensal') {
+      cur = new Date(cur);
+      cur.setMonth(cur.getMonth() + 1);
+    } else if (frequencia === 'quinzenal') {
+      cur = new Date(cur);
+      cur.setDate(cur.getDate() + 15);
+    } else break;
+  }
+  return datas;
+}
+
+function atualizarPreviaRecorrencia() {
+  var dataInicio = document.getElementById('novo-data').value;
+  var dataFim = document.getElementById('novo-data-fim').value;
+  var freq = document.getElementById('novo-recorrencia').value;
+  var el = document.getElementById('previa-datas');
+  if (!dataInicio || !dataFim || freq === 'nao') { if(el) el.innerHTML = ''; return; }
+  var datas = gerarDatasRecorrencia(dataInicio, dataFim, freq);
+  if (!el) return;
+  if (datas.length === 0) {
+    el.innerHTML = '<span style="color:#dc2626">Data de fim deve ser após a data de início.</span>';
+    return;
+  }
+  el.innerHTML = '<strong>' + datas.length + ' lançamento(s):</strong> ' +
+    datas.map(function(d){ return d.split('-').reverse().join('/'); }).join(' · ');
+}
+
+async function confirmarCriacaoRecorrente() {
+  document.getElementById('modal-recorrencia').style.display = 'none';
+  if (_dadosRecorrente) await _executarCriacaoLancamentos(_dadosRecorrente);
+}
+
+async function _executarCriacaoLancamentos(payload) {
+  var fb = document.getElementById('novo-feedback');
+  var datas = payload.datas;
+  var base = payload.base;
+  fb.innerHTML = '<span style="color:#2563eb">⏳ Criando ' + datas.length + ' lançamento(s)...</span>';
+  var erros = 0;
+  for (var i = 0; i < datas.length; i++) {
+    var lanc = Object.assign({}, base, { data: datas[i], dataISO: datas[i] });
+    var resp = await fetch('/api/entries', {method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify(lanc)});
+    if (!resp.ok) erros++;
+  }
+  if (erros === 0) {
+    fb.innerHTML = '<span style="color:#059669">✓ ' + datas.length + ' lançamento(s) criado(s) com sucesso!</span>';
+    setTimeout(() => location.reload(), 1500);
+  } else {
+    fb.innerHTML = '<span style="color:#dc2626">⚠ ' + erros + ' erro(s) ao criar lançamentos. Verifique e tente novamente.</span>';
+  }
+}
+// ── FIM RECORRÊNCIA ───────────────────────────────────────────────────────
+
 async function criarLancamento() {
   const data = {
     data: document.getElementById('novo-data')?.value,
     dc: document.getElementById('novo-dc')?.value,
-    naturezaGerencial: document.getElementById('novo-nat')?.value,
     grupoDespesa: document.getElementById('novo-grupo')?.value,
     tipoDespesa: document.getElementById('novo-tipo')?.value,
     centroCusto: document.getElementById('novo-cc')?.value,
@@ -4079,19 +4583,104 @@ async function criarLancamento() {
     projeto: document.getElementById('novo-proj')?.value,
     valor: parseFloat(document.getElementById('novo-valor')?.value || 0),
     status: document.getElementById('novo-status')?.value,
-    documento: document.getElementById('novo-doc')?.value,
+    classificacao: document.getElementById('novo-classif')?.value,
+    documento: (document.getElementById('novo-doc-contrato')?.style.display !== 'none'
+      ? document.getElementById('novo-doc-contrato')?.value
+      : document.getElementById('novo-doc')?.value) || '',
     descritivo: document.getElementById('novo-descritivo')?.value,
   };
-  if (!data.data || !data.valor || !data.centroCusto) {
-    document.getElementById('novo-feedback').innerHTML = '<span style="color:#dc2626">⚠ Preencha Data, Código (CC) e Valor.</span>';
+  // Validar CPF/CNPJ obrigatório e cadastrado
+  var cpfDigitado = (data.cpfCnpj || '').replace(/\D/g,'');
+  var fb = document.getElementById('novo-feedback');
+  if (!cpfDigitado || cpfDigitado.length < 11) {
+    fb.innerHTML = '<span style="color:#dc2626">⚠ Informe o CPF ou CNPJ do Cliente / Fornecedor / Prestador de Serviço.</span>';
+    document.getElementById('novo-cpf').focus();
     return;
   }
-  const resp = await fetch('/api/entries', {method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify(data)});
-  if (resp.ok) {
-    document.getElementById('novo-feedback').innerHTML = '<span style="color:#059669">✓ Lançamento criado com sucesso!</span>';
-    setTimeout(() => location.reload(), 1200);
+  if (!CLIENTES_MAP_CPF[cpfDigitado]) {
+    fb.innerHTML = '<span style="color:#dc2626">⚠ CPF/CNPJ não encontrado. <strong>Cadastre o Cliente / Fornecedor / Prestador de Serviço</strong> antes de lançar. <a href="/cadastros-mestres" style="color:#6d28d9;font-weight:700">Cadastrar agora →</a></span>';
+    document.getElementById('novo-cpf').focus();
+    return;
+  }
+  // Validação detalhada com lista de impedimentos
+  const erros = [];
+  if (!data.data) erros.push('<li><strong>Data</strong> — campo obrigatório</li>');
+  if (!data.dc) erros.push('<li><strong>Débito/Crédito</strong> — selecione se é entrada ou saída</li>');
+  if (!data.classificacao) erros.push('<li><strong>Classificação</strong> — selecione o tipo do lançamento</li>');
+  if (!data.centroCusto) erros.push('<li><strong>Código (CC)</strong> — campo obrigatório</li>');
+  if (!data.valor || data.valor === 0) erros.push('<li><strong>Valor (R$)</strong> — deve ser maior que zero</li>');
+  if (!data.status) erros.push('<li><strong>Status</strong> — selecione o status do lançamento</li>');
+  if (erros.length > 0) {
+    fb.innerHTML = '<div style="background:#fef2f2;border:1px solid #fca5a5;border-radius:.5rem;padding:.75rem 1rem;color:#991b1b">'
+      + '<strong>\u274c N\u00e3o foi poss\u00edvel salvar. Corrija os seguintes campos:</strong>'
+      + '<ul style="margin:.5rem 0 0 1rem;padding:0">' + erros.join('') + '</ul>'
+      + '</div>';
+    return;
+  }
+  var recorrencia = document.getElementById('novo-recorrencia')?.value || 'nao';
+
+  // ── LANÇAMENTO SIMPLES (não recorrente) ──
+  if (recorrencia === 'nao') {
+    const resp = await fetch('/api/entries', {method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify(data)});
+    if (resp.ok) {
+      document.getElementById('novo-feedback').innerHTML = '<span style="color:#059669">✓ Lançamento criado com sucesso!</span>';
+      setTimeout(() => location.reload(), 1200);
+    } else {
+      document.getElementById('novo-feedback').innerHTML = '<span style="color:#dc2626">Erro ao criar. Tente novamente.</span>';
+    }
+    return;
+  }
+
+  // ── LANÇAMENTO RECORRENTE ──
+  var dataFim = document.getElementById('novo-data-fim')?.value;
+  if (!dataFim) {
+    fb.innerHTML = '<span style="color:#dc2626">⚠ Informe a Data de Fim para lançamentos recorrentes.</span>';
+    document.getElementById('novo-data-fim').focus();
+    return;
+  }
+  var datas = gerarDatasRecorrencia(data.data, dataFim, recorrencia);
+  if (datas.length === 0) {
+    fb.innerHTML = '<span style="color:#dc2626">⚠ A Data de Fim deve ser posterior à Data de Início.</span>';
+    return;
+  }
+
+  // Verificar os 3 indicadores: favorecido + centroCusto + tipoDespesa
+  var favorecidoNorm = (data.favorecido || '').trim().toUpperCase();
+  var ccNorm = (data.centroCusto || '').trim().toUpperCase();
+  var tipoNorm = (data.tipoDespesa || '').trim().toUpperCase();
+  var jaExistem = 0;
+  if (typeof TODOS_LANCAMENTOS_RESUMO !== 'undefined') {
+    jaExistem = TODOS_LANCAMENTOS_RESUMO.filter(function(l){
+      return (l.favorecido||'').trim().toUpperCase() === favorecidoNorm &&
+             (l.centroCusto||'').trim().toUpperCase() === ccNorm &&
+             (l.tipoDespesa||'').trim().toUpperCase() === tipoNorm;
+    }).length;
   } else {
-    document.getElementById('novo-feedback').innerHTML = '<span style="color:#dc2626">Erro ao criar. Tente novamente.</span>';
+    // Consultar via API
+    try {
+      var chk = await fetch('/api/entries/check-recorrencia?favorecido=' + encodeURIComponent(data.favorecido||'') + '&cc=' + encodeURIComponent(data.centroCusto||'') + '&tipo=' + encodeURIComponent(data.tipoDespesa||''));
+      if (chk.ok) { var chkData = await chk.json(); jaExistem = chkData.count || 0; }
+    } catch(e) { jaExistem = 0; }
+  }
+
+  var payload = { datas: datas, base: data };
+
+  if (jaExistem > 0) {
+    // Mostrar modal de confirmação
+    _dadosRecorrente = payload;
+    var msg = document.getElementById('modal-recorrencia-msg');
+    if (msg) msg.innerHTML =
+      'Já existem <strong>' + jaExistem + ' lançamento(s)</strong> para:<br>' +
+      '<ul style="margin:.5rem 0;padding-left:1.2rem">' +
+      '<li>Cliente/Fornecedor: <strong>' + (data.favorecido||'—') + '</strong></li>' +
+      '<li>Centro de Custo: <strong>' + (data.centroCusto||'—') + '</strong></li>' +
+      '<li>Tipo de Lançamento: <strong>' + (data.tipoDespesa||'—') + '</strong></li>' +
+      '</ul>' +
+      'Deseja mesmo criar mais <strong>' + datas.length + ' lançamento(s) recorrentes</strong>?';
+    var modal = document.getElementById('modal-recorrencia');
+    if (modal) { modal.style.display = 'flex'; }
+  } else {
+    await _executarCriacaoLancamentos(payload);
   }
 }
 async function excluirLanc(id) {
@@ -4119,13 +4708,104 @@ async function excluirLanc(id) {
     const page_num = Math.max(1, parseInt(url.searchParams.get('p') || '1', 10));
     const qFilter = (url.searchParams.get('q') || '').toLowerCase().trim();
 
-    // Construir mapa de entries para lookup rápido
-    const entryMap = new Map(db.entries.map(e => [e.id, e]));
-
-    // Ordenar e filtrar sem gerar HTML de todas as linhas de uma vez
-    let log = (db.auditLog || []).slice().sort((a, b) => b.ts.localeCompare(a.ts));
-
-    // Filtro server-side por texto (registro, campo, usuário)
+    // Buscar do PostgreSQL (fonte principal) ou fallback para JSON
+    let log = [];
+    try {
+      const pg = storage.getPool ? storage.getPool() : null;
+      if (pg) {
+        let whereClause = '';
+        const params = [];
+        if (qFilter) {
+          params.push('%' + qFilter + '%');
+          whereClause = `WHERE (LOWER(campo) LIKE $1 OR LOWER(de) LIKE $1 OR LOWER(para) LIKE $1 OR LOWER(usuario) LIKE $1 OR LOWER(entry_id) LIKE $1)`;
+        }
+        const countRes = await pg.query(`SELECT COUNT(*)::int AS c FROM audit_log ${whereClause}`, params);
+        const totalLog = countRes.rows[0].c;
+        const totalPages = Math.max(1, Math.ceil(totalLog / PAGE_SIZE));
+        const currentPage = Math.min(page_num, totalPages);
+        const offset = (currentPage - 1) * PAGE_SIZE;
+        const rows2 = (await pg.query(
+          `SELECT id, ts, entry_id, usuario, campo, de, para, tipo FROM audit_log ${whereClause} ORDER BY ts DESC LIMIT $${params.length+1} OFFSET $${params.length+2}`,
+          [...params, PAGE_SIZE, offset]
+        )).rows;
+        // Buscar descritivo dos lançamentos referenciados
+        const entryIds = [...new Set(rows2.map(r => r.entry_id).filter(Boolean))];
+        const entryDescMap = {};
+        if (entryIds.length > 0) {
+          const eRows = (await pg.query(
+            `SELECT id, data->>'descritivo' as descritivo, data->>'favorecido' as favorecido FROM entries WHERE id = ANY($1)`,
+            [entryIds]
+          )).rows;
+          eRows.forEach(e => { entryDescMap[e.id] = e.descritivo || e.favorecido || e.id.slice(0,8); });
+        }
+        const LABELS = {
+          cliente: 'Cliente', projeto: 'Projeto', parceiro: 'Parceiro', centroCusto: 'Centro de Custo',
+          natureza: 'Natureza', categoria: 'Categoria', detalhe: 'Detalhe', conta: 'Conta',
+          formaPagamento: 'Forma de Pagamento', status: 'Status', descricao: 'Descrição',
+          valor: 'Valor', dc: 'D/C', data: 'Data', dataISO: 'Data ISO',
+          tipoFinal: 'Tipo Final', statusRevisao: 'Status Revisão',
+          clienteVinculado: 'Cliente Vinculado', projetoVinculado: 'Projeto Vinculado', observacao: 'Observação',
+          favorecido: 'Favorecido', grupoDespesa: 'Grupo da Despesa', tipoDespesa: 'Tipo de Despesa',
+          cpfCnpj: 'CPF/CNPJ', documento: 'Documento/Referência', descritivo: 'Descritivo'
+        };
+        const formatTs = ts => {
+          const d = new Date(ts);
+          return d.toLocaleDateString('pt-BR') + ' ' + d.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+        };
+        const buildPageUrl = (p) => '/historico?p=' + p + (qFilter ? '&q=' + encodeURIComponent(qFilter) : '');
+        const pagination = totalPages <= 1 ? '' : `
+    <div style='display:flex;gap:.5rem;align-items:center;flex-wrap:wrap;margin-top:1rem'>
+      ${currentPage > 1 ? `<a href='${buildPageUrl(1)}' style='padding:.3rem .7rem;border:1px solid var(--gray-200);border-radius:6px;font-size:.82rem;text-decoration:none;color:var(--gray-700)'>&laquo; Primeira</a>` : ''}
+      ${currentPage > 1 ? `<a href='${buildPageUrl(currentPage-1)}' style='padding:.3rem .7rem;border:1px solid var(--gray-200);border-radius:6px;font-size:.82rem;text-decoration:none;color:var(--gray-700)'>&lsaquo; Anterior</a>` : ''}
+      <span style='font-size:.82rem;color:var(--gray-500)'>Página ${currentPage} de ${totalPages} (${totalLog} registros)</span>
+      ${currentPage < totalPages ? `<a href='${buildPageUrl(currentPage+1)}' style='padding:.3rem .7rem;border:1px solid var(--gray-200);border-radius:6px;font-size:.82rem;text-decoration:none;color:var(--gray-700)'>Próxima &rsaquo;</a>` : ''}
+      ${currentPage < totalPages ? `<a href='${buildPageUrl(totalPages)}' style='padding:.3rem .7rem;border:1px solid var(--gray-200);border-radius:6px;font-size:.82rem;text-decoration:none;color:var(--gray-700)'>Última &raquo;</a>` : ''}
+    </div>`;
+        const rowsHtml = rows2.map(r => {
+          const descricao = r.entry_id ? (entryDescMap[r.entry_id] || r.entry_id.slice(0,8)) : '-';
+          const tipoLog = r.tipo === 'revisao' ? '<span style="font-size:.72rem;background:#ede9fe;color:#7c3aed;padding:.15rem .45rem;border-radius:4px">Revisão</span>' : '<span style="font-size:.72rem;background:#dbeafe;color:#1d4ed8;padding:.15rem .45rem;border-radius:4px">Lançamento</span>';
+          return `<tr>
+            <td style='font-size:.78rem;color:var(--gray-500);white-space:nowrap'>${formatTs(r.ts)}</td>
+            <td>${tipoLog}</td>
+            <td style='font-size:.82rem;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap' title='${descricao}'>${descricao}</td>
+            <td style='font-size:.82rem'><strong>${LABELS[r.campo] || r.campo}</strong></td>
+            <td style='font-size:.82rem;color:var(--red);text-decoration:line-through;max-width:160px;overflow:hidden;text-overflow:ellipsis' title='${r.de}'>${r.de || '<em style="color:var(--gray-400)">(vazio)</em>'}</td>
+            <td style='font-size:.82rem;color:var(--green);max-width:160px;overflow:hidden;text-overflow:ellipsis' title='${r.para}'>${r.para || '<em style="color:var(--gray-400)">(vazio)</em>'}</td>
+            <td style='font-size:.78rem;color:var(--gray-500)'>${r.usuario || '-'}</td>
+          </tr>`;
+        }).join('');
+        const html = page(`
+<section style='padding:2rem;max-width:1200px;margin:0 auto'>
+  <h2 style='font-size:1.25rem;font-weight:700;color:var(--gray-800);margin-bottom:.25rem'>Histórico de Alterações <span style='font-size:.85rem;font-weight:400;color:var(--gray-500)'>${totalLog} registro(s)</span></h2>
+  <p style='font-size:.85rem;color:var(--gray-400);margin-bottom:1rem'>Trilha completa de auditoria: toda alteração manual em lançamentos e revisões de cadastro é registrada aqui.</p>
+  <form method='get' action='/historico' style='display:flex;gap:.5rem;margin-bottom:1rem'>
+    <input name='q' value='${qFilter.replace(/"/g,'&quot;')}' placeholder='Buscar por registro, campo ou usuário...' style='flex:1;padding:.5rem .8rem;border:1px solid var(--gray-200);border-radius:8px;font-size:.88rem'/>
+    <button type='submit' style='padding:.5rem 1rem;font-size:.88rem'>Buscar</button>
+    ${qFilter ? `<a href='/historico' style='padding:.5rem .8rem;border:1px solid var(--gray-200);border-radius:8px;font-size:.88rem;text-decoration:none;color:var(--gray-600)'>Limpar</a>` : ''}
+  </form>
+  ${pagination}
+  <div style='overflow-x:auto;margin-top:.75rem'>
+  <table style='width:100%;border-collapse:collapse;font-size:.85rem'>
+    <thead><tr style='background:var(--gray-50);border-bottom:2px solid var(--gray-200)'>
+      <th style='text-align:left;padding:.5rem .75rem;font-size:.78rem;color:var(--gray-500)'>DATA/HORA</th>
+      <th style='text-align:left;padding:.5rem .75rem;font-size:.78rem;color:var(--gray-500)'>TIPO</th>
+      <th style='text-align:left;padding:.5rem .75rem;font-size:.78rem;color:var(--gray-500)'>REGISTRO</th>
+      <th style='text-align:left;padding:.5rem .75rem;font-size:.78rem;color:var(--gray-500)'>CAMPO</th>
+      <th style='text-align:left;padding:.5rem .75rem;font-size:.78rem;color:var(--gray-500)'>ANTES</th>
+      <th style='text-align:left;padding:.5rem .75rem;font-size:.78rem;color:var(--gray-500)'>DEPOIS</th>
+      <th style='text-align:left;padding:.5rem .75rem;font-size:.78rem;color:var(--gray-500)'>USUÁRIO</th>
+    </tr></thead>
+    <tbody>${rowsHtml || '<tr><td colspan="7" style="text-align:center;padding:2rem;color:var(--gray-400)">Nenhuma alteração registrada ainda.</td></tr>'}</tbody>
+  </table></div>
+  ${pagination}
+</section>`, user, '/historico');
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+        return res.end(html);
+      }
+    } catch(e) { console.error('[historico]', e.message); }
+    // Fallback: JSON (legado)
+    const entryMap = new Map((db.entries || []).map(e => [e.id, e]));
+    log = (db.auditLog || []).slice().sort((a, b) => (b.ts||'').localeCompare(a.ts||''));
     if (qFilter) {
       log = log.filter(r => {
         const entry = r.entryId ? entryMap.get(r.entryId) : null;
@@ -4133,7 +4813,6 @@ async function excluirLanc(id) {
         return (descricao + r.campo + (r.de || '') + (r.para || '') + (r.usuario || '')).toLowerCase().includes(qFilter);
       });
     }
-
     const totalLog = log.length;
     const totalPages = Math.max(1, Math.ceil(totalLog / PAGE_SIZE));
     const currentPage = Math.min(page_num, totalPages);
@@ -4347,6 +5026,106 @@ ${secaoExclusoes}`, user, '/historico');
     return;
   }
 
+  // ─── SEED: popular grupos_despesa e tipos_despesa ──────────────────────────
+  if (req.method === 'POST' && url.pathname === '/api/admin/seed-grupos-tipos') {
+    // Rota de seed interno — sem autenticação obrigatória
+    const pg = storage.getPool ? storage.getPool() : null;
+    if (!pg) return json(res, 503, { ok: false, error: 'Banco indisponível' });
+    const ESTRUTURA = [
+      ['PESSOAL','Pessoal',[['PROLABORE','Pró-labore'],['SALARIOS','Salários'],['PJ_INTERNOS','Prestadores PJ Internos'],['BENEFICIOS','Benefícios'],['ASSIST_MEDICA','Assistência Médica'],['VALE_TRANSPORTE','Vale Transporte'],['VALE_REFEICAO','Vale Refeição / Alimentação'],['BONIFICACOES','Bonificações'],['FERIAS','Férias'],['DECIMO_TERCEIRO','13º Salário'],['RESCISOES','Rescisões'],['ENCARGOS_TRAB','Encargos Trabalhistas'],['ENCARGOS_PROLABORE','Encargos sobre Pró-labore'],['REEMBOLSOS_EQUIPE','Reembolsos de Equipe']]],
+      ['SERVICOS_PROJETO','Serviços de Projeto',[['CONSULTORIA_PROJ','Consultoria de Projeto'],['FACILITACAO','Facilitação / Instrutoria'],['PALESTRANTES','Palestrantes'],['MENTORES','Mentores'],['TUTORES','Tutores'],['AVALIADORES','Avaliadores'],['COORD_PROJETO','Coordenação de Projeto'],['APOIO_ADM_PROJ','Apoio Administrativo de Projeto'],['DESIGN_PROJETO','Design de Projeto'],['COMUNICACAO_PROJ','Comunicação de Projeto'],['PRODUCAO_CONTEUDO','Produção de Conteúdo'],['REVISAO_CONTEUDO','Revisão de Conteúdo'],['DESENV_MATERIAL','Desenvolvimento de Material'],['SERV_TEC_ESPEC','Serviços Técnicos Especializados'],['PRESTADORES_PROJ','Prestadores Terceirizados de Projeto']]],
+      ['PLATAFORMAS_PROJETO','Plataformas e Sistemas de Projeto',[['PLAT_DESEMPENHO','Plataforma de Gestão de Desempenho'],['PLAT_APRENDIZAGEM','Plataforma de Aprendizagem'],['PLAT_AVALIACAO','Plataforma de Avaliação'],['PLAT_PESQUISA','Plataforma de Pesquisa'],['LIC_SW_PROJETO','Licença de Software de Projeto'],['DASHBOARD_PROJ','Sistema de Relatórios / Dashboard de Projeto'],['FERR_COMUNIC_PROJ','Ferramenta de Comunicação do Projeto'],['ASSIN_DIGITAL_PROJ','Assinatura Digital vinculada a Projeto'],['HOSPEDAGEM_PROJ','Hospedagem ou Ambiente Digital de Projeto']]],
+      ['INSTRUMENTOS_TESTES','Instrumentos, Testes e Avaliações',[['TESTES_PSICOL','Testes Psicológicos'],['INVENTARIOS_COMP','Inventários Comportamentais'],['ASSESSMENT','Assessment'],['DISC','DISC'],['AVAL_PERFIL','Avaliação de Perfil'],['AVAL_COMPETENCIAS','Avaliação de Competências'],['CERTIFICACAO','Certificação de Conhecimentos'],['TESTES_ONLINE','Testes Online'],['CREDITOS_TESTES','Compra de Créditos de Testes'],['CORRECAO_LAUDO','Correção / Laudo / Relatório Técnico']]],
+      ['VIAGENS_DESLOCAMENTOS','Viagens e Deslocamentos',[['PASSAGEM_AEREA','Passagem Aérea'],['HOSPEDAGEM','Hospedagem'],['TRANSP_APLICATIVO','Transporte por Aplicativo'],['TAXI','Táxi'],['COMBUSTIVEL','Combustível'],['PEDAGIO','Pedágio'],['ESTACIONAMENTO','Estacionamento'],['LOCACAO_VEICULO','Locação de Veículo'],['SEGURO_VIAGEM','Seguro Viagem'],['BAGAGEM','Bagagem'],['REEMB_DESLOCAMENTO','Reembolso de Deslocamento'],['ALIM_VIAGEM','Alimentação em Viagem'],['DIARIAS','Diárias de Viagem']]],
+      ['EVENTOS_LOGISTICA','Eventos, Materiais e Logística de Projeto',[['LOCACAO_ESPACO','Locação de Espaço'],['COFFEE_BREAK','Coffee Break'],['ALIM_EVENTO','Alimentação de Evento'],['MATERIAL_DIDATICO','Material Didático'],['APOSTILAS','Apostilas'],['IMPRESSOS','Impressos'],['BRINDES','Brindes'],['KITS_PARTICIPANTES','Kits de Participantes'],['EQUIP_EVENTO','Equipamentos para Evento'],['AUDIOVISUAL','Audiovisual'],['FOTO_FILMAGEM','Fotografia / Filmagem'],['EQUIPE_APOIO','Equipe de Apoio'],['CREDENCIAMENTO','Credenciamento'],['CORREIOS_ENTREGA','Correios / Entrega de Materiais'],['INSUMOS_PROJETO','Insumos de Projeto']]],
+      ['TECNOLOGIA_INFO','Tecnologia da Informação',[['SOFTWARE_CORP','Software Corporativo'],['LIC_SW_INTERNO','Licença de Software Interno'],['HOSPEDAGEM_SITE','Hospedagem de Site'],['DOMINIO','Domínio'],['EMAIL_CORP','E-mail Corporativo'],['GOOGLE_WORKSPACE','Google Workspace'],['MICROSOFT_OFFICE','Microsoft / Office'],['OPENAI_CHATGPT','OpenAI / ChatGPT'],['INTERNET','Internet'],['SUPORTE_TI','Suporte Técnico'],['MANUT_SISTEMA','Manutenção de Sistema'],['EQUIP_INFORMATICA','Equipamentos de Informática'],['SEGURANCA_DIGITAL','Segurança Digital'],['BACKUP_ARMAZEN','Backup / Armazenamento']]],
+      ['ADMIN_INFRA','Administração e Infraestrutura',[['ALUGUEL','Aluguel'],['CONDOMINIO','Condomínio'],['ENERGIA_ELETRICA','Energia Elétrica'],['AGUA','Água'],['INTERNET_ESCRIT','Internet do Escritório'],['MATERIAL_ESCRIT','Material de Escritório'],['MOVEIS_UTENSILIOS','Móveis e Utensílios'],['MANUT_PREDIAL','Manutenção Predial'],['LIMPEZA','Limpeza'],['CORREIOS','Correios'],['CARTORIO','Cartório'],['CERT_DIGITAL','Certificado Digital'],['ASSIN_ADM','Assinaturas Administrativas'],['DESP_GERAIS_ADM','Despesas Gerais Administrativas']]],
+      ['CONTABILIDADE_FISCAL','Contabilidade e Fiscal',[['HONOR_CONTABEIS','Honorários Contábeis'],['ASSESSORIA_CONT','Assessoria Contábil'],['OBRIG_ACESSORIAS','Obrigações Acessórias'],['REGULAR_FISCAIS','Regularizações Fiscais'],['CERTIDOES','Certidões'],['DP_CONTABIL','Serviços de Departamento Pessoal Contábil'],['CONSULT_FISCAL','Consultoria Fiscal']]],
+      ['JURIDICO','Jurídico',[['HONOR_JURIDICOS','Honorários Jurídicos'],['ASSESSORIA_JUR','Assessoria Jurídica'],['ELAB_CONTRATOS','Elaboração de Contratos'],['ANALISE_CONTRAT','Análise Contratual'],['PROCESSOS_JUD','Processos Judiciais'],['CUSTAS_JUD','Custas Judiciais'],['CARTORIO_JUR','Cartório Jurídico'],['CONSULT_TRAB','Consultoria Trabalhista'],['CONSULT_SOCIE','Consultoria Societária']]],
+      ['MARKETING_COMUNICACAO','Marketing e Comunicação',[['PUBLICIDADE','Publicidade'],['GOOGLE_ADS','Google Ads'],['REDES_SOCIAIS','Redes Sociais'],['DESIGN_INSTIT','Design Institucional'],['COMUNIC_INSTIT','Comunicação Institucional'],['SITE_INSTIT','Site Institucional'],['PROD_CONT_COMERC','Produção de Conteúdo Comercial'],['MATERIAL_COMERC','Material Comercial'],['APRES_COMERCIAIS','Apresentações Comerciais'],['IDENTIDADE_VISUAL','Identidade Visual'],['ASSESSORIA_COMUNIC','Assessoria de Comunicação']]],
+      ['TRIBUTOS_IMPOSTOS','Tributos e Impostos',[['DAS','DAS'],['ISS','ISS'],['IRPJ','IRPJ'],['CSLL','CSLL'],['PIS','PIS'],['COFINS','COFINS'],['IRRF','IRRF'],['INSS','INSS'],['FGTS','FGTS'],['IMP_FEDERAIS','Impostos Federais'],['IMP_MUNICIPAIS','Impostos Municipais'],['MULTAS_FISCAIS','Multas Fiscais'],['JUROS_FISCAIS','Juros Fiscais']]],
+      ['TRIBUTOS_FATURAMENTO','Tributos sobre Faturamento',[['DAS_NF','DAS sobre NF'],['ISS_NF','ISS sobre NF'],['IRRF_RETIDO','IRRF Retido'],['PIS_RETIDO','PIS Retido'],['COFINS_RETIDO','COFINS Retido'],['CSLL_RETIDA','CSLL Retida'],['INSS_RETIDO','INSS Retido'],['RETENCOES_CLI','Retenções de Cliente'],['IMP_RECEITA_PROJ','Imposto sobre Receita de Projeto']]],
+      ['DESPESAS_BANCARIAS','Despesas Bancárias e Financeiras',[['TARIFA_BANCARIA','Tarifa Bancária'],['PACOTE_BANCARIO','Pacote de Serviços Bancários'],['TARIFA_PIX','Tarifa PIX'],['TARIFA_TED_DOC','Tarifa TED / DOC'],['TARIFA_COBRANCA','Tarifa de Cobrança'],['JUROS_BANC','Juros Bancários'],['MULTA_BANC','Multa Bancária'],['MANUT_CONTA','Manutenção de Conta'],['ANUIDADE_CARTAO','Anuidade de Cartão'],['TAXA_CARTAO','Taxa de Cartão'],['DESP_FIN_DIVERSAS','Despesas Financeiras Diversas']]],
+      ['IOF','IOF',[['IOF_BANCARIO','IOF sobre Operação Bancária'],['IOF_INTERNACIONAL','IOF sobre Compra Internacional'],['IOF_EMPRESTIMO','IOF sobre Empréstimo'],['IOF_APLICACAO','IOF sobre Aplicação'],['IOF_CARTAO','IOF sobre Cartão']]],
+      ['EMPRESTIMOS_MUTUOS','Empréstimos, Mútuos e Financiamentos',[['MUTUO_ENTRADA','Mútuo — Entrada'],['MUTUO_SAIDA','Mútuo — Saída'],['EMPRESTIMO_BANC','Empréstimo Bancário'],['PRONAMPE','Pronampe'],['AMORTIZACAO','Amortização de Empréstimo'],['JUROS_EMPRESTIMO','Juros de Empréstimo'],['ENCARGOS_EMPREST','Encargos de Empréstimo']]],
+      ['TRANSFERENCIAS','Transferências e Movimentações entre Contas',[['TRANSF_CONTAS','Transferência entre Contas'],['APLICACAO_FIN','Aplicação Financeira'],['RESGATE_APLIC','Resgate de Aplicação'],['MOV_BANCOS','Movimentação entre Bancos'],['AJUSTE_CAIXA','Ajuste de Caixa'],['SALDO_INICIAL','Saldo Inicial / Saldo Atual']]],
+      ['ESTORNOS_REEMBOLSOS','Estornos, Reembolsos e Recuperações',[['ESTORNO_DESPESA','Estorno de Despesa'],['ESTORNO_CARTAO','Estorno de Cartão'],['REEMB_RECEBIDO','Reembolso Recebido'],['REEMB_PAGO','Reembolso Pago'],['DEVOL_TAXA','Devolução de Taxa'],['DEVOL_CAUCAO','Devolução de Caução'],['RECUPERACAO_DESP','Recuperação de Despesa'],['AJUSTE_LANCAMENTO','Ajuste de Lançamento']]],
+      ['SEGUROS','Seguros',[['SEGURO_EMPRESARIAL','Seguro Empresarial'],['SEGURO_VIDA','Seguro de Vida'],['SEGURO_VIAGEM_SEG','Seguro Viagem'],['SEGURO_EQUIP','Seguro Equipamentos'],['SEGURO_RC','Seguro Responsabilidade Civil'],['SEGURO_SAUDE','Seguro Saúde']]],
+      ['A_CLASSIFICAR','A Classificar',[['SEM_INFO','Sem Informação Suficiente'],['DESC_INCOMPLETA','Descrição Incompleta'],['CC_CONFLITANTE','Centro de Custo Conflitante'],['CLI_NAO_IDENT','Cliente não Identificado'],['FORN_NAO_IDENT','Fornecedor não Identificado'],['LANC_ZERADO','Lançamento Zerado a Revisar'],['STATUS_REVISAR','Status a Revisar']]],
+    ];
+    try {
+      await pg.query('DELETE FROM tipos_despesa');
+      await pg.query('DELETE FROM grupos_despesa');
+      let totalTipos = 0;
+      for (const [gcod, gnome, tipos] of ESTRUTURA) {
+        const gr = await pg.query('INSERT INTO grupos_despesa (codigo,nome,ativo) VALUES ($1,$2,true) RETURNING id', [gcod, gnome]);
+        const gid = gr.rows[0].id;
+        for (const [tcod, tnome] of tipos) {
+          await pg.query('INSERT INTO tipos_despesa (codigo,nome,grupo_id,grupo_codigo,ativo) VALUES ($1,$2,$3,$4,true)', [tcod, tnome, gid, gcod]);
+          totalTipos++;
+        }
+      }
+      return json(res, 200, { ok: true, grupos: ESTRUTURA.length, tipos: totalTipos });
+    } catch(e) {
+      return json(res, 500, { ok: false, error: e.message });
+    }
+  }
+  // ─── SEED: popular centros_de_custo ──────────────────────────────────
+  if (req.method === 'POST' && url.pathname === '/api/admin/seed-centros-custo') {
+    // Rota de seed interno — sem autenticação obrigatória
+    const pg = storage.getPool ? storage.getPool() : null;
+    if (!pg) return json(res, 503, { ok: false, error: 'Banco indisponível' });
+    const CCS = [
+      ['ESTRUTURA','ADM_GERAL','Administração Geral'],
+      ['ESTRUTURA','PESSOAL_RH','Pessoal / RH'],
+      ['ESTRUTURA','CONTABILIDADE','Contabilidade'],
+      ['ESTRUTURA','ESCRITORIO_INFRA','Escritório e Infraestrutura'],
+      ['ESTRUTURA','JURIDICO','Jurídico'],
+      ['ESTRUTURA','MARKETING_COMUNICACAO','Marketing e Comunicação'],
+      ['ESTRUTURA','TI_SUPORTE','Tecnologia da Informação'],
+      ['FINANCEIRO','BANCO_TARIFAS','Tarifas e Despesas Bancárias'],
+      ['FINANCEIRO','TRIBUTOS','Tributos e Impostos'],
+      ['FINANCEIRO','IOF','IOF'],
+      ['FINANCEIRO','MUTUO','Mútuo — Empréstimos Sócios'],
+      ['FINANCEIRO','PRONAMPE','Pronampe — Empréstimo BB'],
+      ['FINANCEIRO','APLICACOES_FINANCEIRAS','Aplicações Financeiras'],
+      ['OPERACIONAL','SEBRAE_TO','SEBRAE-TO'],
+      ['OPERACIONAL','SEBRAE_AC','SEBRAE-AC'],
+      ['OPERACIONAL','BRB','BRB'],
+      ['OPERACIONAL','BANRISUL','BANRISUL'],
+      ['OPERACIONAL','BANESE','BANESE'],
+      ['OPERACIONAL','CESAMA','CESAMA'],
+      ['OPERACIONAL','EMBRAPII','EMBRAPII'],
+      ['OPERACIONAL','ENABLE','Enable People'],
+      ['OPERACIONAL','IGDRH','IGD-RH / IGDRH'],
+      ['OPERACIONAL','MARICA','P.M. Maricá'],
+      ['OPERACIONAL','METRO_SP','Metrô-SP'],
+      ['OPERACIONAL','SOROCABA','SOROCABA'],
+      ['OPERACIONAL','PENAPOLIS','P.M. Penápolis'],
+      ['OPERACIONAL','FRANCISCO_MORATO','P.M. Francisco Morato'],
+      ['OPERACIONAL','VAPT','VAPT'],
+      ['OPERACIONAL','B2C_MENTORIAS','B2C — Mentorias'],
+      ['OPERACIONAL','B2C_PROJETO_NAO_DETALHADO','B2C — Projeto / Contrato não detalhado'],
+      ['OPERACIONAL','COMPETENCIAS_DO_BEM','Competências do BEM'],
+      ['OPERACIONAL','ONBOARDING','Onboarding'],
+      ['OPERACIONAL','BANCO_DE_SUCESSORES','Banco de Sucessores'],
+      ['TRANSFERENCIA','TEF','Transferência entre Contas'],
+      ['CONTROLE','ESTORNOS_REEMBOLSOS','Estornos, Reembolsos e Recuperações'],
+      ['CONTROLE','A_CLASSIFICAR','A Classificar'],
+    ];
+    try {
+      await pg.query('DELETE FROM centros_de_custo');
+      for (const [tipo, codigo, nome] of CCS) {
+        await pg.query(
+          'INSERT INTO centros_de_custo (tipo, codigo, nome, ativo) VALUES ($1,$2,$3,true)',
+          [tipo, codigo, nome]
+        );
+      }
+      return json(res, 200, { ok: true, total: CCS.length });
+    } catch(e) {
+      return json(res, 500, { ok: false, error: e.message });
+    }
+  }
   // ─── IA FINANCEIRA: ANÁLISE COM JUSTIFICATIVA ─────────────────────────────
   // ─── DIAGNÓSTICO: verificar variáveis de ambiente da IA ───────────────────────
   if (req.method === 'GET' && url.pathname === '/api/ia/diag') {
@@ -4375,11 +5154,25 @@ ${secaoExclusoes}`, user, '/historico');
       const pInicio = periodo_inicio || CORTE_DATA;
       const pFim = periodo_fim || hoje;
 
+      // Buscar lançamentos do PostgreSQL
+      let todosLancsIA = [];
+      try {
+        const pgIA = storage.getPool ? storage.getPool() : null;
+        if (pgIA) {
+          const resIA = await pgIA.query(
+            `SELECT data FROM entries WHERE
+             (data->>'isTransferenciaInterna')::boolean IS NOT TRUE`
+          );
+          todosLancsIA = resIA.rows.map(r => r.data);
+        }
+      } catch(eIA) { console.error('[ia-pg]', eIA.message); }
+      // Fallback para JSON se PostgreSQL não retornou dados
+      if (!todosLancsIA.length) todosLancsIA = (db.entries || []).filter(e => !e.isTransferenciaInterna);
+
       // Filtrar lançamentos do período solicitado
-      const lancsPeriodo = db.entries.filter(e =>
+      const lancsPeriodo = todosLancsIA.filter(e =>
         (e.dataISO || '') >= pInicio &&
-        (e.dataISO || '') <= pFim &&
-        !e.isTransferenciaInterna
+        (e.dataISO || '') <= pFim
       );
 
       // Calcular resumo financeiro do período
@@ -4446,8 +5239,8 @@ ${secaoExclusoes}`, user, '/historico');
         : 'Nenhum lançamento de mútuo/Pronampe no período';
 
       // Saldo acumulado histórico (para contexto)
-      const saldoHistorico = db.entries
-        .filter(e => (e.dataISO||'') <= pFim && !e.isTransferenciaInterna)
+      const saldoHistorico = todosLancsIA
+        .filter(e => (e.dataISO||'') <= pFim)
         .reduce((a,e) => a+(e.valor||0), 0);
 
       // Lançamentos mais relevantes (maiores valores absolutos)
@@ -4525,9 +5318,9 @@ Responda seguindo OBRIGATORIAMENTE a estrutura:
 [Alta/Média/Baixa — e por quê]`;
 
       const { OpenAI } = require('openai');
-      const openai = new OpenAI();
+      const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY, baseURL: process.env.OPENAI_BASE_URL || undefined });
       const completion = await openai.chat.completions.create({
-        model: 'gemini-2.5-flash',
+        model: 'gpt-4.1-mini',
         messages: [
           { role: 'system', content: systemPrompt },
           { role: 'user', content: userPrompt }
@@ -4846,9 +5639,9 @@ ${mutuoMes.length} lançamentos | saldo: R$${mutuoMes.reduce((a,e)=>a+(e.valor||
 Gere o relatório mensal completo seguindo a estrutura definida.`;
 
       const { OpenAI } = require('openai');
-      const openai = new OpenAI();
+      const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY, baseURL: process.env.OPENAI_BASE_URL || undefined });
       const completion = await openai.chat.completions.create({
-        model: 'gemini-2.5-flash',
+        model: 'gpt-4.1-mini',
         messages: [
           { role: 'system', content: systemPrompt },
           { role: 'user', content: userPrompt }
@@ -4991,7 +5784,32 @@ function renderHistoricoRel() {
     const qNat = (url.searchParams.get('nat') || '').trim();
     const qDC  = (url.searchParams.get('dc') || '').trim();
 
-    let filtrados = (db.entries || []).filter(e => {
+    // Buscar dados do PostgreSQL
+    const pgExt = storage.getPool ? storage.getPool() : null;
+    let todasEntriesExt = [];
+    let naturezas = [];
+    let ccList = [];
+    if (pgExt) {
+      try {
+        const rExt = await pgExt.query("SELECT id, data FROM entries ORDER BY data->>'dataISO' ASC, id ASC");
+        todasEntriesExt = rExt.rows.map(row => ({
+          id: row.id,
+          ...row.data,
+          valor: parseFloat((row.data && row.data.valor) || 0)
+        }));
+        naturezas = [...new Set(todasEntriesExt.map(e => e.natureza||'').filter(Boolean))].sort();
+        ccList    = [...new Set(todasEntriesExt.map(e => (e.centroCusto||'SEM CC').toUpperCase()).filter(Boolean))].sort();
+      } catch(eExt) {
+        console.error('[extrato-pg]', eExt.message);
+        todasEntriesExt = db.entries || [];
+      }
+    } else {
+      todasEntriesExt = db.entries || [];
+      naturezas = [...new Set(todasEntriesExt.map(e => e.natureza||'').filter(Boolean))].sort();
+      ccList    = [...new Set(todasEntriesExt.map(e => (e.centroCusto||'SEM CC').toUpperCase()).filter(Boolean))].sort();
+    }
+
+    let filtrados = todasEntriesExt.filter(e => {
       if (e.isTransferenciaInterna) return false;
       const cc = (e.centroCusto || 'SEM CC').toUpperCase();
       if (qCC && !cc.includes(qCC.toUpperCase())) return false;
@@ -5014,11 +5832,16 @@ function renderHistoricoRel() {
       return (a.dataISO || a.data || '').localeCompare(b.dataISO || b.data || '');
     });
 
-    const grupos = new Map();
+    // Agrupar: CC -> Mes -> Lancamentos
+    const gruposCC = new Map();
     for (const e of filtrados) {
-      const cc = (e.centroCusto || 'SEM CC').toUpperCase();
-      if (!grupos.has(cc)) grupos.set(cc, []);
-      grupos.get(cc).push(e);
+      const cc  = (e.centroCusto || 'SEM CC').toUpperCase();
+      const iso = e.dataISO || e.data || '';
+      const mes = iso.length >= 7 ? iso.slice(0, 7) : 'SEM DATA'; // YYYY-MM
+      if (!gruposCC.has(cc)) gruposCC.set(cc, new Map());
+      const meses = gruposCC.get(cc);
+      if (!meses.has(mes)) meses.set(mes, []);
+      meses.get(mes).push(e);
     }
 
     const fmtBRL = (v) => {
@@ -5026,63 +5849,125 @@ function renderHistoricoRel() {
       return (v < 0 ? '-\u00a0' : '') + 'R\u00a0' + abs.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
     };
 
-    const naturezas = [...new Set((db.entries||[]).map(e => e.natureza||'').filter(Boolean))].sort();
-    const ccList    = [...new Set((db.entries||[]).map(e => (e.centroCusto||'SEM CC').toUpperCase()).filter(Boolean))].sort();
+    const fmtMes = (ym) => {
+      if (!ym || ym === 'SEM DATA') return 'SEM DATA';
+      const meses = ['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'];
+      const [y, m] = ym.split('-');
+      return (meses[parseInt(m,10)-1] || m) + '/' + y;
+    };
 
     let totalGeral = 0;
     let totalEntradas = 0;
     let totalSaidas = 0;
     let tabelaHTML = '';
+    const NCOLS = 9; // Nº | Data | D/C | CC | Cliente | Projeto | Descritivo | Natureza | Valor
 
-    for (const [cc, itens] of grupos) {
-      const subtotal = itens.reduce((s, e) => s + (e.valor || 0), 0);
-      const entradas = itens.filter(e => (e.valor || 0) > 0).reduce((s, e) => s + e.valor, 0);
-      const saidas   = itens.filter(e => (e.valor || 0) < 0).reduce((s, e) => s + e.valor, 0);
-      totalGeral    += subtotal;
-      totalEntradas += entradas;
-      totalSaidas   += saidas;
-      const subColor = subtotal >= 0 ? 'color:#065f46;font-weight:700' : 'color:#991b1b;font-weight:700';
+    for (const [cc, mesesMap] of gruposCC) {
+      const todosItensCC = [];
+      for (const its of mesesMap.values()) todosItensCC.push(...its);
+      const subtotalCC = todosItensCC.reduce((s, e) => s + (e.valor || 0), 0);
+      const entradasCC = todosItensCC.filter(e => (e.valor||0) > 0).reduce((s,e) => s+e.valor, 0);
+      const saidasCC   = todosItensCC.filter(e => (e.valor||0) < 0).reduce((s,e) => s+e.valor, 0);
+      totalGeral    += subtotalCC;
+      totalEntradas += entradasCC;
+      totalSaidas   += saidasCC;
+      const subColorCC = subtotalCC >= 0 ? 'color:#065f46;font-weight:700' : 'color:#991b1b;font-weight:700';
 
-      const linhas = itens.map(e => {
-        const dc = e.dc || (e.valor >= 0 ? 'C' : 'D');
-        const dcColor = dc === 'C' ? 'color:#065f46;font-weight:700' : 'color:#991b1b;font-weight:700';
-        const valColor = (e.valor || 0) >= 0 ? 'color:#065f46' : 'color:#991b1b';
-        const nome = e.cliente || e.parceiro || e.projeto || '-';
-        const nomeEsc = nome.replace(/'/g, '&#39;').replace(/"/g, '&quot;');
-        const descEsc = (e.descricao || '-').replace(/'/g, '&#39;').replace(/"/g, '&quot;');
-        return `<tr>
-          <td style='white-space:nowrap;font-size:.8rem'>${e.dataISO || e.data || '-'}</td>
-          <td style='${dcColor};font-size:.8rem;text-align:center'>${dc}</td>
-          <td style='font-size:.78rem;color:#64748b'>${e.centroCusto || '-'}</td>
-          <td style='font-size:.8rem;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap' title='${nomeEsc}'>${nome}</td>
-          <td style='font-size:.8rem;max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap' title='${descEsc}'>${e.descricao || '-'}</td>
-          <td style='font-size:.78rem;color:#64748b'>${e.natureza || '-'}</td>
-          <td style='${valColor};font-size:.8rem;text-align:right;white-space:nowrap'>${fmtBRL(e.valor || 0)}</td>
-        </tr>`;
-      }).join('');
+      // Cabecalho do CC
+      tabelaHTML += '<tr style="background:#1e40af;color:#fff;border-top:3px solid #0f172a">' +
+        '<td colspan="' + (NCOLS-1) + '" style="font-weight:700;font-size:.82rem;padding:.5rem .75rem;color:#fff">&#128193; ' + cc +
+        ' <span style="font-weight:400;font-size:.75rem;color:#c7d2fe">(' + todosItensCC.length + ' lan\u00e7amento' + (todosItensCC.length!==1?'s':'') + ')</span></td>' +
+        '<td style="text-align:right;padding:.5rem .75rem;font-size:.82rem;font-weight:700;background:#1e40af;color:' + (subtotalCC>=0?'#86efac':'#fca5a5') + '">' + fmtBRL(subtotalCC) + '</td>' +
+        '</tr>';
 
-      tabelaHTML += `
-      <tr style='background:#f1f5f9;border-top:2px solid #cbd5e1'>
-        <td colspan='6' style='font-weight:700;font-size:.82rem;padding:.5rem .75rem;color:#1e40af'>&#128193; ${cc} <span style='font-weight:400;font-size:.75rem;color:#64748b'>(${itens.length} lan\u00e7amento${itens.length!==1?'s':''})</span></td>
-        <td style='${subColor};text-align:right;padding:.5rem .75rem;font-size:.82rem'>${fmtBRL(subtotal)}</td>
-      </tr>
-      ${linhas}
-      <tr style='background:#f8fafc;border-bottom:2px solid #cbd5e1'>
-        <td colspan='5' style='font-size:.75rem;color:#64748b;padding:.35rem .75rem;text-align:right'>Subtotal ${cc}:</td>
-        <td style='font-size:.75rem;color:#059669;text-align:right;padding:.35rem .75rem'>Entradas: ${fmtBRL(entradas)}</td>
-        <td style='${subColor};text-align:right;padding:.35rem .75rem;font-size:.8rem'>${fmtBRL(subtotal)}</td>
-      </tr>`;
+      for (const [mes, itens] of mesesMap) {
+        const subtotalMes = itens.reduce((s, e) => s + (e.valor || 0), 0);
+        const subColorMes = subtotalMes >= 0 ? 'color:#065f46;font-weight:700' : 'color:#991b1b;font-weight:700';
+
+        // Cabecalho do mes
+        tabelaHTML += '<tr style="background:#e0e7ff;border-top:2px solid #c7d2fe">' +
+          '<td colspan="' + (NCOLS-1) + '" style="font-weight:700;font-size:.78rem;padding:.35rem .75rem;color:#3730a3">&#128197; ' + fmtMes(mes) +
+          ' <span style="font-weight:400;font-size:.72rem;color:#64748b">(' + itens.length + ' lan\u00e7amento' + (itens.length!==1?'s':'') + ')</span></td>' +
+          '<td style="' + subColorMes + ';text-align:right;padding:.35rem .75rem;font-size:.78rem;background:#e0e7ff">' + fmtBRL(subtotalMes) + '</td>' +
+          '</tr>';
+
+        // Linhas dos lancamentos
+        for (const e of itens) {
+          const dc = e.dc || (e.valor >= 0 ? 'C' : 'D');
+          const dcColor = dc === 'C' ? 'color:#065f46;font-weight:700' : 'color:#991b1b;font-weight:700';
+          const valColor = (e.valor || 0) >= 0 ? 'color:#065f46' : 'color:#991b1b';
+          const nome = e.cliente || e.parceiro || '-';
+          const nomeEsc = nome.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+          const descEsc = (e.descricao || '-').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+          const proj = e.projeto || '-';
+          const projEsc = proj.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+          const numLanc = e.numLanc ? '#' + String(e.numLanc).padStart(6, '0') : (e.numero ? '#' + String(e.numero).padStart(6, '0') : '-');
+          tabelaHTML += '<tr style="border-bottom:1px solid #f1f5f9">' +
+            '<td style="white-space:nowrap;font-size:.75rem;color:#94a3b8;text-align:center">' + numLanc + '</td>' +
+            '<td style="white-space:nowrap;font-size:.8rem">' + (e.dataISO || e.data || '-') + '</td>' +
+            '<td style="' + dcColor + ';font-size:.8rem;text-align:center">' + dc + '</td>' +
+            '<td style="font-size:.78rem;color:#64748b">' + (e.centroCusto || '-') + '</td>' +
+            '<td style="font-size:.8rem;max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + nomeEsc + '">' + nome + '</td>' +
+            '<td style="font-size:.78rem;max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#7c3aed" title="' + projEsc + '">' + proj + '</td>' +
+            '<td style="font-size:.8rem;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + descEsc + '">' + (e.descricao || '-') + '</td>' +
+            '<td style="font-size:.78rem;color:#64748b">' + (e.natureza || '-') + '</td>' +
+            '<td style="' + valColor + ';font-size:.8rem;text-align:right;white-space:nowrap">' + fmtBRL(e.valor || 0) + '</td>' +
+            '</tr>';
+        }
+
+        // Subtotais por Projeto dentro do mes
+        const projMes = new Map();
+        for (const e of itens) {
+          const p = e.projeto || 'SEM PROJETO';
+          if (!projMes.has(p)) projMes.set(p, 0);
+          projMes.set(p, projMes.get(p) + (e.valor || 0));
+        }
+        if (projMes.size > 1 || (projMes.size === 1 && !projMes.has('SEM PROJETO'))) {
+          tabelaHTML += '<tr style="background:#faf5ff;border-top:1px dashed #c4b5fd">' +
+            '<td colspan="5" style="font-size:.72rem;color:#7c3aed;padding:.25rem .75rem;text-align:right;font-style:italic">Subtotal por Projeto (' + fmtMes(mes) + '):</td>' +
+            '<td colspan="4" style="font-size:.72rem;color:#7c3aed;padding:.25rem .75rem">' +
+            [...projMes.entries()].map(([p, v]) => '<span style="margin-right:.75rem"><strong>' + p + '</strong>: ' + fmtBRL(v) + '</span>').join('') +
+            '</td></tr>';
+        }
+
+        // Subtotal do mes
+        tabelaHTML += '<tr style="background:#f8fafc;border-bottom:2px solid #c7d2fe">' +
+          '<td colspan="' + (NCOLS-1) + '" style="font-size:.75rem;color:#64748b;padding:.3rem .75rem;text-align:right">Subtotal ' + fmtMes(mes) + ':</td>' +
+          '<td style="' + subColorMes + ';text-align:right;padding:.3rem .75rem;font-size:.78rem">' + fmtBRL(subtotalMes) + '</td>' +
+          '</tr>';
+      }
+
+      // Subtotais por Projeto dentro do CC
+      const projCC = new Map();
+      for (const e of todosItensCC) {
+        const p = e.projeto || 'SEM PROJETO';
+        if (!projCC.has(p)) projCC.set(p, 0);
+        projCC.set(p, projCC.get(p) + (e.valor || 0));
+      }
+      if (projCC.size > 1 || (projCC.size === 1 && !projCC.has('SEM PROJETO'))) {
+        tabelaHTML += '<tr style="background:#ede9fe;border-top:1px solid #c4b5fd">' +
+          '<td colspan="5" style="font-size:.75rem;color:#5b21b6;padding:.35rem .75rem;text-align:right;font-weight:600">Subtotal por Projeto (' + cc + '):</td>' +
+          '<td colspan="4" style="font-size:.75rem;color:#5b21b6;padding:.35rem .75rem">' +
+          [...projCC.entries()].map(([p, v]) => '<span style="margin-right:.75rem"><strong>' + p + '</strong>: ' + fmtBRL(v) + '</span>').join('') +
+          '</td></tr>';
+      }
+
+      // Subtotal do CC
+      tabelaHTML += '<tr style="background:#f1f5f9;border-bottom:3px solid #1e40af">' +
+        '<td colspan="' + (NCOLS-1) + '" style="font-size:.8rem;color:#1e40af;padding:.4rem .75rem;text-align:right;font-weight:700">Subtotal ' + cc + ':</td>' +
+        '<td style="' + subColorCC + ';text-align:right;padding:.4rem .75rem;font-size:.82rem">' + fmtBRL(subtotalCC) + '</td>' +
+        '</tr>';
     }
 
     const totalColor = totalGeral >= 0 ? '#065f46' : '#991b1b';
-    const ccOptsHTML = ccList.map(c => `<option value='${c.replace(/'/g,"&#39;")}'>`).join('');
-    const natOptsHTML = naturezas.map(n => `<option value='${n}' ${qNat===n?'selected':''}>${n}</option>`).join('');
+    const ccOptsHTML = ccList.map(c => '<option value="' + c.replace(/"/g,'&quot;') + '">').join('');
+    const natOptsHTML = naturezas.map(n => '<option value="' + n + '" ' + (qNat===n?'selected':'') + '>' + n + '</option>').join('');
 
     const html = page('Extrato por Centro de Custo', `
 <section>
   <div style='display:flex;align-items:center;gap:1rem;margin-bottom:1rem;flex-wrap:wrap'>
     <h2 style='margin:0'>&#128202; Extrato por Centro de Custo</h2>
-    <span style='font-size:.82rem;color:var(--gray-400)'>${filtrados.length} lan\u00e7amento(s) &bull; ${grupos.size} centro(s) de custo</span>
+    <span style='font-size:.82rem;color:var(--gray-400)'>${filtrados.length} lan\u00e7amento(s) &bull; ${gruposCC.size} centro(s) de custo</span>
   </div>
 
   <form method='get' action='/extrato' style='display:flex;flex-wrap:wrap;gap:.6rem;align-items:flex-end;background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:1rem;margin-bottom:1.25rem'>
@@ -5114,6 +5999,7 @@ function renderHistoricoRel() {
     </label>
     <div style='display:flex;gap:.4rem;align-items:flex-end'>
       <button type='submit'>&#128269;&nbsp; Filtrar</button>
+      <a href='/api/extrato-cc/export?cc=${encodeURIComponent(qCC)}&de=${qDe}&ate=${qAte}&dc=${qDC}&nat=${encodeURIComponent(qNat)}&q=${encodeURIComponent(qQ)}' style='padding:.45rem .9rem;background:#16a34a;border:1px solid #15803d;border-radius:8px;text-decoration:none;font-size:.85rem;color:#fff;font-weight:600'>&#128196;&nbsp; Exportar Excel</a>
       <a href='/extrato' style='padding:.45rem .9rem;background:#f1f5f9;border:1px solid #e2e8f0;border-radius:8px;text-decoration:none;font-size:.85rem;color:#475569'>Limpar</a>
     </div>
   </form>
@@ -5133,25 +6019,27 @@ function renderHistoricoRel() {
     </div>
     <div style='flex:1;min-width:140px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:.75rem 1rem'>
       <div style='font-size:.78rem;color:#64748b'>Centros de Custo</div>
-      <div style='font-size:1.1rem;font-weight:700;color:#1e40af'>${grupos.size}</div>
+      <div style='font-size:1.1rem;font-weight:700;color:#1e40af'>${gruposCC.size}</div>
     </div>
   </div>
 
   <div style='overflow-x:auto'>
   <table style='width:100%;border-collapse:collapse;font-size:.85rem'>
-    <thead><tr style='background:#1e40af;color:#fff'>
-      <th style='padding:.55rem .75rem;text-align:left;white-space:nowrap'>Data</th>
-      <th style='padding:.55rem .75rem;text-align:center'>D/C</th>
-      <th style='padding:.55rem .75rem;text-align:left'>C\u00f3digo CC</th>
-      <th style='padding:.55rem .75rem;text-align:left'>Cliente / Fornecedor / Prestador</th>
-      <th style='padding:.55rem .75rem;text-align:left'>Descritivo</th>
-      <th style='padding:.55rem .75rem;text-align:left'>Natureza</th>
-      <th style='padding:.55rem .75rem;text-align:right'>Valor</th>
+    <thead><tr style='background:#1e40af'>
+      <th style='padding:.55rem .5rem;text-align:center;white-space:nowrap;color:#fff;font-weight:700'>N\u00ba</th>
+      <th style='padding:.55rem .75rem;text-align:left;white-space:nowrap;color:#fff;font-weight:700'>Data</th>
+      <th style='padding:.55rem .5rem;text-align:center;color:#fff;font-weight:700'>D/C</th>
+      <th style='padding:.55rem .75rem;text-align:left;color:#fff;font-weight:700'>C\u00f3digo CC</th>
+      <th style='padding:.55rem .75rem;text-align:left;color:#fff;font-weight:700'>Cliente / Fornecedor</th>
+      <th style='padding:.55rem .75rem;text-align:left;color:#fff;font-weight:700'>Projeto</th>
+      <th style='padding:.55rem .75rem;text-align:left;color:#fff;font-weight:700'>Descritivo</th>
+      <th style='padding:.55rem .75rem;text-align:left;color:#fff;font-weight:700'>Natureza</th>
+      <th style='padding:.55rem .75rem;text-align:right;color:#fff;font-weight:700'>Valor</th>
     </tr></thead>
     <tbody>
-      ${tabelaHTML || '<tr><td colspan="7" style="text-align:center;padding:2rem;color:#94a3b8">Nenhum lan\u00e7amento encontrado com os filtros selecionados.</td></tr>'}
+      ${tabelaHTML || '<tr><td colspan="9" style="text-align:center;padding:2rem;color:#94a3b8">Nenhum lan\u00e7amento encontrado com os filtros selecionados.</td></tr>'}
       <tr style='background:#1e293b;color:#fff;border-top:3px solid #0f172a'>
-        <td colspan='5' style='padding:.6rem .75rem;font-weight:700;font-size:.85rem'>TOTAL GERAL (${filtrados.length} lan\u00e7amentos)</td>
+        <td colspan='7' style='padding:.6rem .75rem;font-weight:700;font-size:.85rem'>TOTAL GERAL (${filtrados.length} lan\u00e7amentos)</td>
         <td style='padding:.6rem .75rem;font-size:.82rem;color:#86efac;text-align:right'>Entradas: ${fmtBRL(totalEntradas)}</td>
         <td style='padding:.6rem .75rem;font-weight:700;font-size:.9rem;text-align:right;color:${totalGeral>=0?'#86efac':'#fca5a5'}'>${fmtBRL(totalGeral)}</td>
       </tr>
@@ -5165,21 +6053,215 @@ function renderHistoricoRel() {
   }
 
   // ============================================================
+  // EXTRATO CC — EXPORTAR EXCEL
+  // ============================================================
+  if (req.method === 'GET' && url.pathname === '/api/extrato-cc/export') {
+    const user = requireAuth(req, res, db); if (!user) return;
+    try {
+      const ExcelJS = require('exceljs');
+      const qCC  = (url.searchParams.get('cc') || '').trim();
+      const qDe  = (url.searchParams.get('de') || '').trim();
+      const qAte = (url.searchParams.get('ate') || '').trim();
+      const qQ   = (url.searchParams.get('q') || '').trim().toLowerCase();
+      const qNat = (url.searchParams.get('nat') || '').trim();
+      const qDC  = (url.searchParams.get('dc') || '').trim();
+
+      // Buscar dados do PostgreSQL
+      const pg = storage.getPool ? storage.getPool() : null;
+      let todasEntries = [];
+      if (pg) {
+        const r = await pg.query("SELECT id, data FROM entries ORDER BY data->>'dataISO' ASC, id ASC");
+        todasEntries = r.rows.map(row => ({
+          id: row.id,
+          ...row.data,
+          valor: parseFloat((row.data && row.data.valor) || 0)
+        }));
+      } else {
+        todasEntries = db.entries || [];
+      }
+
+      let filtrados = todasEntries.filter(e => {
+        if (e.isTransferenciaInterna) return false;
+        const cc = (e.centroCusto || 'SEM CC').toUpperCase();
+        if (qCC && !cc.includes(qCC.toUpperCase())) return false;
+        const data = e.dataISO || e.data || '';
+        if (qDe && data < qDe) return false;
+        if (qAte && data > qAte) return false;
+        if (qNat && (e.natureza || '') !== qNat) return false;
+        if (qDC && (e.dc || (e.valor >= 0 ? 'C' : 'D')) !== qDC) return false;
+        if (qQ) {
+          const txt = [(e.descricao||''),(e.cliente||''),(e.parceiro||''),(e.projeto||''),(e.centroCusto||'')].join(' ').toLowerCase();
+          if (!txt.includes(qQ)) return false;
+        }
+        return true;
+      });
+
+      filtrados.sort((a, b) => {
+        const ccA = (a.centroCusto || 'SEM CC').toUpperCase();
+        const ccB = (b.centroCusto || 'SEM CC').toUpperCase();
+        if (ccA !== ccB) return ccA.localeCompare(ccB, 'pt-BR');
+        return (a.dataISO || a.data || '').localeCompare(b.dataISO || b.data || '');
+      });
+
+      const wb = new ExcelJS.Workbook();
+      wb.creator = 'Sistema Financeiro Eco do Bem';
+      wb.created = new Date();
+      const ws = wb.addWorksheet('Extrato CC', { views: [{ state: 'frozen', ySplit: 1 }] });
+
+      // Colunas
+      ws.columns = [
+        { header: 'Nº',                      key: 'num',     width: 10 },
+        { header: 'Data',                    key: 'data',    width: 14 },
+        { header: 'D/C',                     key: 'dc',      width: 6  },
+        { header: 'Centro de Custo',         key: 'cc',      width: 20 },
+        { header: 'Cliente / Fornecedor',    key: 'nome',    width: 35 },
+        { header: 'CPF / CNPJ',              key: 'cpfcnpj', width: 20 },
+        { header: 'Projeto',                 key: 'proj',    width: 25 },
+        { header: 'Descritivo',              key: 'desc',    width: 50 },
+        { header: 'Natureza',                key: 'nat',     width: 25 },
+        { header: 'Status',                  key: 'status',  width: 14 },
+        { header: 'Valor (R$)',              key: 'valor',   width: 16 },
+      ];
+
+      // Estilo do cabeçalho
+      ws.getRow(1).eachCell(cell => {
+        cell.fill   = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1E40AF' } };
+        cell.font   = { bold: true, color: { argb: 'FFFFFFFF' }, size: 11 };
+        cell.alignment = { vertical: 'middle', horizontal: 'center' };
+        cell.border = { bottom: { style: 'medium', color: { argb: 'FF1E3A8A' } } };
+      });
+
+      // Agrupar por CC para subtotais
+      const grupos = new Map();
+      for (const e of filtrados) {
+        const cc = (e.centroCusto || 'SEM CC').toUpperCase();
+        if (!grupos.has(cc)) grupos.set(cc, []);
+        grupos.get(cc).push(e);
+      }
+
+      let totalGeral = 0;
+      let totalEntradas = 0;
+      let totalSaidas = 0;
+      let rowIdx = 2;
+
+      for (const [cc, itens] of grupos) {
+        // Linha de cabeçalho do grupo
+        const grpRow = ws.addRow([`📁 ${cc}`, '', '', '', `${itens.length} lançamento(s)`, '', '', '', '', '', '']);
+        grpRow.eachCell(cell => {
+          cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE2E8F0' } };
+          cell.font = { bold: true, size: 10, color: { argb: 'FF1E40AF' } };
+        });
+        rowIdx++;
+
+        let subtotal = 0;
+        for (const e of itens) {
+          const dc = e.dc || (e.valor >= 0 ? 'C' : 'D');
+          const nome = e.cliente || e.parceiro || e.projeto || '-';
+          const numLanc = e.numLanc ? '#' + String(e.numLanc).padStart(6, '0') : '-';
+          const row = ws.addRow([
+            numLanc,
+            e.dataISO || e.data || '-',
+            dc,
+            e.centroCusto || '-',
+            nome,
+            e.cpfCnpj || e.cpf || e.cnpj || '-',
+            e.projeto || '-',
+            e.descricao || '-',
+            e.natureza || '-',
+            e.status || '-',
+            e.valor || 0
+          ]);
+          // Formatar valor
+          row.getCell(11).numFmt = 'R$ #,##0.00;[Red]-R$ #,##0.00';
+          row.getCell(11).alignment = { horizontal: 'right' };
+          // Cor da linha por D/C
+          if (dc === 'C') {
+            row.getCell(11).font = { color: { argb: 'FF065F46' } };
+          } else {
+            row.getCell(11).font = { color: { argb: 'FF991B1B' } };
+          }
+          row.getCell(3).alignment = { horizontal: 'center' };
+          row.getCell(1).alignment = { horizontal: 'center' };
+          subtotal += (e.valor || 0);
+          rowIdx++;
+        }
+
+        // Linha de subtotal do grupo
+        const subRow = ws.addRow(['', '', '', '', '', '', '', '', `Subtotal ${cc}:`, '', subtotal]);
+        subRow.getCell(9).font = { bold: true, size: 10 };
+        subRow.getCell(9).alignment = { horizontal: 'right' };
+        subRow.getCell(11).numFmt = 'R$ #,##0.00;[Red]-R$ #,##0.00';
+        subRow.getCell(11).font = { bold: true, color: { argb: subtotal >= 0 ? 'FF065F46' : 'FF991B1B' } };
+        subRow.getCell(11).alignment = { horizontal: 'right' };
+        subRow.eachCell(cell => {
+          cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF8FAFC' } };
+          cell.border = { top: { style: 'thin', color: { argb: 'FFCBD5E1' } }, bottom: { style: 'medium', color: { argb: 'FFCBD5E1' } } };
+        });
+        rowIdx++;
+
+        totalGeral += subtotal;
+        totalEntradas += itens.filter(e => (e.valor||0) > 0).reduce((s,e) => s+e.valor, 0);
+        totalSaidas  += itens.filter(e => (e.valor||0) < 0).reduce((s,e) => s+e.valor, 0);
+      }
+
+      // Linha de total geral
+      const totRow = ws.addRow(['TOTAL GERAL', '', '', `${filtrados.length} lançamentos`, '', '', '', '', `Entradas: R$ ${totalEntradas.toLocaleString('pt-BR',{minimumFractionDigits:2})}`, '', totalGeral]);
+      totRow.eachCell(cell => {
+        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1E293B' } };
+        cell.font = { bold: true, color: { argb: 'FFFFFFFF' }, size: 11 };
+      });
+      totRow.getCell(11).numFmt = 'R$ #,##0.00;[Red]-R$ #,##0.00';
+      totRow.getCell(11).font = { bold: true, color: { argb: totalGeral >= 0 ? 'FF86EFAC' : 'FFFCA5A5' }, size: 11 };
+      totRow.getCell(11).alignment = { horizontal: 'right' };
+
+      // Gerar buffer e enviar
+      const buffer = await wb.xlsx.writeBuffer();
+      const dataStr = new Date().toISOString().slice(0,10);
+      const nomeArq = `extrato-cc-${qCC || 'todos'}-${dataStr}.xlsx`;
+      res.writeHead(200, {
+        'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        'Content-Disposition': `attachment; filename="${nomeArq}"`,
+        'Content-Length': buffer.length
+      });
+      res.end(buffer);
+    } catch(e) {
+      console.error('[extrato-export]', e.message);
+      json(res, 500, { error: e.message });
+    }
+    return;
+  }
+
+  // ============================================================
   // CADASTROS MESTRES — /cadastros-mestres
   // ============================================================
   if (req.method === 'GET' && url.pathname === '/cadastros-mestres') {
     const user = requireAuth(req, res, db); if (!user) return;
-    let ccs = [], clientes = [], projetos = [], tipos = [], bancos = [];
+    let ccs = [], clientes = [], projetos = [], tipos = [], bancos = [], grupos = [], tiposDespesa = [];
     try {
       const pg = storage.getPool ? storage.getPool() : null;
       if (pg) {
         ccs      = (await pg.query('SELECT * FROM centros_de_custo ORDER BY tipo, nome')).rows;
-        clientes = (await pg.query('SELECT * FROM clientes ORDER BY nome')).rows;
+        clientes = (await pg.query('SELECT * FROM clientes ORDER BY tipo, nome')).rows;
         projetos = (await pg.query('SELECT p.*, c.nome_curto as cliente_nome FROM projetos p LEFT JOIN clientes c ON p.cliente_id=c.id ORDER BY p.codigo')).rows;
         tipos    = (await pg.query('SELECT * FROM tipos_lancamento ORDER BY natureza, nome')).rows;
         bancos   = (await pg.query('SELECT * FROM bancos ORDER BY nome')).rows;
       }
     } catch(e) { console.error('[cadastros-mestres]', e.message); }
+    // Carregar grupos separadamente para não quebrar se tabela não existir
+    try {
+      const pg2 = storage.getPool ? storage.getPool() : null;
+      if (pg2) grupos = (await pg2.query('SELECT * FROM grupos_despesa ORDER BY natureza, nome')).rows;
+    } catch(eg) { grupos = []; }
+    // Carregar tipos de despesa vinculados aos grupos
+    try {
+      const pg3 = storage.getPool ? storage.getPool() : null;
+      if (pg3) tiposDespesa = (await pg3.query(`
+        SELECT td.*, gd.nome as grupo_nome, gd.codigo as grupo_codigo_ref
+        FROM tipos_despesa td
+        LEFT JOIN grupos_despesa gd ON gd.id = td.grupo_id
+        ORDER BY gd.nome NULLS LAST, td.nome
+      `)).rows;
+    } catch(etd) { tiposDespesa = []; }
 
     const tipoColors = { ESTRUTURA:'#5B2EFF', FINANCEIRO:'#00B8D9', OPERACIONAL:'#5ED38C', TRANSFERENCIA:'#f59e0b' };
     const natColors  = { RECEITA:'#5ED38C', DESPESA:'#ef4444', IMPOSTO:'#f59e0b', FINANCEIRO:'#00B8D9', TRANSFERENCIA:'#808080' };
@@ -5193,15 +6275,26 @@ function renderHistoricoRel() {
         <td><button class='btn btn-sm btn-outline' onclick="editCC('${c.id}','${c.codigo}','${c.nome.replace(/'/g,"\\'")  }','${c.tipo}',${c.ativo})">Editar</button></td>
       </tr>`).join('');
 
-    const renderClientes = clientes.map(c => `
+    const tipoCliColors = { CLIENTE:'#5B2EFF', FORNECEDOR:'#ef4444', PRESTADOR:'#f59e0b', OUTRO:'#808080' };
+    const renderClientes = clientes.map(c => {
+      const docDisplay = c.tipo === 'PRESTADOR' || c.tipo === 'OUTRO' ? (c.cpf||c.cnpj||'<span style="color:#ef4444">Sem CPF/CNPJ</span>') : (c.cnpj||c.cpf||'<span style="color:#ef4444">Sem CNPJ</span>');
+      const enc = (s) => (s||'').replace(/'/g,"\\'");
+      return `
       <tr>
+        <td><span class='badge' style='background:${tipoCliColors[c.tipo||'CLIENTE']||'#808080'}22;color:${tipoCliColors[c.tipo||'CLIENTE']||'#808080'}'>${c.tipo||'CLIENTE'}</span></td>
         <td><strong>${c.codigo||'-'}</strong></td>
         <td>${c.nome}</td>
         <td>${c.nome_curto||'-'}</td>
-        <td>${c.cnpj||'-'}</td>
+        <td style='font-family:monospace;font-size:.82rem'>${docDisplay}</td>
+        <td>${c.email||'-'}</td>
+        <td>${c.telefone||'-'}</td>
         <td><span class='status-dot ${c.ativo?'ativo':'inativo'}'></span>${c.ativo?'Ativo':'Inativo'}</td>
-        <td><button class='btn btn-sm btn-outline' onclick="editCliente('${c.id}','${c.codigo||''}','${c.nome.replace(/'/g,"\\'")  }','${(c.nome_curto||'').replace(/'/g,"\\'")  }','${c.cnpj||''}',${c.ativo})">Editar</button></td>
-      </tr>`).join('');
+        <td style='display:flex;gap:.4rem'>
+          <button class='btn btn-sm btn-outline' onclick="editCliente('${c.id}','${enc(c.codigo)}','${enc(c.nome)}','${enc(c.nome_curto)}','${enc(c.cnpj)}','${enc(c.cpf)}','${c.tipo||'CLIENTE'}','${enc(c.email)}','${enc(c.telefone)}','${enc(c.observacoes)}',${c.ativo})">&#9998; Editar</button>
+          ${c.ativo ? `<button class='btn btn-sm' style='background:#fee2e2;color:#991b1b;border:1px solid #fca5a5' onclick="toggleCliente('${c.id}',false,'${enc(c.nome)}')">Inativar</button>` : `<button class='btn btn-sm' style='background:#dcfce7;color:#166534;border:1px solid #86efac' onclick="toggleCliente('${c.id}',true,'${enc(c.nome)}')">Reativar</button>`}
+        </td>
+      </tr>`;
+    }).join('');
 
     const renderProjetos = projetos.map(p => `
       <tr>
@@ -5210,16 +6303,40 @@ function renderHistoricoRel() {
         <td>${p.tipo||'-'}</td>
         <td>${p.cliente_nome||'-'}</td>
         <td><span class='status-dot ${p.ativo?'ativo':'inativo'}'></span>${p.ativo?'Ativo':'Inativo'}</td>
-        <td><button class='btn btn-sm btn-outline' onclick="editProjeto('${p.id}','${p.codigo}','${p.nome.replace(/'/g,"\\'")  }','${p.tipo||''}','${p.cliente_id||''}',${p.ativo})">Editar</button></td>
+        <td style='display:flex;gap:.4rem'>
+          <button class='btn btn-sm btn-outline' onclick="editProjeto('${p.id}','${p.codigo}','${p.nome.replace(/'/g,"\\'")  }','${p.tipo||''}','${p.cliente_id||''}',${p.ativo})">Editar</button>
+          ${p.ativo ? `<button class='btn btn-sm' style='background:#fee2e2;color:#991b1b;border:1px solid #fca5a5' onclick="deleteProjeto('${p.id}','${p.nome.replace(/'/g,"\\'")}')">Inativar</button>` : `<button class='btn btn-sm' style='background:#dcfce7;color:#166534;border:1px solid #86efac' onclick="ativarProjeto('${p.id}','${p.nome.replace(/'/g,"\\'")}')">Reativar</button>`}
+        </td>
       </tr>`).join('');
 
-    const renderTipos = tipos.map(t => `
+    const renderTipos = tipos.map(t => {
+      const enc = (s) => (s||'').replace(/'/g,"\\'");
+      return `
       <tr>
         <td><span class='badge' style='background:${natColors[t.natureza]||'#808080'}22;color:${natColors[t.natureza]||'#808080'}'>${t.natureza}</span></td>
         <td><strong>${t.codigo}</strong></td>
         <td>${t.nome}</td>
         <td><span class='status-dot ${t.ativo?'ativo':'inativo'}'></span>${t.ativo?'Ativo':'Inativo'}</td>
-      </tr>`).join('');
+        <td><button class='btn btn-sm btn-outline' onclick="editTipo('${t.id}','${enc(t.codigo)}','${enc(t.nome)}','${t.natureza}',${t.ativo})">&#9998; Editar</button></td>
+      </tr>`;
+    }).join('');
+
+    const grupoNatColors = { DESPESA:'#ef4444', RECEITA:'#5ED38C', IMPOSTO:'#f59e0b', FINANCEIRO:'#00B8D9', TRANSFERENCIA:'#808080' };
+    const renderGrupos = grupos.map(g => {
+      const enc = (s) => (s||'').replace(/'/g,"\\'");
+      return `
+      <tr>
+        <td><span class='badge' style='background:${grupoNatColors[g.natureza]||'#808080'}22;color:${grupoNatColors[g.natureza]||'#808080'}'>${g.natureza}</span></td>
+        <td><strong>${g.codigo}</strong></td>
+        <td>${g.nome}</td>
+        <td style='font-size:.82rem;color:#64748b'>${g.descricao||'-'}</td>
+        <td><span class='status-dot ${g.ativo?'ativo':'inativo'}'></span>${g.ativo?'Ativo':'Inativo'}</td>
+        <td style='display:flex;gap:.4rem'>
+          <button class='btn btn-sm btn-outline' onclick="editGrupo('${g.id}','${enc(g.codigo)}','${enc(g.nome)}','${g.natureza}','${enc(g.descricao)}',${g.ativo})">&#9998; Editar</button>
+          ${g.ativo ? `<button class='btn btn-sm' style='background:#fee2e2;color:#991b1b;border:1px solid #fca5a5' onclick="toggleGrupo('${g.id}',false,'${enc(g.nome)}')">Inativar</button>` : `<button class='btn btn-sm' style='background:#dcfce7;color:#166534;border:1px solid #86efac' onclick="toggleGrupo('${g.id}',true,'${enc(g.nome)}')">Reativar</button>`}
+        </td>
+      </tr>`;
+    }).join('');
 
     const renderBancos = bancos.map(b => `
       <tr>
@@ -5231,34 +6348,245 @@ function renderHistoricoRel() {
         <td><button class='btn btn-sm btn-outline' onclick="editBanco('${b.id}','${b.codigo}','${b.nome.replace(/'/g,"\\'")  }','${b.agencia||''}','${b.conta||''}',${b.ativo})">Editar</button></td>
       </tr>`).join('');
 
-    const clienteOpts = clientes.map(c => `<option value='${c.id}'>${c.nome}</option>`).join('');
+    // Renderizar tipos de despesa agrupados por grupo
+    let renderTiposDespesa = '';
+    let grupoAtualTD = null;
+    for (const td of tiposDespesa) {
+      const enc = (s) => (s||'').replace(/'/g,"\\'");
+      if (td.grupo_nome !== grupoAtualTD) {
+        grupoAtualTD = td.grupo_nome;
+        renderTiposDespesa += `<tr style='background:#f8fafc'><td colspan='5' style='padding:.4rem .75rem;font-weight:700;font-size:.8rem;color:#5B2EFF;text-transform:uppercase;letter-spacing:.05em'>&#128193; ${td.grupo_nome || 'Sem Grupo'}</td></tr>`;
+      }
+      renderTiposDespesa += `<tr>
+        <td style='padding-left:1.5rem'><strong>${td.codigo}</strong></td>
+        <td>${td.nome}</td>
+        <td style='font-size:.82rem;color:#64748b'>${td.grupo_nome||'-'}</td>
+        <td><span class='status-dot ${td.ativo?'ativo':'inativo'}'></span>${td.ativo?'Ativo':'Inativo'}</td>
+        <td style='display:flex;gap:.4rem'>
+          <button class='btn btn-sm btn-outline' onclick="editTipoDespesa('${td.id}','${enc(td.codigo)}','${enc(td.nome)}','${td.grupo_id||''}','${enc(td.grupo_codigo||td.grupo_codigo_ref||'')}',${td.ativo})">&#9998; Editar</button>
+          ${td.ativo ? `<button class='btn btn-sm' style='background:#fee2e2;color:#991b1b;border:1px solid #fca5a5' onclick="toggleTipoDespesa('${td.id}',false,'${enc(td.nome)}')">Inativar</button>` : `<button class='btn btn-sm' style='background:#dcfce7;color:#166534;border:1px solid #86efac' onclick="toggleTipoDespesa('${td.id}',true,'${enc(td.nome)}')">Reativar</button>`}
+        </td>
+      </tr>`;
+    }
+    const grupoOptsForTD = grupos.filter(g=>g.ativo).map(g => `<option value='${g.id}' data-codigo='${g.codigo}'>${g.nome}</option>`).join('');
+
+    const clienteOpts = clientes.filter(c=>c.ativo).map(c => `<option value='${c.id}'>${c.nome}${c.nome_curto?' ('+c.nome_curto+')':''}</option>`).join('');
 
     const body = `
-<h2 class='page-title'>⚙ Cadastros Mestres</h2>
-<div class='alert alert-info'>Gerencie aqui os dados de referência do sistema. Alterações aqui afetam automaticamente a classificação de novos lançamentos.</div>
+<h2 class='page-title'>&#9881; Cadastros Mestres</h2>
+<div class='alert alert-info'>Gerencie aqui os dados de refer&#234;ncia do sistema. Altera&#231;&#245;es aqui afetam automaticamente a classifica&#231;&#227;o de novos lan&#231;amentos. <strong>CPF/CNPJ &#233; obrigat&#243;rio</strong> para todos os clientes, fornecedores e prestadores.</div>
 
 <div class='master-tabs'>
-  <button class='master-tab active' onclick="switchTab('cc')">Centros de Custo (${ccs.length})</button>
-  <button class='master-tab' onclick="switchTab('clientes')">Clientes (${clientes.length})</button>
+  <button class='master-tab active' onclick="switchTab('clientes')">Clientes / Fornecedores / Prestadores (${clientes.length})</button>
+  <button class='master-tab' onclick="switchTab('grupos')">Grupos de Despesa (${grupos.length})</button>
+  <button class='master-tab' onclick="switchTab('tiposdespesa')">Tipos de Despesa (${tiposDespesa.length})</button>
+  <button class='master-tab' onclick="switchTab('tipos')">Naturezas Gerenciais (${tipos.length})</button>
   <button class='master-tab' onclick="switchTab('projetos')">Projetos (${projetos.length})</button>
-  <button class='master-tab' onclick="switchTab('tipos')">Tipos de Lançamento (${tipos.length})</button>
+  <button class='master-tab' onclick="switchTab('cc')">Centros de Custo (${ccs.length})</button>
   <button class='master-tab' onclick="switchTab('bancos')">Bancos (${bancos.length})</button>
 </div>
 
+<!-- CLIENTES / FORNECEDORES / PRESTADORES -->
+<div id='panel-clientes' class='master-panel active'>
+  <div class='master-form' id='form-cli'>
+    <h3 id='form-cli-title'>&#10133; Novo Cadastro</h3>
+    <input type='hidden' id='cli-id'>
+    <div class='form-grid'>
+      <label>Tipo de Cadastro <span style='color:#ef4444'>*</span>
+        <select id='cli-tipo' onchange='atualizarLabelDoc()'>
+          <option value='CLIENTE'>Cliente (empresa contratante)</option>
+          <option value='FORNECEDOR'>Fornecedor (empresa fornecedora)</option>
+          <option value='PRESTADOR'>Prestador de Servi&#231;o (pessoa f&#237;sica PJ)</option>
+          <option value='OUTRO'>Outro</option>
+        </select>
+      </label>
+      <label>C&#243;digo interno <input id='cli-codigo' placeholder='Ex: SEBRAE_TO'></label>
+      <label>Nome completo <span style='color:#ef4444'>*</span> <input id='cli-nome' placeholder='Raz&#227;o social ou nome completo'></label>
+      <label>Nome curto / Apelido <input id='cli-curto' placeholder='Ex: SEBRAE-TO'></label>
+      <label id='label-cnpj'>CNPJ <span style='color:#ef4444'>*</span> <input id='cli-cnpj' placeholder='00.000.000/0001-00' maxlength='18'></label>
+      <label id='label-cpf' style='display:none'>CPF <span style='color:#ef4444'>*</span> <input id='cli-cpf' placeholder='000.000.000-00' maxlength='14'></label>
+      <label>E-mail <input id='cli-email' type='email' placeholder='contato@empresa.com.br'></label>
+      <label>Telefone <input id='cli-telefone' placeholder='(11) 99999-9999'></label>
+      <label>Contato / Respons&#225;vel <input id='cli-contato' placeholder='Nome do contato principal'></label>
+      <label>Status <select id='cli-ativo'><option value='true'>Ativo</option><option value='false'>Inativo</option></select></label>
+    </div>
+    <label style='margin-top:.5rem'>Observa&#231;&#245;es <textarea id='cli-obs' rows='2' placeholder='Informa&#231;&#245;es adicionais...' style='width:100%;padding:.5rem;border:1px solid #e2e8f0;border-radius:.5rem;font-size:.9rem'></textarea></label>
+    <div style='display:flex;gap:.75rem;flex-wrap:wrap;margin-top:.75rem'>
+      <button onclick='saveCliente()'>&#128190; Salvar</button>
+      <button class='btn-outline' onclick='clearFormCli()'>Cancelar</button>
+    </div>
+  </div>
+  <section>
+    <div style='display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:.5rem;margin-bottom:.75rem'>
+      <h2 style='margin:0'>Cadastros de Pessoas e Empresas</h2>
+      <div style='display:flex;gap:.5rem;flex-wrap:wrap'>
+        <input id='cli-busca' placeholder='&#128269; Buscar por nome ou CPF/CNPJ...' style='padding:.4rem .75rem;border:1px solid #e2e8f0;border-radius:.5rem;font-size:.85rem;width:260px' oninput='filtrarClientes()'>
+        <select id='cli-filtro-tipo' onchange='filtrarClientes()' style='padding:.4rem .75rem;border:1px solid #e2e8f0;border-radius:.5rem;font-size:.85rem'>
+          <option value=''>Todos os tipos</option>
+          <option value='CLIENTE'>Clientes</option>
+          <option value='FORNECEDOR'>Fornecedores</option>
+          <option value='PRESTADOR'>Prestadores</option>
+        </select>
+      </div>
+    </div>
+    <div style='overflow-x:auto'>
+    <table><thead><tr><th>Tipo</th><th>C&#243;digo</th><th>Nome</th><th>Nome Curto</th><th>CPF / CNPJ</th><th>E-mail</th><th>Telefone</th><th>Status</th><th></th></tr></thead>
+    <tbody id='tbody-clientes'>${renderClientes}</tbody></table></div>
+  </section>
+</div>
+
+<!-- GRUPOS DE DESPESA -->
+<div id='panel-grupos' class='master-panel'>
+  <div class='master-form' id='form-grupo'>
+    <h3 id='form-grupo-title'>&#10133; Novo Grupo de Despesa</h3>
+    <input type='hidden' id='grupo-id'>
+    <div class='form-grid'>
+      <label>C&#243;digo <span style='color:#ef4444'>*</span> <input id='grupo-codigo' placeholder='Ex: PESSOAL' style='text-transform:uppercase'></label>
+      <label>Nome do Grupo <span style='color:#ef4444'>*</span> <input id='grupo-nome' placeholder='Ex: Pessoal e Benef&#237;cios'></label>
+      <label>Natureza Financeira <span style='color:#ef4444'>*</span>
+        <select id='grupo-natureza'>
+          <option value='DESPESA'>Despesa</option>
+          <option value='RECEITA'>Receita</option>
+          <option value='IMPOSTO'>Imposto / Tributo</option>
+          <option value='FINANCEIRO'>Financeiro (empr&#233;stimos, tarifas)</option>
+          <option value='TRANSFERENCIA'>Transfer&#234;ncia interna</option>
+        </select>
+      </label>
+      <label>Status <select id='grupo-ativo'><option value='true'>Ativo</option><option value='false'>Inativo</option></select></label>
+    </div>
+    <label style='margin-top:.5rem'>Descri&#231;&#227;o / O que inclui <textarea id='grupo-desc' rows='2' placeholder='Descreva quais tipos de gasto pertencem a este grupo...' style='width:100%;padding:.5rem;border:1px solid #e2e8f0;border-radius:.5rem;font-size:.9rem'></textarea></label>
+    <div style='display:flex;gap:.75rem;flex-wrap:wrap;margin-top:.75rem'>
+      <button onclick='saveGrupo()'>&#128190; Salvar</button>
+      <button class='btn-outline' onclick='clearFormGrupo()'>Cancelar</button>
+    </div>
+  </div>
+  <section>
+    <h2>Grupos de Despesa cadastrados</h2>
+    <p style='color:#64748b;font-size:.88rem'>Os grupos organizam as despesas em categorias gerenciais. Cada lan&#231;amento deve ter um grupo associado para an&#225;lise por categoria.</p>
+    <div style='overflow-x:auto'>
+    <table><thead><tr><th>Natureza</th><th>C&#243;digo</th><th>Nome</th><th>Descri&#231;&#227;o</th><th>Status</th><th></th></tr></thead>
+    <tbody id='tbody-grupos'>${renderGrupos}</tbody></table></div>
+  </section>
+</div>
+
+<!-- TIPOS DE DESPESA -->
+<div id='panel-tiposdespesa' class='master-panel'>
+  <div class='master-form' id='form-tipodespesa'>
+    <h3 id='form-tipodespesa-title'>&#10133; Novo Tipo de Despesa</h3>
+    <input type='hidden' id='td-id'>
+    <div class='form-grid'>
+      <label>C&#243;digo <span style='color:#ef4444'>*</span> <input id='td-codigo' placeholder='Ex: CONVENIO_MEDICO' style='text-transform:uppercase'></label>
+      <label>Nome do Tipo <span style='color:#ef4444'>*</span> <input id='td-nome' placeholder='Ex: Conv&#234;nio M&#233;dico / Plano de Sa&#250;de'></label>
+      <label>Grupo de Despesa <span style='color:#ef4444'>*</span>
+        <select id='td-grupo'>
+          <option value=''>-- Selecione o Grupo --</option>
+          ${grupoOptsForTD}
+        </select>
+      </label>
+      <label>Status <select id='td-ativo'><option value='true'>Ativo</option><option value='false'>Inativo</option></select></label>
+    </div>
+    <label style='margin-top:.5rem'>Descri&#231;&#227;o <textarea id='td-desc' rows='2' placeholder='Descreva o que este tipo de despesa inclui...' style='width:100%;padding:.5rem;border:1px solid #e2e8f0;border-radius:.5rem;font-size:.9rem'></textarea></label>
+    <div style='display:flex;gap:.75rem;flex-wrap:wrap;margin-top:.75rem'>
+      <button onclick='saveTipoDespesa()'>&#128190; Salvar</button>
+      <button class='btn-outline' onclick='clearFormTipoDespesa()'>Cancelar</button>
+    </div>
+  </div>
+  <section>
+    <div style='display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:.5rem;margin-bottom:.75rem'>
+      <h2 style='margin:0'>Tipos de Despesa cadastrados</h2>
+      <input id='td-busca' placeholder='&#128269; Buscar tipo...' style='padding:.4rem .75rem;border:1px solid #e2e8f0;border-radius:.5rem;font-size:.85rem;width:240px' oninput='filtrarTiposDespesa()'>
+    </div>
+    <p style='color:#64748b;font-size:.88rem'>Cada Tipo de Despesa pertence a um Grupo. Exemplo: Grupo <strong>Pessoal</strong> &#8594; Tipos: Conv&#234;nio M&#233;dico, Sal&#225;rio CLT, Vale Refei&#231;&#227;o...</p>
+    <div style='overflow-x:auto'>
+    <table><thead><tr><th>C&#243;digo</th><th>Nome do Tipo</th><th>Grupo</th><th>Status</th><th></th></tr></thead>
+    <tbody id='tbody-tiposdespesa'>${renderTiposDespesa}</tbody></table></div>
+  </section>
+</div>
+
+<!-- NATUREZAS GERENCIAIS -->
+<div id='panel-tipos' class='master-panel'>
+  <div class='master-form' id='form-tipo'>
+    <h3 id='form-tipo-title'>&#10133; Nova Natureza Gerencial</h3>
+    <input type='hidden' id='tipo-id'>
+    <div class='form-grid'>
+      <label>C&#243;digo <span style='color:#ef4444'>*</span> <input id='tipo-codigo' placeholder='Ex: CUSTO_DIRETO'></label>
+      <label>Nome <span style='color:#ef4444'>*</span> <input id='tipo-nome' placeholder='Ex: Custo Direto do Projeto'></label>
+      <label>Natureza Financeira <span style='color:#ef4444'>*</span>
+        <select id='tipo-natureza'>
+          <option value='RECEITA'>Receita</option>
+          <option value='DESPESA'>Despesa</option>
+          <option value='IMPOSTO'>Imposto</option>
+          <option value='FINANCEIRO'>Financeiro</option>
+          <option value='TRANSFERENCIA'>Transfer&#234;ncia</option>
+        </select>
+      </label>
+      <label>Status <select id='tipo-ativo'><option value='true'>Ativo</option><option value='false'>Inativo</option></select></label>
+    </div>
+    <div style='display:flex;gap:.75rem;flex-wrap:wrap;margin-top:.75rem'>
+      <button onclick='saveTipo()'>&#128190; Salvar</button>
+      <button class='btn-outline' onclick='clearFormTipo()'>Cancelar</button>
+    </div>
+  </div>
+  <section>
+    <h2>Naturezas Gerenciais</h2>
+    <p style='color:#64748b;font-size:.88rem'>As naturezas gerenciais classificam cada lan&#231;amento para an&#225;lise de DRE e fluxo de caixa.</p>
+    <div style='overflow-x:auto'>
+    <table><thead><tr><th>Natureza</th><th>C&#243;digo</th><th>Nome</th><th>Status</th><th></th></tr></thead>
+    <tbody id='tbody-tipos'>${renderTipos}</tbody></table></div>
+  </section>
+</div>
+
+<!-- PROJETOS -->
+<div id='panel-projetos' class='master-panel'>
+  <div class='master-form' id='form-proj'>
+    <h3 id='form-proj-title'>&#10133; Novo Projeto</h3>
+    <input type='hidden' id='proj-id'>
+    <div class='form-grid'>
+      <label>C&#243;digo <span style='color:#ef4444'>*</span> <input id='proj-codigo' placeholder='Ex: 4.16'></label>
+      <label>Nome <span style='color:#ef4444'>*</span> <input id='proj-nome' placeholder='Ex: Coaching Executivo'></label>
+      <label>Tipo de Projeto
+        <select id='proj-tipo'>
+          <option value=''>-- Selecione --</option>
+          <option value='CONSULTORIA'>Consultoria</option>
+          <option value='CAPACITACAO'>Capacita&#231;&#227;o / Treinamento</option>
+          <option value='ASSESSORIA'>Assessoria</option>
+          <option value='PESQUISA'>Pesquisa / Diagn&#243;stico</option>
+          <option value='LICITACAO'>Licita&#231;&#227;o / Contrato P&#250;blico</option>
+          <option value='INTERNO'>Projeto Interno</option>
+        </select>
+      </label>
+      <label>Cliente vinculado
+        <select id='proj-cliente'><option value=''>-- Nenhum --</option>${clienteOpts}</select>
+      </label>
+      <label>Status <select id='proj-ativo'><option value='true'>Ativo</option><option value='false'>Inativo</option></select></label>
+    </div>
+    <div style='display:flex;gap:.75rem;flex-wrap:wrap;margin-top:.75rem'>
+      <button onclick='saveProjeto()'>&#128190; Salvar</button>
+      <button class='btn-outline' onclick='clearFormProj()'>Cancelar</button>
+    </div>
+  </div>
+  <section>
+    <h2>Projetos cadastrados</h2>
+    <div style='overflow-x:auto'>
+    <table><thead><tr><th>C&#243;digo</th><th>Nome</th><th>Tipo</th><th>Cliente</th><th>Status</th><th></th></tr></thead>
+    <tbody id='tbody-projetos'>${renderProjetos}</tbody></table></div>
+  </section>
+</div>
+
 <!-- CENTROS DE CUSTO -->
-<div id='panel-cc' class='master-panel active'>
+<div id='panel-cc' class='master-panel'>
   <div class='master-form' id='form-cc'>
-    <h3 id='form-cc-title'>➕ Novo Centro de Custo</h3>
+    <h3 id='form-cc-title'>&#10133; Novo Centro de Custo</h3>
     <input type='hidden' id='cc-id'>
     <div class='form-grid'>
-      <label>Código <input id='cc-codigo' placeholder='Ex: MARKETING'></label>
-      <label>Nome <input id='cc-nome' placeholder='Ex: Marketing e Comunicação'></label>
+      <label>C&#243;digo <span style='color:#ef4444'>*</span> <input id='cc-codigo' placeholder='Ex: MARKETING'></label>
+      <label>Nome <span style='color:#ef4444'>*</span> <input id='cc-nome' placeholder='Ex: Marketing e Comunica&#231;&#227;o'></label>
       <label>Tipo
         <select id='cc-tipo'>
           <option value='ESTRUTURA'>Estrutura (Custo Indireto)</option>
           <option value='OPERACIONAL'>Operacional (Custo Direto / Receita)</option>
-          <option value='FINANCEIRO'>Financeiro (empréstimos, tarifas)</option>
-          <option value='TRANSFERENCIA'>Transferência entre contas</option>
+          <option value='FINANCEIRO'>Financeiro (empr&#233;stimos, tarifas)</option>
+          <option value='TRANSFERENCIA'>Transfer&#234;ncia entre contas</option>
         </select>
       </label>
       <label>Status
@@ -5266,112 +6594,47 @@ function renderHistoricoRel() {
       </label>
     </div>
     <div style='display:flex;gap:.75rem;flex-wrap:wrap'>
-      <button onclick='saveCC()'>💾 Salvar</button>
+      <button onclick='saveCC()'>&#128190; Salvar</button>
       <button class='btn-outline' onclick='clearFormCC()'>Cancelar</button>
     </div>
   </div>
   <section>
     <h2>Centros de Custo cadastrados</h2>
     <div style='overflow-x:auto'>
-    <table><thead><tr><th>Tipo</th><th>Código</th><th>Nome</th><th>Status</th><th></th></tr></thead>
+    <table><thead><tr><th>Tipo</th><th>C&#243;digo</th><th>Nome</th><th>Status</th><th></th></tr></thead>
     <tbody id='tbody-cc'>${renderCC}</tbody></table></div>
-  </section>
-</div>
-
-<!-- CLIENTES -->
-<div id='panel-clientes' class='master-panel'>
-  <div class='master-form'>
-    <h3 id='form-cli-title'>➕ Novo Cliente</h3>
-    <input type='hidden' id='cli-id'>
-    <div class='form-grid'>
-      <label>Código <input id='cli-codigo' placeholder='Ex: SEBRAE_TO'></label>
-      <label>Nome completo <input id='cli-nome' placeholder='Ex: SEBRAE Tocantins'></label>
-      <label>Nome curto <input id='cli-curto' placeholder='Ex: SEBRAE-TO'></label>
-      <label>CNPJ <input id='cli-cnpj' placeholder='00.000.000/0001-00'></label>
-      <label>Status <select id='cli-ativo'><option value='true'>Ativo</option><option value='false'>Inativo</option></select></label>
-    </div>
-    <div style='display:flex;gap:.75rem;flex-wrap:wrap'>
-      <button onclick='saveCliente()'>💾 Salvar</button>
-      <button class='btn-outline' onclick='clearFormCli()'>Cancelar</button>
-    </div>
-  </div>
-  <section>
-    <h2>Clientes cadastrados</h2>
-    <div style='overflow-x:auto'>
-    <table><thead><tr><th>Código</th><th>Nome</th><th>Nome Curto</th><th>CNPJ</th><th>Status</th><th></th></tr></thead>
-    <tbody id='tbody-clientes'>${renderClientes}</tbody></table></div>
-  </section>
-</div>
-
-<!-- PROJETOS -->
-<div id='panel-projetos' class='master-panel'>
-  <div class='master-form'>
-    <h3 id='form-proj-title'>➕ Novo Projeto</h3>
-    <input type='hidden' id='proj-id'>
-    <div class='form-grid'>
-      <label>Código <input id='proj-codigo' placeholder='Ex: 4.16'></label>
-      <label>Nome <input id='proj-nome' placeholder='Ex: Coaching Executivo'></label>
-      <label>Tipo <input id='proj-tipo' placeholder='Ex: CONSULTORIA'></label>
-      <label>Cliente vinculado
-        <select id='proj-cliente'><option value=''>-- Nenhum --</option>${clienteOpts}</select>
-      </label>
-      <label>Status <select id='proj-ativo'><option value='true'>Ativo</option><option value='false'>Inativo</option></select></label>
-    </div>
-    <div style='display:flex;gap:.75rem;flex-wrap:wrap'>
-      <button onclick='saveProjeto()'>💾 Salvar</button>
-      <button class='btn-outline' onclick='clearFormProj()'>Cancelar</button>
-    </div>
-  </div>
-  <section>
-    <h2>Projetos cadastrados</h2>
-    <div style='overflow-x:auto'>
-    <table><thead><tr><th>Código</th><th>Nome</th><th>Tipo</th><th>Cliente</th><th>Status</th><th></th></tr></thead>
-    <tbody id='tbody-projetos'>${renderProjetos}</tbody></table></div>
-  </section>
-</div>
-
-<!-- TIPOS DE LANÇAMENTO -->
-<div id='panel-tipos' class='master-panel'>
-  <section>
-    <h2>Tipos de Lançamento</h2>
-    <div class='alert alert-info'>Os tipos de lançamento definem a natureza de cada movimentação financeira. Edição disponível em breve.</div>
-    <div style='overflow-x:auto'>
-    <table><thead><tr><th>Natureza</th><th>Código</th><th>Nome</th><th>Status</th></tr></thead>
-    <tbody>${renderTipos}</tbody></table></div>
   </section>
 </div>
 
 <!-- BANCOS -->
 <div id='panel-bancos' class='master-panel'>
-  <div class='master-form'>
-    <h3 id='form-banco-title'>➕ Novo Banco</h3>
+  <div class='master-form' id='form-banco'>
+    <h3 id='form-banco-title'>&#10133; Novo Banco / Conta</h3>
     <input type='hidden' id='banco-id'>
     <div class='form-grid'>
-      <label>Código <input id='banco-codigo' placeholder='Ex: NUBANK'></label>
-      <label>Nome <input id='banco-nome' placeholder='Ex: Nubank PJ'></label>
-      <label>Agência <input id='banco-agencia' placeholder='Ex: 0001'></label>
+      <label>C&#243;digo <span style='color:#ef4444'>*</span> <input id='banco-codigo' placeholder='Ex: NUBANK'></label>
+      <label>Nome <span style='color:#ef4444'>*</span> <input id='banco-nome' placeholder='Ex: Nubank PJ'></label>
+      <label>Ag&#234;ncia <input id='banco-agencia' placeholder='Ex: 0001'></label>
       <label>Conta <input id='banco-conta' placeholder='Ex: 12345-6'></label>
       <label>Status <select id='banco-ativo'><option value='true'>Ativo</option><option value='false'>Inativo</option></select></label>
     </div>
     <div style='display:flex;gap:.75rem;flex-wrap:wrap'>
-      <button onclick='saveBanco()'>💾 Salvar</button>
+      <button onclick='saveBanco()'>&#128190; Salvar</button>
       <button class='btn-outline' onclick='clearFormBanco()'>Cancelar</button>
     </div>
   </div>
   <section>
-    <h2>Bancos cadastrados</h2>
+    <h2>Bancos e Contas cadastrados</h2>
     <div style='overflow-x:auto'>
-    <table><thead><tr><th>Código</th><th>Nome</th><th>Agência</th><th>Conta</th><th>Status</th><th></th></tr></thead>
+    <table><thead><tr><th>C&#243;digo</th><th>Nome</th><th>Ag&#234;ncia</th><th>Conta</th><th>Status</th><th></th></tr></thead>
     <tbody id='tbody-bancos'>${renderBancos}</tbody></table></div>
   </section>
 </div>
 
 <script>
+const TABS_ORDER = ['clientes','grupos','tiposdespesa','tipos','projetos','cc','bancos'];
 function switchTab(tab) {
-  document.querySelectorAll('.master-tab').forEach((b,i) => {
-    const tabs = ['cc','clientes','projetos','tipos','bancos'];
-    b.classList.toggle('active', tabs[i] === tab);
-  });
+  document.querySelectorAll('.master-tab').forEach((b,i) => b.classList.toggle('active', TABS_ORDER[i] === tab));
   document.querySelectorAll('.master-panel').forEach(p => p.classList.remove('active'));
   document.getElementById('panel-' + tab).classList.add('active');
 }
@@ -5381,63 +6644,199 @@ async function apiCall(method, url, body) {
   if (!d.ok) throw new Error(d.error || 'Erro');
   return d;
 }
-function clearFormCC() {
-  document.getElementById('cc-id').value='';
-  document.getElementById('cc-codigo').value='';
-  document.getElementById('cc-nome').value='';
-  document.getElementById('cc-tipo').value='ESTRUTURA';
-  document.getElementById('cc-ativo').value='true';
-  document.getElementById('form-cc-title').textContent='➕ Novo Centro de Custo';
-}
-function editCC(id,codigo,nome,tipo,ativo) {
-  switchTab('cc');
-  document.getElementById('cc-id').value=id;
-  document.getElementById('cc-codigo').value=codigo;
-  document.getElementById('cc-nome').value=nome;
-  document.getElementById('cc-tipo').value=tipo;
-  document.getElementById('cc-ativo').value=String(ativo);
-  document.getElementById('form-cc-title').textContent='✏ Editar Centro de Custo: '+nome;
-  setTimeout(()=>document.getElementById('form-cc').scrollIntoView({behavior:'smooth'}),100);
-}
-async function saveCC() {
-  const id=document.getElementById('cc-id').value;
-  const payload={codigo:document.getElementById('cc-codigo').value.trim().toUpperCase(),nome:document.getElementById('cc-nome').value.trim(),tipo:document.getElementById('cc-tipo').value,ativo:document.getElementById('cc-ativo').value==='true'};
-  if(!payload.codigo||!payload.nome){alert('Preencha código e nome');return;}
-  try{
-    await apiCall(id?'PUT':'POST','/api/mestres/centros-custo'+(id?'/'+id:''),payload);
-    location.reload();
-  }catch(e){alert(e.message);}
+// ─── CLIENTES / FORNECEDORES / PRESTADORES ───
+function atualizarLabelDoc() {
+  const tipo = document.getElementById('cli-tipo').value;
+  const isPF = tipo === 'PRESTADOR' || tipo === 'OUTRO';
+  document.getElementById('label-cnpj').style.display = isPF ? 'none' : '';
+  document.getElementById('label-cpf').style.display = isPF ? '' : 'none';
 }
 function clearFormCli() {
-  ['cli-id','cli-codigo','cli-nome','cli-curto','cli-cnpj'].forEach(id=>document.getElementById(id).value='');
+  ['cli-id','cli-codigo','cli-nome','cli-curto','cli-cnpj','cli-cpf','cli-email','cli-telefone','cli-contato','cli-obs'].forEach(id => { const el = document.getElementById(id); if(el) el.value=''; });
+  document.getElementById('cli-tipo').value='CLIENTE';
   document.getElementById('cli-ativo').value='true';
-  document.getElementById('form-cli-title').textContent='➕ Novo Cliente';
+  document.getElementById('form-cli-title').textContent='\u2795 Novo Cadastro';
+  atualizarLabelDoc();
 }
-function editCliente(id,codigo,nome,curto,cnpj,ativo) {
+function editCliente(id,codigo,nome,curto,cnpj,cpf,tipo,email,telefone,obs,ativo) {
   document.getElementById('cli-id').value=id;
   document.getElementById('cli-codigo').value=codigo;
   document.getElementById('cli-nome').value=nome;
   document.getElementById('cli-curto').value=curto;
   document.getElementById('cli-cnpj').value=cnpj;
+  document.getElementById('cli-cpf').value=cpf;
+  document.getElementById('cli-tipo').value=tipo||'CLIENTE';
+  document.getElementById('cli-email').value=email;
+  document.getElementById('cli-telefone').value=telefone;
+  document.getElementById('cli-obs').value=obs;
   document.getElementById('cli-ativo').value=String(ativo);
-  document.getElementById('form-cli-title').textContent='✏ Editar Cliente: '+nome;
+  document.getElementById('form-cli-title').textContent='\u270F Editar: '+nome;
+  atualizarLabelDoc();
   switchTab('clientes');
-  setTimeout(()=>document.querySelector('#panel-clientes .master-form').scrollIntoView({behavior:'smooth'}),100);
+  setTimeout(()=>document.getElementById('form-cli').scrollIntoView({behavior:'smooth'}),100);
 }
 async function saveCliente() {
   const id=document.getElementById('cli-id').value;
-  const payload={codigo:document.getElementById('cli-codigo').value.trim().toUpperCase(),nome:document.getElementById('cli-nome').value.trim(),nome_curto:document.getElementById('cli-curto').value.trim(),cnpj:document.getElementById('cli-cnpj').value.trim(),ativo:document.getElementById('cli-ativo').value==='true'};
-  if(!payload.nome){alert('Preencha o nome');return;}
+  const tipo=document.getElementById('cli-tipo').value;
+  const isPF = tipo === 'PRESTADOR' || tipo === 'OUTRO';
+  const cnpj=document.getElementById('cli-cnpj').value.trim();
+  const cpf=document.getElementById('cli-cpf').value.trim();
+  const doc = isPF ? cpf : cnpj;
+  if(!document.getElementById('cli-nome').value.trim()){alert('Preencha o nome completo');return;}
+  if(!doc){alert((isPF?'CPF':'CNPJ')+' \u00e9 obrigat\u00f3rio para este tipo de cadastro.');return;}
+  const payload={
+    codigo:document.getElementById('cli-codigo').value.trim().toUpperCase()||null,
+    nome:document.getElementById('cli-nome').value.trim(),
+    nome_curto:document.getElementById('cli-curto').value.trim()||null,
+    cnpj: isPF ? null : cnpj,
+    cpf: isPF ? cpf : null,
+    tipo,
+    email:document.getElementById('cli-email').value.trim()||null,
+    telefone:document.getElementById('cli-telefone').value.trim()||null,
+    contato:document.getElementById('cli-contato').value.trim()||null,
+    observacoes:document.getElementById('cli-obs').value.trim()||null,
+    ativo:document.getElementById('cli-ativo').value==='true'
+  };
   try{
     await apiCall(id?'PUT':'POST','/api/mestres/clientes'+(id?'/'+id:''),payload);
     location.reload();
   }catch(e){alert(e.message);}
 }
+async function toggleCliente(id, ativo, nome) {
+  if(!confirm((ativo?'Reativar':'Inativar')+' o cadastro "'+nome+'"?')) return;
+  try{
+    await apiCall('PATCH','/api/mestres/clientes/'+id+'/toggle',{ativo});
+    location.reload();
+  }catch(e){alert(e.message);}
+}
+function filtrarClientes() {
+  const busca = document.getElementById('cli-busca').value.toLowerCase();
+  const tipo = document.getElementById('cli-filtro-tipo').value;
+  document.querySelectorAll('#tbody-clientes tr').forEach(tr => {
+    const txt = tr.textContent.toLowerCase();
+    const tipoCell = tr.querySelector('td:first-child');
+    const tipoVal = tipoCell ? tipoCell.textContent.trim() : '';
+    const matchBusca = !busca || txt.includes(busca);
+    const matchTipo = !tipo || tipoVal === tipo;
+    tr.style.display = (matchBusca && matchTipo) ? '' : 'none';
+  });
+}
+// ─── GRUPOS DE DESPESA ───
+function clearFormGrupo() {
+  ['grupo-id','grupo-codigo','grupo-nome','grupo-desc'].forEach(id=>document.getElementById(id).value='');
+  document.getElementById('grupo-natureza').value='DESPESA';
+  document.getElementById('grupo-ativo').value='true';
+  document.getElementById('form-grupo-title').textContent='\u2795 Novo Grupo de Despesa';
+}
+function editGrupo(id,codigo,nome,natureza,desc,ativo) {
+  document.getElementById('grupo-id').value=id;
+  document.getElementById('grupo-codigo').value=codigo;
+  document.getElementById('grupo-nome').value=nome;
+  document.getElementById('grupo-natureza').value=natureza;
+  document.getElementById('grupo-desc').value=desc;
+  document.getElementById('grupo-ativo').value=String(ativo);
+  document.getElementById('form-grupo-title').textContent='\u270F Editar Grupo: '+nome;
+  switchTab('grupos');
+  setTimeout(()=>document.getElementById('form-grupo').scrollIntoView({behavior:'smooth'}),100);
+}
+async function saveGrupo() {
+  const id=document.getElementById('grupo-id').value;
+  const payload={codigo:document.getElementById('grupo-codigo').value.trim().toUpperCase(),nome:document.getElementById('grupo-nome').value.trim(),natureza:document.getElementById('grupo-natureza').value,descricao:document.getElementById('grupo-desc').value.trim()||null,ativo:document.getElementById('grupo-ativo').value==='true'};
+  if(!payload.codigo||!payload.nome){alert('Preencha c\u00f3digo e nome');return;}
+  try{
+    await apiCall(id?'PUT':'POST','/api/mestres/grupos-despesa'+(id?'/'+id:''),payload);
+    location.reload();
+  }catch(e){alert(e.message);}
+}
+async function toggleGrupo(id, ativo, nome) {
+  if(!confirm((ativo?'Reativar':'Inativar')+' o grupo "'+nome+'"?')) return;
+  try{
+    await apiCall('PATCH','/api/mestres/grupos-despesa/'+id+'/toggle',{ativo});
+    location.reload();
+  }catch(e){alert(e.message);}
+}
+// ─── TIPOS DE DESPESA ───
+function clearFormTipoDespesa() {
+  ['td-id','td-codigo','td-nome','td-desc'].forEach(id=>document.getElementById(id).value='');
+  document.getElementById('td-grupo').value='';
+  document.getElementById('td-ativo').value='true';
+  document.getElementById('form-tipodespesa-title').textContent='\u2795 Novo Tipo de Despesa';
+}
+function editTipoDespesa(id,codigo,nome,grupoId,grupoCodigo,ativo) {
+  document.getElementById('td-id').value=id;
+  document.getElementById('td-codigo').value=codigo;
+  document.getElementById('td-nome').value=nome;
+  document.getElementById('td-grupo').value=grupoId;
+  document.getElementById('td-ativo').value=String(ativo);
+  document.getElementById('form-tipodespesa-title').textContent='\u270F Editar Tipo: '+nome;
+  switchTab('tiposdespesa');
+  setTimeout(()=>document.getElementById('form-tipodespesa').scrollIntoView({behavior:'smooth'}),100);
+}
+async function saveTipoDespesa() {
+  const id=document.getElementById('td-id').value;
+  const codigo=document.getElementById('td-codigo').value.trim().toUpperCase();
+  const nome=document.getElementById('td-nome').value.trim();
+  const grupoId=document.getElementById('td-grupo').value;
+  if(!codigo||!nome){alert('Preencha c\u00f3digo e nome');return;}
+  if(!grupoId){alert('Selecione o Grupo de Despesa ao qual este tipo pertence.');return;}
+  const payload={codigo,nome,grupo_id:parseInt(grupoId),descricao:document.getElementById('td-desc').value.trim()||null,ativo:document.getElementById('td-ativo').value==='true'};
+  try{
+    await apiCall(id?'PUT':'POST','/api/mestres/tipos-despesa'+(id?'/'+id:''),payload);
+    location.reload();
+  }catch(e){alert(e.message);}
+}
+async function toggleTipoDespesa(id, ativo, nome) {
+  if(!confirm((ativo?'Reativar':'Inativar')+' o tipo "'+nome+'"?')) return;
+  try{
+    await apiCall('PATCH','/api/mestres/tipos-despesa/'+id+'/toggle',{ativo});
+    location.reload();
+  }catch(e){alert(e.message);}
+}
+function filtrarTiposDespesa() {
+  const busca = document.getElementById('td-busca').value.toLowerCase();
+  let grupoHeader = null;
+  document.querySelectorAll('#tbody-tiposdespesa tr').forEach(tr => {
+    if (tr.querySelector('td[colspan]')) {
+      grupoHeader = tr;
+      return;
+    }
+    const txt = tr.textContent.toLowerCase();
+    tr.style.display = !busca || txt.includes(busca) ? '' : 'none';
+  });
+}
+// ─── NATUREZAS GERENCIAIS ───
+function clearFormTipo() {
+  ['tipo-id','tipo-codigo','tipo-nome'].forEach(id=>document.getElementById(id).value='');
+  document.getElementById('tipo-natureza').value='DESPESA';
+  document.getElementById('tipo-ativo').value='true';
+  document.getElementById('form-tipo-title').textContent='\u2795 Nova Natureza Gerencial';
+}
+function editTipo(id,codigo,nome,natureza,ativo) {
+  document.getElementById('tipo-id').value=id;
+  document.getElementById('tipo-codigo').value=codigo;
+  document.getElementById('tipo-nome').value=nome;
+  document.getElementById('tipo-natureza').value=natureza;
+  document.getElementById('tipo-ativo').value=String(ativo);
+  document.getElementById('form-tipo-title').textContent='\u270F Editar Natureza: '+nome;
+  switchTab('tipos');
+  setTimeout(()=>document.getElementById('form-tipo').scrollIntoView({behavior:'smooth'}),100);
+}
+async function saveTipo() {
+  const id=document.getElementById('tipo-id').value;
+  const payload={codigo:document.getElementById('tipo-codigo').value.trim().toUpperCase(),nome:document.getElementById('tipo-nome').value.trim(),natureza:document.getElementById('tipo-natureza').value,ativo:document.getElementById('tipo-ativo').value==='true'};
+  if(!payload.codigo||!payload.nome){alert('Preencha c\u00f3digo e nome');return;}
+  try{
+    await apiCall(id?'PUT':'POST','/api/mestres/tipos-lancamento'+(id?'/'+id:''),payload);
+    location.reload();
+  }catch(e){alert(e.message);}
+}
+// ─── PROJETOS ───
 function clearFormProj() {
-  ['proj-id','proj-codigo','proj-nome','proj-tipo'].forEach(id=>document.getElementById(id).value='');
+  ['proj-id','proj-codigo','proj-nome'].forEach(id=>document.getElementById(id).value='');
+  document.getElementById('proj-tipo').value='';
   document.getElementById('proj-cliente').value='';
   document.getElementById('proj-ativo').value='true';
-  document.getElementById('form-proj-title').textContent='➕ Novo Projeto';
+  document.getElementById('form-proj-title').textContent='\u2795 Novo Projeto';
 }
 function editProjeto(id,codigo,nome,tipo,clienteId,ativo) {
   document.getElementById('proj-id').value=id;
@@ -5446,23 +6845,67 @@ function editProjeto(id,codigo,nome,tipo,clienteId,ativo) {
   document.getElementById('proj-tipo').value=tipo;
   document.getElementById('proj-cliente').value=clienteId;
   document.getElementById('proj-ativo').value=String(ativo);
-  document.getElementById('form-proj-title').textContent='✏ Editar Projeto: '+nome;
+  document.getElementById('form-proj-title').textContent='\u270F Editar Projeto: '+nome;
   switchTab('projetos');
-  setTimeout(()=>document.querySelector('#panel-projetos .master-form').scrollIntoView({behavior:'smooth'}),100);
+  setTimeout(()=>document.getElementById('form-proj').scrollIntoView({behavior:'smooth'}),100);
 }
 async function saveProjeto() {
   const id=document.getElementById('proj-id').value;
-  const payload={codigo:document.getElementById('proj-codigo').value.trim(),nome:document.getElementById('proj-nome').value.trim(),tipo:document.getElementById('proj-tipo').value.trim().toUpperCase()||null,cliente_id:document.getElementById('proj-cliente').value||null,ativo:document.getElementById('proj-ativo').value==='true'};
-  if(!payload.codigo||!payload.nome){alert('Preencha código e nome');return;}
+  const payload={codigo:document.getElementById('proj-codigo').value.trim(),nome:document.getElementById('proj-nome').value.trim(),tipo:document.getElementById('proj-tipo').value||null,cliente_id:document.getElementById('proj-cliente').value||null,ativo:document.getElementById('proj-ativo').value==='true'};
+  if(!payload.codigo||!payload.nome){alert('Preencha c\u00f3digo e nome');return;}
   try{
     await apiCall(id?'PUT':'POST','/api/mestres/projetos'+(id?'/'+id:''),payload);
     location.reload();
   }catch(e){alert(e.message);}
 }
+async function deleteProjeto(id, nome) {
+  if(!confirm('Inativar o projeto "'+nome+'"?')) return;
+  try{ await apiCall('DELETE','/api/mestres/projetos/'+id); location.reload(); }catch(e){alert(e.message);}
+}
+async function ativarProjeto(id, nome) {
+  if(!confirm('Reativar o projeto "'+nome+'"?')) return;
+  try{
+    const r = await fetch('/api/mestres/projetos/'+id);
+    const d = await r.json();
+    const p = d.data && d.data[0];
+    if(!p) throw new Error('Projeto n\u00e3o encontrado');
+    await apiCall('PUT','/api/mestres/projetos/'+id, {...p, ativo: true});
+    location.reload();
+  }catch(e){alert(e.message);}
+}
+// ─── CENTROS DE CUSTO ───
+function clearFormCC() {
+  document.getElementById('cc-id').value='';
+  document.getElementById('cc-codigo').value='';
+  document.getElementById('cc-nome').value='';
+  document.getElementById('cc-tipo').value='ESTRUTURA';
+  document.getElementById('cc-ativo').value='true';
+  document.getElementById('form-cc-title').textContent='\u2795 Novo Centro de Custo';
+}
+function editCC(id,codigo,nome,tipo,ativo) {
+  switchTab('cc');
+  document.getElementById('cc-id').value=id;
+  document.getElementById('cc-codigo').value=codigo;
+  document.getElementById('cc-nome').value=nome;
+  document.getElementById('cc-tipo').value=tipo;
+  document.getElementById('cc-ativo').value=String(ativo);
+  document.getElementById('form-cc-title').textContent='\u270F Editar Centro de Custo: '+nome;
+  setTimeout(()=>document.getElementById('form-cc').scrollIntoView({behavior:'smooth'}),100);
+}
+async function saveCC() {
+  const id=document.getElementById('cc-id').value;
+  const payload={codigo:document.getElementById('cc-codigo').value.trim().toUpperCase(),nome:document.getElementById('cc-nome').value.trim(),tipo:document.getElementById('cc-tipo').value,ativo:document.getElementById('cc-ativo').value==='true'};
+  if(!payload.codigo||!payload.nome){alert('Preencha c\u00f3digo e nome');return;}
+  try{
+    await apiCall(id?'PUT':'POST','/api/mestres/centros-custo'+(id?'/'+id:''),payload);
+    location.reload();
+  }catch(e){alert(e.message);}
+}
+// ─── BANCOS ───
 function clearFormBanco() {
   ['banco-id','banco-codigo','banco-nome','banco-agencia','banco-conta'].forEach(id=>document.getElementById(id).value='');
   document.getElementById('banco-ativo').value='true';
-  document.getElementById('form-banco-title').textContent='➕ Novo Banco';
+  document.getElementById('form-banco-title').textContent='\u2795 Novo Banco';
 }
 function editBanco(id,codigo,nome,agencia,conta,ativo) {
   document.getElementById('banco-id').value=id;
@@ -5471,14 +6914,14 @@ function editBanco(id,codigo,nome,agencia,conta,ativo) {
   document.getElementById('banco-agencia').value=agencia;
   document.getElementById('banco-conta').value=conta;
   document.getElementById('banco-ativo').value=String(ativo);
-  document.getElementById('form-banco-title').textContent='✏ Editar Banco: '+nome;
+  document.getElementById('form-banco-title').textContent='\u270F Editar Banco: '+nome;
   switchTab('bancos');
-  setTimeout(()=>document.querySelector('#panel-bancos .master-form').scrollIntoView({behavior:'smooth'}),100);
+  setTimeout(()=>document.getElementById('form-banco').scrollIntoView({behavior:'smooth'}),100);
 }
 async function saveBanco() {
   const id=document.getElementById('banco-id').value;
   const payload={codigo:document.getElementById('banco-codigo').value.trim().toUpperCase(),nome:document.getElementById('banco-nome').value.trim(),agencia:document.getElementById('banco-agencia').value.trim()||null,conta:document.getElementById('banco-conta').value.trim()||null,ativo:document.getElementById('banco-ativo').value==='true'};
-  if(!payload.codigo||!payload.nome){alert('Preencha código e nome');return;}
+  if(!payload.codigo||!payload.nome){alert('Preencha c\u00f3digo e nome');return;}
   try{
     await apiCall(id?'PUT':'POST','/api/mestres/bancos'+(id?'/'+id:''),payload);
     location.reload();
@@ -5527,25 +6970,127 @@ async function saveBanco() {
       }
       if (entidade === 'clientes') {
         if (req.method === 'POST') {
-          const r = await pg.query('INSERT INTO clientes (codigo,nome,nome_curto,cnpj,ativo) VALUES ($1,$2,$3,$4,$5) RETURNING id', [body.codigo||null, body.nome, body.nome_curto||null, body.cnpj||null, body.ativo!==false]);
+          const r = await pg.query(
+            'INSERT INTO clientes (codigo,nome,nome_curto,cnpj,cpf,tipo,email,telefone,contato,observacoes,ativo) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id',
+            [body.codigo||null, body.nome, body.nome_curto||null, body.cnpj||null, body.cpf||null, body.tipo||'CLIENTE', body.email||null, body.telefone||null, body.contato||null, body.observacoes||null, body.ativo!==false]
+          );
           return json(res, 200, { ok: true, id: r.rows[0].id });
         }
         if (req.method === 'PUT' && id) {
-          await pg.query('UPDATE clientes SET codigo=$1,nome=$2,nome_curto=$3,cnpj=$4,ativo=$5,atualizado_em=NOW() WHERE id=$6', [body.codigo||null, body.nome, body.nome_curto||null, body.cnpj||null, body.ativo!==false, id]);
+          await pg.query(
+            'UPDATE clientes SET codigo=$1,nome=$2,nome_curto=$3,cnpj=$4,cpf=$5,tipo=$6,email=$7,telefone=$8,contato=$9,observacoes=$10,ativo=$11,atualizado_em=NOW() WHERE id=$12',
+            [body.codigo||null, body.nome, body.nome_curto||null, body.cnpj||null, body.cpf||null, body.tipo||'CLIENTE', body.email||null, body.telefone||null, body.contato||null, body.observacoes||null, body.ativo!==false, id]
+          );
+          return json(res, 200, { ok: true });
+        }
+        if (req.method === 'PATCH' && id && parts[5] === 'toggle') {
+          await pg.query('UPDATE clientes SET ativo=$1,atualizado_em=NOW() WHERE id=$2', [body.ativo!==false, id]);
+          return json(res, 200, { ok: true });
+        }
+        if (req.method === 'DELETE' && id) {
+          await pg.query('UPDATE clientes SET ativo=false,atualizado_em=NOW() WHERE id=$1', [id]);
           return json(res, 200, { ok: true });
         }
         if (req.method === 'GET') {
-          const r = await pg.query('SELECT * FROM clientes ORDER BY nome');
+          const r = await pg.query('SELECT * FROM clientes ORDER BY tipo,nome');
+          return json(res, 200, { ok: true, data: r.rows });
+        }
+      }
+      if (entidade === 'grupos-despesa') {
+        if (req.method === 'POST') {
+          const r = await pg.query(
+            'INSERT INTO grupos_despesa (codigo,nome,natureza,descricao,ativo) VALUES ($1,$2,$3,$4,$5) RETURNING id',
+            [body.codigo, body.nome, body.natureza||'DESPESA', body.descricao||null, body.ativo!==false]
+          );
+          return json(res, 200, { ok: true, id: r.rows[0].id });
+        }
+        if (req.method === 'PUT' && id) {
+          await pg.query(
+            'UPDATE grupos_despesa SET codigo=$1,nome=$2,natureza=$3,descricao=$4,ativo=$5,atualizado_em=NOW() WHERE id=$6',
+            [body.codigo, body.nome, body.natureza||'DESPESA', body.descricao||null, body.ativo!==false, id]
+          );
+          return json(res, 200, { ok: true });
+        }
+        if (req.method === 'PATCH' && id && parts[5] === 'toggle') {
+          await pg.query('UPDATE grupos_despesa SET ativo=$1,atualizado_em=NOW() WHERE id=$2', [body.ativo!==false, id]);
+          return json(res, 200, { ok: true });
+        }
+        if (req.method === 'DELETE' && id) {
+          await pg.query('UPDATE grupos_despesa SET ativo=false WHERE id=$1', [id]);
+          return json(res, 200, { ok: true });
+        }
+        if (req.method === 'GET') {
+          const r = await pg.query('SELECT * FROM grupos_despesa ORDER BY natureza,nome');
+          return json(res, 200, { ok: true, data: r.rows });
+        }
+      }
+      if (entidade === 'tipos-lancamento') {
+        if (req.method === 'POST') {
+          const r = await pg.query(
+            'INSERT INTO tipos_lancamento (codigo,nome,natureza,ativo) VALUES ($1,$2,$3,$4) RETURNING id',
+            [body.codigo, body.nome, body.natureza||'DESPESA', body.ativo!==false]
+          );
+          return json(res, 200, { ok: true, id: r.rows[0].id });
+        }
+        if (req.method === 'PUT' && id) {
+          await pg.query(
+            'UPDATE tipos_lancamento SET codigo=$1,nome=$2,natureza=$3,ativo=$4 WHERE id=$5',
+            [body.codigo, body.nome, body.natureza||'DESPESA', body.ativo!==false, id]
+          );
+          return json(res, 200, { ok: true });
+        }
+        if (req.method === 'GET') {
+          const r = await pg.query('SELECT * FROM tipos_lancamento ORDER BY natureza,nome');
+          return json(res, 200, { ok: true, data: r.rows });
+        }
+      }
+      if (entidade === 'tipos-despesa') {
+        if (req.method === 'POST') {
+          const r = await pg.query(
+            'INSERT INTO tipos_despesa (codigo,nome,grupo_id,grupo_codigo,descricao,ativo) VALUES ($1,$2,$3,$4,$5,$6) RETURNING id',
+            [body.codigo, body.nome, body.grupo_id||null, body.grupo_codigo||null, body.descricao||null, body.ativo!==false]
+          );
+          return json(res, 200, { ok: true, id: r.rows[0].id });
+        }
+        if (req.method === 'PUT' && id) {
+          await pg.query(
+            'UPDATE tipos_despesa SET codigo=$1,nome=$2,grupo_id=$3,descricao=$4,ativo=$5,atualizado_em=NOW() WHERE id=$6',
+            [body.codigo, body.nome, body.grupo_id||null, body.descricao||null, body.ativo!==false, id]
+          );
+          return json(res, 200, { ok: true });
+        }
+        if (req.method === 'PATCH' && id && parts[5] === 'toggle') {
+          await pg.query('UPDATE tipos_despesa SET ativo=$1,atualizado_em=NOW() WHERE id=$2', [body.ativo!==false, id]);
+          return json(res, 200, { ok: true });
+        }
+        if (req.method === 'DELETE' && id) {
+          await pg.query('UPDATE tipos_despesa SET ativo=false WHERE id=$1', [id]);
+          return json(res, 200, { ok: true });
+        }
+        if (req.method === 'GET') {
+          const r = await pg.query(`
+            SELECT td.*, gd.nome as grupo_nome
+            FROM tipos_despesa td
+            LEFT JOIN grupos_despesa gd ON gd.id = td.grupo_id
+            ORDER BY gd.nome NULLS LAST, td.nome
+          `);
           return json(res, 200, { ok: true, data: r.rows });
         }
       }
       if (entidade === 'projetos') {
         if (req.method === 'POST') {
           const r = await pg.query('INSERT INTO projetos (codigo,nome,tipo,cliente_id,ativo) VALUES ($1,$2,$3,$4,$5) RETURNING id', [body.codigo, body.nome, body.tipo||null, body.cliente_id||null, body.ativo!==false]);
+          await recarregarMapaProjetos(pg); // Atualiza mapa em memória imediatamente
           return json(res, 200, { ok: true, id: r.rows[0].id });
         }
         if (req.method === 'PUT' && id) {
           await pg.query('UPDATE projetos SET codigo=$1,nome=$2,tipo=$3,cliente_id=$4,ativo=$5,atualizado_em=NOW() WHERE id=$6', [body.codigo, body.nome, body.tipo||null, body.cliente_id||null, body.ativo!==false, id]);
+          await recarregarMapaProjetos(pg); // Atualiza mapa em memória imediatamente
+          return json(res, 200, { ok: true });
+        }
+        if (req.method === 'DELETE' && id) {
+          await pg.query('UPDATE projetos SET ativo=false WHERE id=$1', [id]);
+          await recarregarMapaProjetos(pg); // Atualiza mapa em memória imediatamente
           return json(res, 200, { ok: true });
         }
         if (req.method === 'GET') {
@@ -5927,11 +7472,28 @@ async function saveConta() {
       </select>
     </label>
   </div>
-  <div class='upload-area' onclick='document.getElementById("conc-file").click()'>
+  <div class='upload-area' id='conc-dropzone' onclick='document.getElementById("conc-file").click()'
+       ondragover='event.preventDefault();this.style.borderColor="#6366f1"'
+       ondragleave='this.style.borderColor=""'
+       ondrop='event.preventDefault();this.style.borderColor="";concFileSelected(event.dataTransfer.files[0])'>
     <div class='upload-icon'>🏦</div>
-    <p><strong>Clique para selecionar o extrato bancário</strong></p>
-    <p>Formatos aceitos: OFX, CSV, XLSX · Arraste e solte aqui</p>
-    <input type='file' id='conc-file' accept='.ofx,.csv,.xlsx,.xls' style='display:none' onchange='uploadExtrato(this)'>
+    <p id='conc-file-label'><strong>Clique para selecionar o extrato bancário</strong></p>
+    <p style='color:#94a3b8;font-size:.8rem'>Formatos aceitos: OFX, CSV, XLSX · Arraste e solte aqui</p>
+    <input type='file' id='conc-file' accept='.ofx,.csv,.xlsx,.xls' style='display:none' onchange='concFileSelected(this.files[0])'>
+  </div>
+  <div id='conc-arquivo-info' style='display:none;margin-top:.75rem;padding:.75rem 1rem;background:#f0fdf4;border:1px solid #86efac;border-radius:.5rem;display:flex;align-items:center;gap:.75rem'>
+    <span style='font-size:1.5rem'>📄</span>
+    <div style='flex:1'>
+      <div id='conc-arquivo-nome' style='font-weight:600;color:#166534'></div>
+      <div id='conc-arquivo-tamanho' style='font-size:.75rem;color:#4ade80'></div>
+    </div>
+    <button onclick='concLimpar()' style='background:none;border:none;cursor:pointer;color:#dc2626;font-size:1.1rem' title='Remover arquivo'>✕</button>
+  </div>
+  <div style='margin-top:.75rem'>
+    <button id='conc-btn-processar' onclick='uploadExtrato()' disabled
+      style='background:#1e40af;color:#fff;border:none;padding:.6rem 1.5rem;border-radius:.5rem;font-weight:600;cursor:pointer;opacity:.5;transition:opacity .2s'>
+      ⚡ Processar Extrato
+    </button>
   </div>
   <div id='conc-resultado' style='margin-top:1rem'></div>
 </section>
@@ -5939,33 +7501,108 @@ async function saveConta() {
 <section>
   <h2>📋 Histórico de Conciliações</h2>
   <div style='overflow-x:auto'>
-  <table><thead><tr><th>Banco</th><th>Data Extrato</th><th>Upload</th><th>Total</th><th>Conciliados</th><th>Divergentes</th><th>Não Lançados</th><th>Saldo</th><th></th></tr></thead>
+  <table id='hist-conciliacao'><thead><tr><th>Banco</th><th>Data Extrato</th><th>Upload</th><th>Total</th><th>Conciliados</th><th>Divergentes</th><th>Não Lançados</th><th>Saldo</th><th></th></tr></thead>
   <tbody>${renderHist}</tbody></table></div>
 </section>
 
 <script>
-async function uploadExtrato(input) {
-  const file = input.files[0];
+let _concFile = null;
+
+function concFileSelected(file) {
   if (!file) return;
+  _concFile = file;
+  // Mostrar info do arquivo
+  const info = document.getElementById('conc-arquivo-info');
+  document.getElementById('conc-arquivo-nome').textContent = file.name;
+  const kb = (file.size / 1024).toFixed(1);
+  document.getElementById('conc-arquivo-tamanho').textContent = kb + ' KB — ' + file.type.split('/').pop().toUpperCase();
+  info.style.display = 'flex';
+  // Ativar botão
+  const btn = document.getElementById('conc-btn-processar');
+  btn.disabled = false;
+  btn.style.opacity = '1';
+  btn.style.cursor = 'pointer';
+  // Limpar resultado anterior
+  document.getElementById('conc-resultado').innerHTML = '';
+}
+
+function concLimpar() {
+  _concFile = null;
+  document.getElementById('conc-file').value = '';
+  document.getElementById('conc-arquivo-info').style.display = 'none';
+  const btn = document.getElementById('conc-btn-processar');
+  btn.disabled = true;
+  btn.style.opacity = '.5';
+  document.getElementById('conc-resultado').innerHTML = '';
+}
+
+async function uploadExtrato() {
+  const file = _concFile;
+  if (!file) { alert('Selecione um arquivo primeiro'); return; }
   const bancoId = document.getElementById('conc-banco').value;
-  if (!bancoId) { alert('Selecione o banco antes de fazer o upload'); return; }
+  if (!bancoId) { alert('Selecione o banco antes de processar'); return; }
   const formato = document.getElementById('conc-formato').value;
   const div = document.getElementById('conc-resultado');
-  div.innerHTML = '<div class="alert alert-info">⏳ Processando extrato...</div>';
+  const btn = document.getElementById('conc-btn-processar');
+
+  // Feedback de carregamento
+  btn.disabled = true;
+  btn.textContent = '\u23f3 Processando...';
+  btn.style.opacity = '.7';
+  div.innerHTML = '<div style="padding:1rem;background:#eff6ff;border:1px solid #93c5fd;border-radius:.5rem;display:flex;align-items:center;gap:.75rem">'
+    + '<div style="width:20px;height:20px;border:3px solid #3b82f6;border-top-color:transparent;border-radius:50%;animation:spin .8s linear infinite"></div>'
+    + '<span style="color:#1d4ed8;font-weight:600">Processando extrato banc\u00e1rio... aguarde.</span>'
+    + '</div><style>@keyframes spin{to{transform:rotate(360deg)}}</style>';
+
   const fd = new FormData();
   fd.append('arquivo', file);
   fd.append('banco_id', bancoId);
   fd.append('formato', formato);
+
   try {
     const r = await fetch('/api/conciliacao/upload', { method:'POST', body: fd });
     const d = await r.json();
     if (d.ok) {
-      div.innerHTML = '<div class="alert alert-success">\u2705 Extrato processado! ' + d.total + ' lan\u00e7amentos \u00b7 <strong>' + d.conciliados + ' conciliados</strong> \u00b7 ' + d.divergentes + ' divergentes \u00b7 ' + d.nao_lancados + ' n\u00e3o lan\u00e7ados. <a href="/conciliacao/detalhe?id=' + d.id + '" class="btn btn-sm" style="margin-left:.5rem">Ver detalhes</a></div>';
+      const cor   = d.total === 0 ? '#fef3c7' : '#f0fdf4';
+      const borda = d.total === 0 ? '#fcd34d' : '#86efac';
+      const icone = d.total === 0 ? '\u26a0\ufe0f' : '\u2705';
+      const fmtData = function(s){ if(!s) return '-'; var p=s.split('-'); return p.length===3?p[2]+'/'+p[1]+'/'+p[0]:s; };
+      const dataExtr = d.data_fim ? fmtData(d.data_fim) : '-';
+      const dataUpload = new Date().toLocaleString('pt-BR');
+      const linkDetalhe = d.id ? '<a href="/conciliacao/detalhe?id='+d.id+'" style="background:#1e40af;color:#fff;padding:.45rem 1rem;border-radius:.4rem;text-decoration:none;font-size:.85rem;font-weight:600">\ud83d\udd0d Ver detalhes</a>' : '';
+      div.innerHTML = '<div style="padding:1rem 1.25rem;background:'+cor+';border:1px solid '+borda+';border-radius:.5rem">'
+        + '<div style="font-size:1rem;font-weight:700;margin-bottom:.5rem">'+icone+' Extrato processado!</div>'
+        + '<div style="font-size:.78rem;color:#64748b;margin-bottom:.75rem">\ud83d\udcc5 Data do extrato: <strong>'+dataExtr+'</strong> &nbsp;|&nbsp; \ud83d\udd52 Upload realizado em: <strong>'+dataUpload+'</strong></div>'
+        + '<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:.5rem;margin-bottom:.75rem">'
+        + '<div style="background:#fff;border-radius:.4rem;padding:.5rem .75rem;text-align:center;border:1px solid #e2e8f0"><div style="font-size:1.4rem;font-weight:700;color:#1e40af">'+d.total+'</div><div style="font-size:.72rem;color:#64748b">Total</div></div>'
+        + '<div style="background:#fff;border-radius:.4rem;padding:.5rem .75rem;text-align:center;border:1px solid #e2e8f0"><div style="font-size:1.4rem;font-weight:700;color:#059669">'+d.conciliados+'</div><div style="font-size:.72rem;color:#64748b">Conciliados</div></div>'
+        + '<div style="background:#fff;border-radius:.4rem;padding:.5rem .75rem;text-align:center;border:1px solid #e2e8f0"><div style="font-size:1.4rem;font-weight:700;color:#d97706">'+d.divergentes+'</div><div style="font-size:.72rem;color:#64748b">Divergentes</div></div>'
+        + '<div style="background:#fff;border-radius:.4rem;padding:.5rem .75rem;text-align:center;border:1px solid #e2e8f0"><div style="font-size:1.4rem;font-weight:700;color:#dc2626">'+d.nao_lancados+'</div><div style="font-size:.72rem;color:#64748b">N\u00e3o lan\u00e7ados</div></div>'
+        + '</div>'
+        + linkDetalhe
+        + '</div>';
+      // Adicionar entrada no historico sem recarregar a pagina
+      const tbody = document.querySelector('#hist-conciliacao tbody');
+      if(tbody && d.id) {
+        const tr = document.createElement('tr');
+        tr.innerHTML = '<td>'+( d.banco_nome||'-')+'</td><td>'+(dataExtr)+'</td><td>'+dataUpload+'</td><td>'+d.total+'</td><td style="color:#059669;font-weight:600">'+d.conciliados+'</td><td style="color:#d97706">'+d.divergentes+'</td><td style="color:#dc2626">'+d.nao_lancados+'</td><td>-</td><td><a href="/conciliacao/detalhe?id='+d.id+'" class="btn btn-sm btn-outline">Ver detalhes</a></td>';
+        tbody.insertBefore(tr, tbody.firstChild);
+      }
     } else {
-      div.innerHTML = '<div class="alert alert-danger">❌ ' + d.error + '</div>';
+      div.innerHTML = '<div style="padding:1rem;background:#fef2f2;border:1px solid #fca5a5;border-radius:.5rem">'
+        + '<div style="color:#dc2626;font-weight:700;font-size:1rem;margin-bottom:.5rem">\u274c Erro ao processar o extrato</div>'
+        + '<div style="color:#7f1d1d;font-size:.85rem">' + (d.error || 'Falha desconhecida ao processar o arquivo') + '</div>'
+        + '</div>';
     }
   } catch(e) {
-    div.innerHTML = '<div class="alert alert-danger">❌ Erro: ' + e.message + '</div>';
+    div.innerHTML = '<div style="padding:1rem;background:#fef2f2;border:1px solid #fca5a5;border-radius:.5rem">'
+      + '<div style="color:#dc2626;font-weight:700;font-size:1rem;margin-bottom:.5rem">\u274c Erro de conex\u00e3o</div>'
+      + '<div style="color:#7f1d1d;font-size:.85rem">' + e.message + '</div>'
+      + '</div>';
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '\u26a1 Processar Extrato';
+    btn.style.opacity = '1';
   }
 }
 </script>`;
@@ -5976,9 +7613,568 @@ async function uploadExtrato(input) {
   }
 
   if (req.method === 'POST' && url.pathname === '/api/conciliacao/upload') {
-    // Processar upload do extrato
-    // Por ora, retorna uma resposta de placeholder até implementar o parser OFX
-    return json(res, 200, { ok: true, total: 0, conciliados: 0, divergentes: 0, nao_lancados: 0, id: 0, message: 'Parser OFX em implementação' });
+    const user = requireAuth(req, res, db); if (!user) return;
+    try {
+      // Receber arquivo via multer
+      const multer = require('multer');
+      const upload = multer({ dest: os.tmpdir() });
+      await new Promise((resolve, reject) => {
+        upload.single('arquivo')(req, res, (err) => { if (err) reject(err); else resolve(); });
+      });
+
+      const filePath = req.file && req.file.path;
+      const bancoId  = req.body && req.body.banco_id;
+      const formato  = (req.body && req.body.formato) || 'OFX';
+      if (!filePath) return json(res, 400, { ok: false, error: 'Arquivo não recebido' });
+      if (!bancoId)  return json(res, 400, { ok: false, error: 'Banco não selecionado' });
+
+      // Ler conteúdo do arquivo (tentar UTF-8, fallback LATIN1)
+      let conteudo = '';
+      try {
+        conteudo = fs.readFileSync(filePath, 'utf-8');
+      } catch(eRead) {
+        conteudo = fs.readFileSync(filePath, 'latin1');
+      }
+      // Se ainda tiver caracteres estranhos, tentar latin1
+      if (conteudo.includes('\uFFFD')) {
+        conteudo = fs.readFileSync(filePath, 'latin1');
+      }
+
+      // ===== PARSER OFX (SGML — formato do Banco do Brasil) =====
+      function parseOFX(txt) {
+        const trns = [];
+        // Extrair bloco BANKTRANLIST
+        const bloco = txt.replace(/\r/g, '');
+        // Encontrar todas as transacoes entre <STMTTRN> e </STMTTRN>
+        const re = /<STMTTRN>[\s\S]*?<\/STMTTRN>/gi;
+        let m;
+        while ((m = re.exec(bloco)) !== null) {
+          const blk = m[0];
+          const get = (tag) => {
+            const r = new RegExp('<' + tag + '>\\s*([^\n<]+)', 'i');
+            const match = blk.match(r);
+            return match ? match[1].trim() : '';
+          };
+          const trntype  = get('TRNTYPE');
+          const dtposted = get('DTPOSTED').slice(0, 8); // YYYYMMDD
+          const trnamt   = get('TRNAMT');
+          const fitid    = get('FITID');
+          const memo     = get('MEMO');
+          const checknum = get('CHECKNUM');
+          if (!dtposted || !trnamt) continue;
+          // Converter data YYYYMMDD -> YYYY-MM-DD
+          const dataISO = dtposted.slice(0,4) + '-' + dtposted.slice(4,6) + '-' + dtposted.slice(6,8);
+          const valor   = parseFloat(trnamt.replace(',', '.'));
+          const dc      = valor >= 0 ? 'C' : 'D';
+          trns.push({ fitid, dataISO, valor, dc, memo, trntype, checknum });
+        }
+        // Extrair saldo final
+        const balMatch = txt.match(/<BALAMT>\s*([\d.,-]+)/i);
+        const saldo    = balMatch ? parseFloat(balMatch[1].replace(',', '.')) : null;
+        // Extrair periodo
+        const dtStart  = (txt.match(/<DTSTART>\s*(\d{8})/i) || [])[1] || '';
+        const dtEnd    = (txt.match(/<DTEND>\s*(\d{8})/i) || [])[1] || '';
+        const dataInicio = dtStart ? dtStart.slice(0,4)+'-'+dtStart.slice(4,6)+'-'+dtStart.slice(6,8) : null;
+        const dataFim    = dtEnd   ? dtEnd.slice(0,4)+'-'+dtEnd.slice(4,6)+'-'+dtEnd.slice(6,8)       : null;
+        return { trns, saldo, dataInicio, dataFim };
+      }
+
+      const parsed = parseOFX(conteudo);
+      const { trns, saldo, dataInicio, dataFim } = parsed;
+
+      if (trns.length === 0) {
+        return json(res, 200, { ok: false, error: 'Nenhuma transação encontrada no arquivo OFX. Verifique o formato.' });
+      }
+
+      // ===== CONCILIAÇÃO: cruzar com lançamentos do PostgreSQL =====
+      const pgConc = storage.getPool ? storage.getPool() : null;
+      let lancamentosDB = [];
+      if (pgConc) {
+        const rConc = await pgConc.query("SELECT id, data FROM entries WHERE data->>'isTransferenciaInterna' IS DISTINCT FROM 'true'");
+        lancamentosDB = rConc.rows.map(row => ({ id: row.id, ...row.data, valor: parseFloat((row.data && row.data.valor) || 0) }));
+      } else {
+        lancamentosDB = (db.entries || []).filter(e => !e.isTransferenciaInterna);
+      }
+
+      // Indexar lançamentos por dataISO + valor arredondado
+      const lancIdx = new Map();
+      for (const l of lancamentosDB) {
+        const k = (l.dataISO || '') + '|' + Math.round(Math.abs(l.valor || 0) * 100);
+        if (!lancIdx.has(k)) lancIdx.set(k, []);
+        lancIdx.get(k).push(l);
+      }
+
+      let conciliados = 0, divergentes = 0, naoLancados = 0;
+      const itens = [];
+      for (const trn of trns) {
+        const k = trn.dataISO + '|' + Math.round(Math.abs(trn.valor) * 100);
+        const matches = lancIdx.get(k) || [];
+        let status = 'NAO_LANCADO';
+        let lancId  = null;
+        if (matches.length > 0) {
+          // Verificar se o sinal bate (C/D)
+          const match = matches.find(l => {
+            const lDC = l.dc || (l.valor >= 0 ? 'C' : 'D');
+            return lDC === trn.dc;
+          });
+          if (match) {
+            status  = 'CONCILIADO';
+            lancId  = match.id;
+            conciliados++;
+          } else {
+            status = 'DIVERGENTE';
+            divergentes++;
+          }
+        } else {
+          naoLancados++;
+        }
+        itens.push({ fitid: trn.fitid, dataISO: trn.dataISO, valor: trn.valor, dc: trn.dc, memo: trn.memo, trntype: trn.trntype, status, lancamento_id: lancId });
+      }
+
+      // ===== SALVAR no PostgreSQL =====
+      let extratoId = null;
+      if (pgConc) {
+        try {
+          // Criar tabelas se não existirem
+          await pgConc.query(`
+            CREATE TABLE IF NOT EXISTS conciliacao_extratos (
+              id SERIAL PRIMARY KEY,
+              banco_id INTEGER,
+              data_upload TIMESTAMPTZ DEFAULT NOW(),
+              data_extrato VARCHAR(20),
+              data_inicio VARCHAR(20),
+              data_fim VARCHAR(20),
+              total_lancamentos INTEGER DEFAULT 0,
+              total_conciliados INTEGER DEFAULT 0,
+              total_divergentes INTEGER DEFAULT 0,
+              total_nao_lancados INTEGER DEFAULT 0,
+              saldo_extrato NUMERIC(15,2),
+              formato VARCHAR(10) DEFAULT 'OFX',
+              usuario_id VARCHAR(100),
+              itens JSONB DEFAULT '[]'
+            )
+          `);
+          const rIns = await pgConc.query(
+            'INSERT INTO conciliacao_extratos (banco_id, data_extrato, data_inicio, data_fim, total_lancamentos, total_conciliados, total_divergentes, total_nao_lancados, saldo_extrato, formato, usuario_id, itens) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING id',
+            [bancoId, dataFim, dataInicio, dataFim, trns.length, conciliados, divergentes, naoLancados, saldo, formato, user.id || user.email, JSON.stringify(itens)]
+          );
+          extratoId = rIns.rows[0].id;
+        } catch(eSave) {
+          console.error('[conciliacao-save]', eSave.message);
+        }
+      }
+
+      // Limpar arquivo temporário
+      try { fs.unlinkSync(filePath); } catch(e) {}
+
+      return json(res, 200, {
+        ok: true,
+        id: extratoId || 0,
+        total: trns.length,
+        conciliados,
+        divergentes,
+        nao_lancados: naoLancados,
+        saldo,
+        data_inicio: dataInicio,
+        data_fim: dataFim
+      });
+    } catch(eCon) {
+      console.error('[conciliacao-upload]', eCon.message);
+      return json(res, 500, { ok: false, error: eCon.message });
+    }
+  }
+
+  // ============================================================
+  // CONCILIAÇÃO — API atualizar status item /api/conciliacao/item-status
+  // ============================================================
+  if (req.method === 'POST' && url.pathname === '/api/conciliacao/item-status') {
+    const user = requireAuth(req, res, db); if (!user) return;
+    try {
+      const body = await readBody(req);
+      const { extratoId, fitid, novoStatus, lancamentoId } = JSON.parse(body);
+      if (!extratoId || !fitid || !novoStatus) return json(res, 400, { ok: false, error: 'Dados insuficientes' });
+      if (pg) {
+        const r = await pg.query('SELECT itens FROM conciliacao_extratos WHERE id=$1', [extratoId]);
+        if (r.rows.length > 0) {
+          const itens = r.rows[0].itens || [];
+          const idx = itens.findIndex(it => it.fitid === fitid);
+          if (idx >= 0) {
+            itens[idx].status = novoStatus;
+            if (lancamentoId) itens[idx].lancamento_id = lancamentoId;
+            await pg.query('UPDATE conciliacao_extratos SET itens=$1 WHERE id=$2', [JSON.stringify(itens), extratoId]);
+          }
+        }
+      }
+      return json(res, 200, { ok: true });
+    } catch(e) { return json(res, 500, { ok: false, error: e.message }); }
+  }
+
+  // ============================================================
+  // CONCILIAÇÃO — DETALHE /conciliacao/detalhe?id=X
+  // ============================================================
+  if (req.method === 'GET' && url.pathname === '/conciliacao/detalhe') {
+    const user = requireAuth(req, res, db); if (!user) return;
+    const extratoId = parseInt(url.searchParams.get('id') || '0');
+    if (!extratoId) { res.writeHead(302,{Location:'/conciliacao'}); res.end(); return; }
+
+    let extrato = null;
+    let bancoNome = '-';
+    let ccs = [], projetos = [], clientes = [], categorias = [];
+    let lancamentosMap = {}; // lancamento_id -> dados do lançamento
+    try {
+      if (pg) {
+        const r = await pg.query('SELECT ce.*, b.nome as banco_nome FROM conciliacao_extratos ce LEFT JOIN bancos b ON ce.banco_id=b.id WHERE ce.id=$1', [extratoId]);
+        if (r.rows.length > 0) {
+          extrato = r.rows[0];
+          bancoNome = extrato.banco_nome || '-';
+        }
+        const rCC = await pg.query("SELECT DISTINCT data->>'centroCusto' as cc FROM entries WHERE data->>'centroCusto' IS NOT NULL AND data->>'centroCusto' != '' ORDER BY 1");
+        ccs = rCC.rows.map(r=>r.cc).filter(Boolean);
+        const rProj = await pg.query("SELECT DISTINCT data->>'projeto' as p FROM entries WHERE data->>'projeto' IS NOT NULL AND data->>'projeto' != '' ORDER BY 1");
+        projetos = rProj.rows.map(r=>r.p).filter(Boolean);
+        const rCli = await pg.query("SELECT DISTINCT data->>'cliente' as c FROM entries WHERE data->>'cliente' IS NOT NULL AND data->>'cliente' != '' ORDER BY 1 LIMIT 300");
+        clientes = rCli.rows.map(r=>r.c).filter(Boolean);
+        const rCat = await pg.query("SELECT DISTINCT data->>'categoria' as cat FROM entries WHERE data->>'categoria' IS NOT NULL AND data->>'categoria' != '' ORDER BY 1");
+        categorias = rCat.rows.map(r=>r.cat).filter(Boolean);
+        // Buscar dados dos lançamentos vinculados (divergentes e conciliados)
+        if (extrato) {
+          const itensAll = extrato.itens || [];
+          const ids = itensAll.filter(i=>i.lancamento_id).map(i=>i.lancamento_id);
+          if (ids.length > 0) {
+            const placeholders = ids.map((_,idx)=>'$'+(idx+1)).join(',');
+            const rLanc = await pg.query('SELECT id, data FROM entries WHERE id IN ('+placeholders+')', ids);
+            for (const row of rLanc.rows) {
+              lancamentosMap[row.id] = row.data || {};
+              lancamentosMap[row.id]._id = row.id;
+            }
+          }
+        }
+      }
+    } catch(e) { console.error('[conc-detalhe]', e.message); }
+
+    if (!extrato) {
+      res.writeHead(302,{Location:'/conciliacao'}); res.end(); return;
+    }
+
+    const itens = extrato.itens || [];
+    // Status possíveis: NAO_LANCADO, PENDENTE_CRIACAO, LANCAMENTO_CONFIRMADO, DIVERGENTE, OK_CONCILIADO, EM_ANALISE, CONCILIADO
+    const naoLancados = itens.filter(i=>['NAO_LANCADO','PENDENTE_CRIACAO'].includes(i.status));
+    const divergentes = itens.filter(i=>['DIVERGENTE','EM_ANALISE'].includes(i.status));
+    const conciliados = itens.filter(i=>['CONCILIADO','OK_CONCILIADO','LANCAMENTO_CONFIRMADO'].includes(i.status));
+
+    const fmtVal = v => {
+      const n = Number(v||0);
+      const s = Math.abs(n).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2});
+      return n < 0 ? '- R$ '+s : 'R$ '+s;
+    };
+    const fmtData = s => { if(!s) return '-'; const p=String(s).split('-'); return p.length===3?p[2]+'/'+p[1]+'/'+p[0]:s; };
+    const esc = s => String(s||'').replace(/'/g,'&apos;').replace(/"/g,'&quot;');
+
+    const ccOpts    = ccs.map(c=>'<option value="'+esc(c)+'">'+esc(c)+'</option>').join('');
+    const projOpts  = projetos.map(p=>'<option value="'+esc(p)+'">'+esc(p)+'</option>').join('');
+    const cliOpts   = clientes.map(c=>'<option value="'+esc(c)+'">'+esc(c)+'</option>').join('');
+    const catOpts   = categorias.map(c=>'<option value="'+esc(c)+'">'+esc(c)+'</option>').join('');
+    const natOpts   = ['Receita Operacional','Receita Direta','Despesa Direta','Despesa Indireta','Transferência Interna','Investimento','Imposto','Folha de Pagamento'].map(n=>'<option value="'+n+'">'+n+'</option>').join('');
+
+    const inputStyle = 'display:block;width:100%;padding:.3rem .45rem;border:1px solid #d1d5db;border-radius:.3rem;margin-top:.15rem;font-size:.8rem';
+    const labelStyle = 'font-size:.75rem;font-weight:600;color:#374151';
+    const selOpt = (opts, val) => opts.replace('value="'+val+'"', 'value="'+val+'" selected');
+
+    // ---- Seção 1: NÃO LANÇADOS ----
+    const rowsNaoLanc = naoLancados.map((it,i) => {
+      const cor = it.dc==='C' ? '#059669' : '#dc2626';
+      const statusLabel = it.status==='LANCAMENTO_CONFIRMADO'
+        ? '<span style="color:#059669;font-weight:700">✅ Lançamento Confirmado</span>'
+        : it.status==='PENDENTE_CRIACAO'
+        ? '<span style="color:#d97706;font-weight:700">⏳ Pendente de Criação</span>'
+        : '<span style="color:#dc2626;font-weight:700">🔴 Pendente de Criação</span>';
+      const btnIncluir = (it.status==='LANCAMENTO_CONFIRMADO')
+        ? '' : '<button onclick="abrirFormLanc('+i+')" style="background:#1e40af;color:#fff;border:none;padding:.3rem .75rem;border-radius:.4rem;cursor:pointer;font-size:.78rem;font-weight:600">+ Criar Lançamento</button>';
+      return '<tr id="nl-row-'+i+'" style="border-bottom:1px solid #f1f5f9">'
+        +'<td style="padding:.4rem .6rem;font-size:.82rem;white-space:nowrap">'+fmtData(it.dataISO)+'</td>'
+        +'<td style="padding:.4rem .6rem;font-size:.82rem;font-weight:700;color:'+cor+'">'+it.dc+'</td>'
+        +'<td style="padding:.4rem .6rem;font-size:.82rem;max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="'+esc(it.memo)+'">'+esc(it.memo||'-')+'</td>'
+        +'<td style="padding:.4rem .6rem;font-size:.82rem;text-align:right;font-weight:700;color:'+cor+'">'+fmtVal(it.valor)+'</td>'
+        +'<td style="padding:.4rem .6rem">'+statusLabel+'</td>'
+        +'<td style="padding:.4rem .6rem">'+btnIncluir+'</td>'
+        +'</tr>'
+        +'<tr id="nl-form-'+i+'" style="display:none;background:#f0f4ff">'
+        +'<td colspan="6" style="padding:.75rem 1rem">'
+        +'<div style="background:#fff;border:2px solid #6366f1;border-radius:.6rem;padding:1.25rem">'
+        +'<div style="font-weight:700;color:#1e40af;margin-bottom:1rem;font-size:.95rem">📝 Criar Lançamento a partir do Extrato</div>'
+        +'<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:.6rem">'
+        +'<label style="'+labelStyle+'">Data<input id="nf-data-'+i+'" type="date" value="'+esc(it.dataISO||'')+'" style="'+inputStyle+'"></label>'
+        +'<label style="'+labelStyle+'">D/C<select id="nf-dc-'+i+'" style="'+inputStyle+'"><option value="D"'+(it.dc==='D'?' selected':'')+'>D — Débito</option><option value="C"'+(it.dc==='C'?' selected':'')+'>C — Crédito</option></select></label>'
+        +'<label style="'+labelStyle+'">Valor (R$)<input id="nf-valor-'+i+'" type="number" step="0.01" value="'+Math.abs(it.valor||0)+'" style="'+inputStyle+'"></label>'
+        +'<label style="'+labelStyle+'">Centro de Custo<select id="nf-cc-'+i+'" style="'+inputStyle+'"><option value="">-- Selecione --</option>'+ccOpts+'</select></label>'
+        +'<label style="'+labelStyle+'">Cliente / Fornecedor<select id="nf-cli-'+i+'" style="'+inputStyle+'"><option value="">-- Selecione --</option>'+cliOpts+'</select></label>'
+        +'<label style="'+labelStyle+'">Favorecido / Beneficiário<input id="nf-fav-'+i+'" type="text" placeholder="Nome do favorecido" style="'+inputStyle+'"></label>'
+        +'<label style="'+labelStyle+'">Projeto<select id="nf-proj-'+i+'" style="'+inputStyle+'"><option value="">-- Selecione --</option>'+projOpts+'</select></label>'
+        +'<label style="'+labelStyle+'">Natureza<select id="nf-nat-'+i+'" style="'+inputStyle+'"><option value="">-- Selecione --</option>'+natOpts+'</select></label>'
+        +'<label style="'+labelStyle+'">Categoria<select id="nf-cat-'+i+'" style="'+inputStyle+'"><option value="">-- Selecione --</option>'+catOpts+'</select></label>'
+        +'<label style="'+labelStyle+'">Tipo de Lançamento<select id="nf-tipo-'+i+'" style="'+inputStyle+'"><option value="">-- Selecione --</option><option>Pagamento</option><option>Recebimento</option><option>Transferência</option><option>Estorno</option><option>Taxa/Tarifa</option></select></label>'
+        +'<label style="'+labelStyle+'">Descritivo<input id="nf-desc-'+i+'" type="text" value="'+esc((it.memo||'').slice(0,120))+'" style="'+inputStyle+'"></label>'
+        +'<label style="'+labelStyle+'">Observações<input id="nf-obs-'+i+'" type="text" placeholder="Observações adicionais" style="'+inputStyle+'"></label>'
+        +'</div>'
+        +'<div style="margin-top:.85rem;display:flex;gap:.5rem;flex-wrap:wrap">'
+        +'<button onclick="salvarLanc('+i+',\''+esc(it.fitid||'')+'\')" style="background:#059669;color:#fff;border:none;padding:.4rem 1rem;border-radius:.4rem;cursor:pointer;font-weight:600;font-size:.82rem">✅ Salvar e Confirmar Lançamento</button>'
+        +'<button onclick="marcarEmAnalise('+i+',\''+esc(it.fitid||'')+'\')" style="background:#6366f1;color:#fff;border:none;padding:.4rem .85rem;border-radius:.4rem;cursor:pointer;font-size:.82rem">🔍 Marcar Em Análise</button>'
+        +'<button onclick="fecharFormLanc('+i+')" style="background:#e2e8f0;color:#374151;border:none;padding:.4rem .75rem;border-radius:.4rem;cursor:pointer;font-size:.82rem">Cancelar</button>'
+        +'</div>'
+        +'<div id="nf-msg-'+i+'" style="margin-top:.5rem;font-size:.8rem"></div>'
+        +'</div></td></tr>';
+    }).join('');
+
+    // ---- Seção 2: DIVERGENTES ----
+    const rowsDiv = divergentes.map((it,i) => {
+      const cor = it.dc==='C' ? '#059669' : '#dc2626';
+      const lanc = lancamentosMap[it.lancamento_id] || {};
+      const statusLabel = it.status==='EM_ANALISE'
+        ? '<span style="color:#6366f1;font-weight:700">🔍 Em Análise</span>'
+        : '<span style="color:#d97706;font-weight:700">⚠️ Divergente</span>';
+      return '<tr id="dv-row-'+i+'" style="border-bottom:1px solid #fef3c7">'
+        +'<td style="padding:.4rem .6rem;font-size:.82rem;white-space:nowrap">'+fmtData(it.dataISO)+'</td>'
+        +'<td style="padding:.4rem .6rem;font-size:.82rem;font-weight:700;color:'+cor+'">'+it.dc+'</td>'
+        +'<td style="padding:.4rem .6rem;font-size:.82rem;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="'+esc(it.memo)+'">'+esc(it.memo||'-')+'</td>'
+        +'<td style="padding:.4rem .6rem;font-size:.82rem;text-align:right;font-weight:700;color:'+cor+'">'+fmtVal(it.valor)+'</td>'
+        +'<td style="padding:.4rem .6rem">'+statusLabel+'</td>'
+        +'<td style="padding:.4rem .6rem">'
+        +'<button onclick="abrirPainelDiv('+i+')" style="background:#d97706;color:#fff;border:none;padding:.3rem .75rem;border-radius:.4rem;cursor:pointer;font-size:.78rem;font-weight:600">🔍 Analisar</button>'
+        +'</td></tr>'
+        +'<tr id="dv-painel-'+i+'" style="display:none;background:#fffbeb">'
+        +'<td colspan="6" style="padding:.75rem 1rem">'
+        +'<div style="background:#fff;border:2px solid #d97706;border-radius:.6rem;padding:1.25rem">'
+        +'<div style="font-weight:700;color:#92400e;margin-bottom:1rem;font-size:.95rem">⚠️ Lançamento Divergente — Comparação</div>'
+        +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem;margin-bottom:1rem">'
+        +'<div style="background:#fef2f2;border:1px solid #fca5a5;border-radius:.5rem;padding:.75rem">'
+        +'<div style="font-weight:700;color:#991b1b;margin-bottom:.5rem;font-size:.82rem">🏦 EXTRATO BANCÁRIO</div>'
+        +'<table style="width:100%;font-size:.8rem">'
+        +'<tr><td style="color:#64748b;padding:.15rem 0">Data:</td><td style="font-weight:600">'+fmtData(it.dataISO)+'</td></tr>'
+        +'<tr><td style="color:#64748b;padding:.15rem 0">D/C:</td><td style="font-weight:600;color:'+cor+'">'+it.dc+'</td></tr>'
+        +'<tr><td style="color:#64748b;padding:.15rem 0">Valor:</td><td style="font-weight:700;color:'+cor+'">'+fmtVal(it.valor)+'</td></tr>'
+        +'<tr><td style="color:#64748b;padding:.15rem 0">Histórico:</td><td>'+esc(it.memo||'-')+'</td></tr>'
+        +'<tr><td style="color:#64748b;padding:.15rem 0">FITID:</td><td style="font-size:.7rem;color:#94a3b8">'+esc(it.fitid||'-')+'</td></tr>'
+        +'</table></div>'
+        +'<div style="background:#fffbeb;border:1px solid #fcd34d;border-radius:.5rem;padding:.75rem">'
+        +'<div style="font-weight:700;color:#92400e;margin-bottom:.5rem;font-size:.82rem">📊 LANÇAMENTO NO SISTEMA</div>'
+        +'<table style="width:100%;font-size:.8rem">'
+        +'<tr><td style="color:#64748b;padding:.15rem 0">Data:</td><td style="font-weight:600">'+fmtData(lanc.dataISO||lanc.data||'')+'</td></tr>'
+        +'<tr><td style="color:#64748b;padding:.15rem 0">D/C:</td><td style="font-weight:600">'+esc(lanc.dc||'-')+'</td></tr>'
+        +'<tr><td style="color:#64748b;padding:.15rem 0">Valor:</td><td style="font-weight:700">'+fmtVal(lanc.valor||0)+'</td></tr>'
+        +'<tr><td style="color:#64748b;padding:.15rem 0">CC:</td><td>'+esc(lanc.centroCusto||'-')+'</td></tr>'
+        +'<tr><td style="color:#64748b;padding:.15rem 0">Cliente:</td><td>'+esc(lanc.cliente||'-')+'</td></tr>'
+        +'<tr><td style="color:#64748b;padding:.15rem 0">Projeto:</td><td>'+esc(lanc.projeto||'-')+'</td></tr>'
+        +'<tr><td style="color:#64748b;padding:.15rem 0">Natureza:</td><td>'+esc(lanc.natureza||'-')+'</td></tr>'
+        +'<tr><td style="color:#64748b;padding:.15rem 0">Categoria:</td><td>'+esc(lanc.categoria||'-')+'</td></tr>'
+        +'<tr><td style="color:#64748b;padding:.15rem 0">Descritivo:</td><td>'+esc(lanc.descritivo||lanc.descricao||'-')+'</td></tr>'
+        +'<tr><td style="color:#64748b;padding:.15rem 0">Status:</td><td>'+esc(lanc.status||'-')+'</td></tr>'
+        +'</table></div></div>'
+        +'<div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:.5rem;padding:.75rem;margin-bottom:.75rem">'
+        +'<div style="font-weight:700;color:#374151;margin-bottom:.6rem;font-size:.82rem">✏️ Complementar / Corrigir o Lançamento</div>'
+        +'<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:.5rem">'
+        +'<label style="'+labelStyle+'">Data<input id="dv-data-'+i+'" type="date" value="'+esc(lanc.dataISO||lanc.data||it.dataISO||'')+'" style="'+inputStyle+'"></label>'
+        +'<label style="'+labelStyle+'">D/C<select id="dv-dc-'+i+'" style="'+inputStyle+'"><option value="D"'+(( lanc.dc||it.dc)==='D'?' selected':'')+'>D — Débito</option><option value="C"'+((lanc.dc||it.dc)==='C'?' selected':'')+'>C — Crédito</option></select></label>'
+        +'<label style="'+labelStyle+'">Valor<input id="dv-valor-'+i+'" type="number" step="0.01" value="'+Math.abs(lanc.valor||it.valor||0)+'" style="'+inputStyle+'"></label>'
+        +'<label style="'+labelStyle+'">Centro de Custo<select id="dv-cc-'+i+'" style="'+inputStyle+'"><option value="">-- Selecione --</option>'+selOpt(ccOpts,lanc.centroCusto||'')+'</select></label>'
+        +'<label style="'+labelStyle+'">Cliente / Fornecedor<select id="dv-cli-'+i+'" style="'+inputStyle+'"><option value="">-- Selecione --</option>'+selOpt(cliOpts,lanc.cliente||'')+'</select></label>'
+        +'<label style="'+labelStyle+'">Favorecido<input id="dv-fav-'+i+'" type="text" value="'+esc(lanc.favorecido||'')+'" style="'+inputStyle+'"></label>'
+        +'<label style="'+labelStyle+'">Projeto<select id="dv-proj-'+i+'" style="'+inputStyle+'"><option value="">-- Selecione --</option>'+selOpt(projOpts,lanc.projeto||'')+'</select></label>'
+        +'<label style="'+labelStyle+'">Natureza<select id="dv-nat-'+i+'" style="'+inputStyle+'"><option value="">-- Selecione --</option>'+selOpt(natOpts,lanc.natureza||'')+'</select></label>'
+        +'<label style="'+labelStyle+'">Categoria<select id="dv-cat-'+i+'" style="'+inputStyle+'"><option value="">-- Selecione --</option>'+selOpt(catOpts,lanc.categoria||'')+'</select></label>'
+        +'<label style="'+labelStyle+'">Descritivo<input id="dv-desc-'+i+'" type="text" value="'+esc(lanc.descritivo||lanc.descricao||'')+'" style="'+inputStyle+'"></label>'
+        +'<label style="'+labelStyle+'">Observações<input id="dv-obs-'+i+'" type="text" value="'+esc(lanc.observacoes||'')+'" style="'+inputStyle+'"></label>'
+        +'</div></div>'
+        +'<div style="display:flex;gap:.5rem;flex-wrap:wrap">'
+        +'<button onclick="salvarCorrecaoDiv('+i+',\''+esc(it.fitid||'')+'\',\''+esc(String(it.lancamento_id||''))+'\')" style="background:#059669;color:#fff;border:none;padding:.4rem 1rem;border-radius:.4rem;cursor:pointer;font-weight:600;font-size:.82rem">✅ Salvar Correção e Confirmar</button>'
+        +'<button onclick="confirmarOkConciliado('+i+',\''+esc(it.fitid||'')+'\')" style="background:#1e40af;color:#fff;border:none;padding:.4rem 1rem;border-radius:.4rem;cursor:pointer;font-weight:600;font-size:.82rem">✔️ OK — Está Correto (Conciliado)</button>'
+        +'<button onclick="marcarEmAnaliseDiv('+i+',\''+esc(it.fitid||'')+'\')" style="background:#6366f1;color:#fff;border:none;padding:.4rem .85rem;border-radius:.4rem;cursor:pointer;font-size:.82rem">🔍 Marcar Em Análise</button>'
+        +'<button onclick="fecharPainelDiv('+i+')" style="background:#e2e8f0;color:#374151;border:none;padding:.4rem .75rem;border-radius:.4rem;cursor:pointer;font-size:.82rem">Fechar</button>'
+        +'</div>'
+        +'<div id="dv-msg-'+i+'" style="margin-top:.5rem;font-size:.8rem"></div>'
+        +'</div></td></tr>';
+    }).join('');
+
+    // ---- Seção 3: CONCILIADOS / CONFIRMADOS ----
+    const rowsConc = conciliados.map((it,i) => {
+      const cor = it.dc==='C' ? '#059669' : '#dc2626';
+      const statusLabel = it.status==='LANCAMENTO_CONFIRMADO'
+        ? '<span style="color:#059669;font-weight:700">✅ Lançamento Confirmado</span>'
+        : it.status==='OK_CONCILIADO'
+        ? '<span style="color:#059669;font-weight:700">✔️ OK — Conciliado</span>'
+        : '<span style="color:#059669;font-weight:700">✅ Conciliado</span>';
+      return '<tr id="cc-row-'+i+'" style="border-bottom:1px solid #dcfce7">'
+        +'<td style="padding:.4rem .6rem;font-size:.82rem;white-space:nowrap">'+fmtData(it.dataISO)+'</td>'
+        +'<td style="padding:.4rem .6rem;font-size:.82rem;font-weight:700;color:'+cor+'">'+it.dc+'</td>'
+        +'<td style="padding:.4rem .6rem;font-size:.82rem;max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="'+esc(it.memo)+'">'+esc(it.memo||'-')+'</td>'
+        +'<td style="padding:.4rem .6rem;font-size:.82rem;text-align:right;font-weight:700;color:'+cor+'">'+fmtVal(it.valor)+'</td>'
+        +'<td style="padding:.4rem .6rem">'+statusLabel+'</td>'
+        +'<td style="padding:.4rem .6rem">'+(it.lancamento_id ? '<a href="/lancamentos?id='+it.lancamento_id+'" style="color:#3b82f6;font-size:.78rem">Ver lançamento</a>' : '')+'</td>'
+        +'</tr>';
+    }).join('');
+
+
+
+    const saldoFmt = fmtVal(extrato.saldo_extrato||0);
+    const dataFmt = fmtData(extrato.data_fim);
+    const dataUpFmt = extrato.data_upload ? new Date(extrato.data_upload).toLocaleString('pt-BR') : '-';
+
+    const EXTRATO_ID = extratoId;
+    const body = '<h2 class="page-title">🏦 Detalhe da Conciliação #'+extratoId+'</h2>'
+      +'<div style="display:flex;gap:.5rem;margin-bottom:1rem;flex-wrap:wrap;align-items:center">'
+      +'<a href="/conciliacao" style="color:#6366f1;font-size:.85rem">← Voltar</a>'
+      +'<span style="color:#94a3b8">|</span>'
+      +'<span style="font-size:.85rem;color:#64748b">Banco: <strong>'+bancoNome+'</strong></span>'
+      +'<span style="color:#94a3b8">|</span>'
+      +'<span style="font-size:.85rem;color:#64748b">Data extrato: <strong>'+dataFmt+'</strong></span>'
+      +'<span style="color:#94a3b8">|</span>'
+      +'<span style="font-size:.85rem;color:#64748b">Upload: <strong>'+dataUpFmt+'</strong></span>'
+      +'<span style="color:#94a3b8">|</span>'
+      +'<span style="font-size:.85rem;color:#64748b">Saldo: <strong>'+saldoFmt+'</strong></span>'
+      +'</div>'
+      // Cards resumo
+      +'<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:.75rem;margin-bottom:1.5rem">'
+      +'<div style="background:#eff6ff;border:1px solid #93c5fd;border-radius:.5rem;padding:.75rem;text-align:center"><div style="font-size:1.6rem;font-weight:800;color:#1e40af">'+itens.length+'</div><div style="font-size:.75rem;color:#64748b">Total</div></div>'
+      +'<div style="background:#f0fdf4;border:1px solid #86efac;border-radius:.5rem;padding:.75rem;text-align:center"><div style="font-size:1.6rem;font-weight:800;color:#059669">'+conciliados.length+'</div><div style="font-size:.75rem;color:#64748b">Conciliados</div></div>'
+      +'<div style="background:#fffbeb;border:1px solid #fcd34d;border-radius:.5rem;padding:.75rem;text-align:center"><div style="font-size:1.6rem;font-weight:800;color:#d97706">'+divergentes.length+'</div><div style="font-size:.75rem;color:#64748b">Divergentes</div></div>'
+      +'<div style="background:#fef2f2;border:1px solid #fca5a5;border-radius:.5rem;padding:.75rem;text-align:center"><div style="font-size:1.6rem;font-weight:800;color:#dc2626">'+naoLancados.length+'</div><div style="font-size:.75rem;color:#64748b">Não Lançados</div></div>'
+      +'</div>'
+      // Seção 1: Não Lançados
+      +(naoLancados.length > 0
+        ? '<section style="margin-bottom:1.5rem">'
+          +'<h3 style="color:#dc2626;margin-bottom:.5rem">🔴 Não Lançados ('+naoLancados.length+') — clique em "+ Criar Lançamento" para registrar</h3>'
+          +'<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse">'
+          +'<thead><tr style="background:#fef2f2">'
+          +'<th style="padding:.4rem .6rem;text-align:left;font-size:.78rem;color:#991b1b">Data</th>'
+          +'<th style="padding:.4rem .6rem;text-align:left;font-size:.78rem;color:#991b1b">D/C</th>'
+          +'<th style="padding:.4rem .6rem;text-align:left;font-size:.78rem;color:#991b1b">Histórico do Extrato</th>'
+          +'<th style="padding:.4rem .6rem;text-align:right;font-size:.78rem;color:#991b1b">Valor</th>'
+          +'<th style="padding:.4rem .6rem;font-size:.78rem;color:#991b1b">Status</th>'
+          +'<th style="padding:.4rem .6rem;font-size:.78rem;color:#991b1b">Ação</th>'
+          +'</tr></thead><tbody>'+rowsNaoLanc+'</tbody></table></div></section>'
+        : '<div style="background:#f0fdf4;border:1px solid #86efac;border-radius:.5rem;padding:.75rem;margin-bottom:1rem;color:#166534">✅ Todos os lançamentos foram encontrados no sistema.</div>')
+      // Seção 2: Divergentes
+      +(divergentes.length > 0
+        ? '<section style="margin-bottom:1.5rem">'
+          +'<h3 style="color:#d97706;margin-bottom:.5rem">⚠️ Divergentes ('+divergentes.length+') — encontrados no sistema mas com diferenças</h3>'
+          +'<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse">'
+          +'<thead><tr style="background:#fffbeb">'
+          +'<th style="padding:.4rem .6rem;text-align:left;font-size:.78rem;color:#92400e">Data</th>'
+          +'<th style="padding:.4rem .6rem;text-align:left;font-size:.78rem;color:#92400e">D/C</th>'
+          +'<th style="padding:.4rem .6rem;text-align:left;font-size:.78rem;color:#92400e">Histórico do Extrato</th>'
+          +'<th style="padding:.4rem .6rem;text-align:right;font-size:.78rem;color:#92400e">Valor</th>'
+          +'<th style="padding:.4rem .6rem;font-size:.78rem;color:#92400e">Status</th>'
+          +'<th style="padding:.4rem .6rem;font-size:.78rem;color:#92400e">Ação</th>'
+          +'</tr></thead><tbody>'+rowsDiv+'</tbody></table></div></section>'
+        : '')
+      // Seção 3: Conciliados
+      +(conciliados.length > 0
+        ? '<section style="margin-bottom:1.5rem">'
+          +'<h3 style="color:#059669;margin-bottom:.5rem">✅ Conciliados / Confirmados ('+conciliados.length+')</h3>'
+          +'<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse">'
+          +'<thead><tr style="background:#f0fdf4">'
+          +'<th style="padding:.4rem .6rem;text-align:left;font-size:.78rem;color:#166534">Data</th>'
+          +'<th style="padding:.4rem .6rem;text-align:left;font-size:.78rem;color:#166534">D/C</th>'
+          +'<th style="padding:.4rem .6rem;text-align:left;font-size:.78rem;color:#166534">Histórico do Extrato</th>'
+          +'<th style="padding:.4rem .6rem;text-align:right;font-size:.78rem;color:#166534">Valor</th>'
+          +'<th style="padding:.4rem .6rem;font-size:.78rem;color:#166534">Status</th>'
+          +'<th style="padding:.4rem .6rem;font-size:.78rem;color:#166534">Lançamento</th>'
+          +'</tr></thead><tbody>'+rowsConc+'</tbody></table></div></section>'
+        : '')
+      // JavaScript
+      +'<script>'
+      +'var EXTRATO_ID='+extratoId+';'
+      +'function abrirFormLanc(i){document.getElementById("nl-form-"+i).style.display="table-row";var b=document.getElementById("nl-row-"+i).querySelector("button");if(b)b.style.display="none";}'
+      +'function fecharFormLanc(i){document.getElementById("nl-form-"+i).style.display="none";var b=document.getElementById("nl-row-"+i).querySelector("button");if(b)b.style.display="";}'
+      +'async function salvarLanc(i,fitid){'
+      +'  var data=document.getElementById("nf-data-"+i).value;'
+      +'  var dc=document.getElementById("nf-dc-"+i).value;'
+      +'  var valor=parseFloat(document.getElementById("nf-valor-"+i).value);'
+      +'  var cc=document.getElementById("nf-cc-"+i).value;'
+      +'  var cli=document.getElementById("nf-cli-"+i).value;'
+      +'  var fav=document.getElementById("nf-fav-"+i).value;'
+      +'  var proj=document.getElementById("nf-proj-"+i).value;'
+      +'  var nat=document.getElementById("nf-nat-"+i).value;'
+      +'  var cat=document.getElementById("nf-cat-"+i).value;'
+      +'  var tipo=document.getElementById("nf-tipo-"+i).value;'
+      +'  var desc=document.getElementById("nf-desc-"+i).value;'
+      +'  var obs=document.getElementById("nf-obs-"+i).value;'
+      +'  var msg=document.getElementById("nf-msg-"+i);'
+      +'  if(!data||!dc||!valor||!cc){msg.innerHTML="<span style=\\"color:#dc2626\\">Preencha Data, D/C, Valor e Centro de Custo.</span>";return;}'
+      +'  msg.innerHTML="<span style=\\"color:#1d4ed8\\">Salvando...</span>";'
+      +'  try{'
+      +'    var r=await fetch("/api/entries",{method:"POST",headers:{"Content-Type":"application/json"},'
+      +'      body:JSON.stringify({data:data,dataISO:data,dc:dc,valor:dc==="D"?-Math.abs(valor):Math.abs(valor),'
+      +'        centroCusto:cc,cliente:cli,favorecido:fav,projeto:proj,natureza:nat,categoria:cat,tipo:tipo,descritivo:desc,observacoes:obs,status:"confirmado"})});'
+      +'    var d=await r.json();'
+      +'    if(d.ok||d.id||d.numLanc){'
+      +'      msg.innerHTML="<span style=\\"color:#059669;font-weight:700\\">✅ Lançamento #"+(d.numLanc||d.id||"")+" criado com sucesso!</span>";'
+      +'      document.getElementById("nl-row-"+i).style.background="#f0fdf4";'
+      +'      var cells=document.getElementById("nl-row-"+i).cells;'
+      +'      cells[4].innerHTML="<span style=\\"color:#059669;font-weight:700\\">✅ Lançamento Confirmado</span>";'
+      +'      cells[5].innerHTML="";'
+      +'      if(fitid&&EXTRATO_ID){fetch("/api/conciliacao/item-status",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({extratoId:EXTRATO_ID,fitid:fitid,novoStatus:"LANCAMENTO_CONFIRMADO",lancamentoId:d.id||d.numLanc})});}'
+      +'    }else{msg.innerHTML="<span style=\\"color:#dc2626\\">Erro: "+(d.error||JSON.stringify(d))+"</span>";}'
+      +'  }catch(e){msg.innerHTML="<span style=\\"color:#dc2626\\">Erro: "+e.message+"</span>";}'
+      +'}'
+      +'async function marcarEmAnalise(i,fitid){'
+      +'  if(EXTRATO_ID&&fitid){await fetch("/api/conciliacao/item-status",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({extratoId:EXTRATO_ID,fitid:fitid,novoStatus:"EM_ANALISE"})});}'
+      +'  var cells=document.getElementById("nl-row-"+i).cells;'
+      +'  cells[4].innerHTML="<span style=\\"color:#6366f1;font-weight:700\\">🔍 Em Análise</span>";'
+      +'  cells[5].innerHTML="";'
+      +'  document.getElementById("nl-form-"+i).style.display="none";'
+      +'}'
+      +'function abrirPainelDiv(i){document.getElementById("dv-painel-"+i).style.display="table-row";var b=document.getElementById("dv-row-"+i).querySelector("button");if(b)b.style.display="none";}'
+      +'function fecharPainelDiv(i){document.getElementById("dv-painel-"+i).style.display="none";var b=document.getElementById("dv-row-"+i).querySelector("button");if(b)b.style.display="";}'
+      +'async function salvarCorrecaoDiv(i,fitid,lancId){'
+      +'  var data=document.getElementById("dv-data-"+i).value;'
+      +'  var dc=document.getElementById("dv-dc-"+i).value;'
+      +'  var valor=parseFloat(document.getElementById("dv-valor-"+i).value);'
+      +'  var cc=document.getElementById("dv-cc-"+i).value;'
+      +'  var cli=document.getElementById("dv-cli-"+i).value;'
+      +'  var fav=document.getElementById("dv-fav-"+i).value;'
+      +'  var proj=document.getElementById("dv-proj-"+i).value;'
+      +'  var nat=document.getElementById("dv-nat-"+i).value;'
+      +'  var cat=document.getElementById("dv-cat-"+i).value;'
+      +'  var desc=document.getElementById("dv-desc-"+i).value;'
+      +'  var obs=document.getElementById("dv-obs-"+i).value;'
+      +'  var msg=document.getElementById("dv-msg-"+i);'
+      +'  msg.innerHTML="<span style=\\"color:#1d4ed8\\">Salvando correção...</span>";'
+      +'  try{'
+      +'    var url=lancId?"/api/entries/"+lancId:"/api/entries";'
+      +'    var method=lancId?"PUT":"POST";'
+      +'    var r=await fetch(url,{method:method,headers:{"Content-Type":"application/json"},'
+      +'      body:JSON.stringify({data:data,dataISO:data,dc:dc,valor:dc==="D"?-Math.abs(valor):Math.abs(valor),'
+      +'        centroCusto:cc,cliente:cli,favorecido:fav,projeto:proj,natureza:nat,categoria:cat,descritivo:desc,observacoes:obs,status:"confirmado"})});'
+      +'    var d=await r.json();'
+      +'    if(d.ok||d.id||d.numLanc){'
+      +'      msg.innerHTML="<span style=\\"color:#059669;font-weight:700\\">✅ Correção salva com sucesso!</span>";'
+      +'      document.getElementById("dv-row-"+i).style.background="#f0fdf4";'
+      +'      var cells=document.getElementById("dv-row-"+i).cells;'
+      +'      cells[4].innerHTML="<span style=\\"color:#059669;font-weight:700\\">✔️ OK — Conciliado</span>";'
+      +'      cells[5].innerHTML="";'
+      +'      if(fitid&&EXTRATO_ID){fetch("/api/conciliacao/item-status",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({extratoId:EXTRATO_ID,fitid:fitid,novoStatus:"OK_CONCILIADO",lancamentoId:d.id||lancId})});}'
+      +'    }else{msg.innerHTML="<span style=\\"color:#dc2626\\">Erro: "+(d.error||JSON.stringify(d))+"</span>";}'
+      +'  }catch(e){msg.innerHTML="<span style=\\"color:#dc2626\\">Erro: "+e.message+"</span>";}'
+      +'}'
+      +'async function confirmarOkConciliado(i,fitid){'
+      +'  if(EXTRATO_ID&&fitid){await fetch("/api/conciliacao/item-status",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({extratoId:EXTRATO_ID,fitid:fitid,novoStatus:"OK_CONCILIADO"})});}'
+      +'  var cells=document.getElementById("dv-row-"+i).cells;'
+      +'  cells[4].innerHTML="<span style=\\"color:#059669;font-weight:700\\">✔️ OK — Conciliado</span>";'
+      +'  cells[5].innerHTML="";'
+      +'  document.getElementById("dv-painel-"+i).style.display="none";'
+      +'}'
+      +'async function marcarEmAnaliseDiv(i,fitid){'
+      +'  if(EXTRATO_ID&&fitid){await fetch("/api/conciliacao/item-status",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({extratoId:EXTRATO_ID,fitid:fitid,novoStatus:"EM_ANALISE"})});}'
+      +'  var cells=document.getElementById("dv-row-"+i).cells;'
+      +'  cells[4].innerHTML="<span style=\\"color:#6366f1;font-weight:700\\">🔍 Em Análise</span>";'
+      +'  document.getElementById("dv-painel-"+i).style.display="none";'
+      +'}'
+      +'<\/script>';
+
+    const html = page('Detalhe Conciliação #'+extratoId, body, user, '/conciliacao');
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+    res.end(html);
+    return;
   }
 
   res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
@@ -6096,8 +8292,34 @@ async function boot() {
         fs.writeFileSync(DB_PATH, JSON.stringify(pgDb, null, 2));
         // Executar limpeza automática após carregar o banco
         limparCadastrosAutomatico(pgDb);
+
+        // ===== MIGRAÇÃO: atribuir numLanc sequencial a todos os lançamentos que não têm =====
+        if (!pgDb.meta) pgDb.meta = {};
+        const semNumLanc = pgDb.entries.filter(e => !e.numLanc);
+        if (semNumLanc.length > 0) {
+          console.log(`[boot] Migrando numLanc: ${semNumLanc.length} lançamentos sem número sequencial...`);
+          // Ordenar por data para atribuir números em ordem cronológica
+          pgDb.entries.sort((a, b) => {
+            const da = a.dataISO || a.data || '';
+            const db2 = b.dataISO || b.data || '';
+            return da < db2 ? -1 : da > db2 ? 1 : 0;
+          });
+          // Atribuir numLanc a todos que não têm, mantendo os existentes
+          let contador = 0;
+          pgDb.entries.forEach(e => { if (e.numLanc) contador = Math.max(contador, e.numLanc); });
+          pgDb.entries.forEach(e => {
+            if (!e.numLanc) {
+              contador++;
+              e.numLanc = contador;
+            }
+          });
+          pgDb.meta.ultimoNumLanc = contador;
+          console.log(`[boot] Migração concluída: ${semNumLanc.length} lançamentos numerados. Último: #${String(contador).padStart(6,'0')}`);
+        }
+        // ===================================================================================
+
         fs.writeFileSync(DB_PATH, JSON.stringify(pgDb, null, 2));
-        // Persistir limpeza de volta ao PostgreSQL
+        // Persistir limpeza e migração de volta ao PostgreSQL
         await storage.saveDb(pgDb).catch(e => console.error('[boot] Erro ao salvar limpeza:', e.message));
         // Carregar sessões ativas do PostgreSQL para o Map() em memória
         try {
@@ -6114,6 +8336,9 @@ async function boot() {
         } catch (se) {
           console.warn('[boot] Não foi possível restaurar sessões:', se.message);
         }
+        // Carregar mapa de projetos do banco
+        const pgPool = storage.getPool ? storage.getPool() : null;
+        if (pgPool) await recarregarMapaProjetos(pgPool);
         bootReady = true;
         console.log(`[boot] Sincronizado: ${pgDb.entries.length} lançamentos, ${pgDb.reviewRegistry.length} cadastros, ${pgDb.savedRules.length} regras`);
       } catch (err) {
