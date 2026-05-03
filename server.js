@@ -2792,31 +2792,39 @@ Responda em português, de forma objetiva e direta, citando os dados específico
   if (req.method === 'PATCH' && /^\/api\/entries\/[^/]+\/conciliacao$/.test(url.pathname)) {
     const user = requireAuth(req, res, db); if (!user) return;
     const id = url.pathname.split('/')[3];
-    const entry = db.entries.find(e => e.id === id);
-    if (!entry) return json(res, 404, { error: 'Lançamento não encontrado' });
     const body = JSON.parse(await readBody(req) || '{}');
     const acao = body.acao; // 'marcar' | 'desmarcar'
-    if (acao === 'marcar') {
-      entry.conciliacao_status = 'manual';
-      entry.conciliado_em = new Date().toISOString();
-      entry.conciliado_por = user.email || 'sistema';
-    } else {
-      entry.conciliacao_status = null;
-      entry.conciliado_em = null;
-      entry.conciliado_por = null;
+    const novoStatus = acao === 'marcar' ? 'manual' : null;
+    const conciliadoEm = acao === 'marcar' ? new Date().toISOString() : null;
+    const conciliadoPor = acao === 'marcar' ? (user.email || 'sistema') : null;
+    // Atualizar no db local se existir
+    const entry = db.entries.find(e => e.id === id);
+    if (entry) {
+      entry.conciliacao_status = novoStatus;
+      entry.conciliado_em = conciliadoEm;
+      entry.conciliado_por = conciliadoPor;
+      saveDb(db);
     }
-    saveDb(db);
-    // Persistir no PostgreSQL se disponível
+    // Persistir no PostgreSQL (funciona mesmo se não estiver no db local)
     const pgConc = storage.getPool ? storage.getPool() : null;
     if (pgConc) {
       try {
-        await pgConc.query(
-          `UPDATE entries SET data = data || $1::jsonb WHERE data->>'id' = $2`,
-          [JSON.stringify({ conciliacao_status: entry.conciliacao_status, conciliado_em: entry.conciliado_em, conciliado_por: entry.conciliado_por }), id]
-        );
+        if (acao === 'marcar') {
+          await pgConc.query(
+            `UPDATE entries SET data = data || $1::jsonb WHERE data->>'id' = $2`,
+            [JSON.stringify({ conciliacao_status: 'manual', conciliado_em: conciliadoEm, conciliado_por: conciliadoPor }), id]
+          );
+        } else {
+          await pgConc.query(
+            `UPDATE entries SET data = data - 'conciliacao_status' - 'conciliado_em' - 'conciliado_por' WHERE data->>'id' = $1`,
+            [id]
+          );
+        }
       } catch(e) { console.error('[conciliacao-patch]', e.message); }
     }
-    return json(res, 200, { ok: true, conciliacao_status: entry.conciliacao_status });
+    // Se não encontrou nem no db local nem tem pg, retornar erro
+    if (!entry && !pgConc) return json(res, 404, { error: 'Lançamento não encontrado' });
+    return json(res, 200, { ok: true, conciliacao_status: novoStatus });
   }
 
   if (req.method === 'GET' && url.pathname === '/dashboard') {
