@@ -3929,6 +3929,8 @@ async function excluirRef(tipo,nome){
     const qProjeto = (url.searchParams.get('projeto') || '').trim();
     const qNumLanc = url.searchParams.get('num') ? parseInt(url.searchParams.get('num'), 10) : null;
     const qInc = url.searchParams.get('inc') || ''; // filtro de inconsistência
+    const qValorMin = url.searchParams.get('valor_min') ? parseFloat(url.searchParams.get('valor_min').replace(',','.')) : null;
+    const qValorMax = url.searchParams.get('valor_max') ? parseFloat(url.searchParams.get('valor_max').replace(',','.')) : null;
     const page_num = Math.max(1, parseInt(url.searchParams.get('p') || '1', 10));
     const PAGE_SIZE = 50;
 
@@ -3968,6 +3970,9 @@ async function excluirRef(tipo,nome){
       }
       if (qInc === 'sem_cpf' && (e.cpfCnpj || '').trim()) return false;
       if (qInc === 'a_confirmar' && !e.pendente_confirmacao) return false;
+      // Filtro por valor (usa valor absoluto para facilitar busca)
+      if (qValorMin !== null && Math.abs(parseFloat(e.valor||0)) < qValorMin) return false;
+      if (qValorMax !== null && Math.abs(parseFloat(e.valor||0)) > qValorMax) return false;
       return true;
     }).sort((a, b) => (b.dataISO || '').localeCompare(a.dataISO || ''));
 
@@ -4131,10 +4136,13 @@ async function excluirRef(tipo,nome){
     }, {});
 
     // Paginação
+    const qValorMinStr = url.searchParams.get('valor_min') || '';
+    const qValorMaxStr = url.searchParams.get('valor_max') || '';
+    const paginacaoBase = `&q=${encodeURIComponent(q)}&data=${qData}&data_fim=${qDataFim}&cc=${encodeURIComponent(qCC)}&cliente=${encodeURIComponent(qCliente)}&nat=${encodeURIComponent(qNat)}&dc=${qDC}&status=${qStatus}&cpf=${encodeURIComponent(qCpf)}&projeto=${encodeURIComponent(qProjeto)}&valor_min=${qValorMinStr}&valor_max=${qValorMaxStr}`;
     const paginacao = totalPages > 1 ? `<div style="display:flex;gap:.5rem;align-items:center;margin-top:1rem;flex-wrap:wrap">
-      ${page_num > 1 ? `<a href="?p=${page_num-1}&q=${encodeURIComponent(q)}&data=${qData}&data_fim=${qDataFim}&cc=${encodeURIComponent(qCC)}&cliente=${encodeURIComponent(qCliente)}&nat=${encodeURIComponent(qNat)}&dc=${qDC}&status=${qStatus}&cpf=${encodeURIComponent(qCpf)}&projeto=${encodeURIComponent(qProjeto)}" style="padding:.3rem .7rem;background:#e2e8f0;border-radius:6px;text-decoration:none;color:#475569">← Anterior</a>` : ''}
+      ${page_num > 1 ? `<a href="?p=${page_num-1}${paginacaoBase}" style="padding:.3rem .7rem;background:#e2e8f0;border-radius:6px;text-decoration:none;color:#475569">← Anterior</a>` : ''}
       <span style="color:#64748b;font-size:.85rem">Página ${page_num} de ${totalPages} (${total} lançamentos)</span>
-      ${page_num < totalPages ? `<a href="?p=${page_num+1}&q=${encodeURIComponent(q)}&data=${qData}&data_fim=${qDataFim}&cc=${encodeURIComponent(qCC)}&cliente=${encodeURIComponent(qCliente)}&nat=${encodeURIComponent(qNat)}&dc=${qDC}&status=${qStatus}&cpf=${encodeURIComponent(qCpf)}&projeto=${encodeURIComponent(qProjeto)}" style="padding:.3rem .7rem;background:#e2e8f0;border-radius:6px;text-decoration:none;color:#475569">Próxima →</a>` : ''}
+      ${page_num < totalPages ? `<a href="?p=${page_num+1}${paginacaoBase}" style="padding:.3rem .7rem;background:#e2e8f0;border-radius:6px;text-decoration:none;color:#475569">Próxima →</a>` : ''}
     </div>` : `<div style="color:#64748b;font-size:.85rem;margin-top:.5rem">${total} lançamento(s) encontrado(s)</div>`;
 
     // Linhas da tabela
@@ -4429,6 +4437,10 @@ async function excluirRef(tipo,nome){
       <option value="">Todas</option>
       ${NATUREZAS.map(n => `<option value="${n}" ${qNat===n?'selected':''}>${n}</option>`).join('')}
     </select></div>
+    <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Valor Mínimo (R$)</label>
+    <input name="valor_min" type="number" step="0.01" min="0" value="${url.searchParams.get('valor_min')||''}" placeholder="Ex: 500,00" style="font-size:.8rem;padding:.3rem .5rem;width:100%"/></div>
+    <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Valor Máximo (R$)</label>
+    <input name="valor_max" type="number" step="0.01" min="0" value="${url.searchParams.get('valor_max')||''}" placeholder="Ex: 10.000,00" style="font-size:.8rem;padding:.3rem .5rem;width:100%"/></div>
     <div style="display:flex;gap:.4rem;align-items:flex-end">
       <input type="hidden" name="inc" value="${qInc}">
       <button type="submit" style="background:#6d28d9;font-size:.8rem;padding:.4rem .8rem;flex:1">🔍 Pesquisar</button>
