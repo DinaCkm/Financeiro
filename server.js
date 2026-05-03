@@ -4477,31 +4477,31 @@ function atualizarRegraProjetoNovo() {
   var avisoClassif = document.getElementById('novo-classif-aviso');
   var avisoProj = document.getElementById('novo-proj-aviso');
   var obrigSpan = document.getElementById('novo-proj-obrig');
-  var isDireta = classif.includes('direta');
+  // "Despesa Direta" e "Receita Direta" são diretas; "Indireta" está contida em "Despesa Indireta" e "Receita Indireta"
   var isIndireta = classif.includes('indireta');
+  var isDireta = classif.includes('direta') && !isIndireta;
   var isMovim = classif.includes('movimenta') || classif.includes('transfer');
+
   if (isDireta) {
-    // Direta: projeto OBRIGATÓRIO
-    if (blocoProj) blocoProj.style.border = '2px solid #059669';
-    if (blocoProj) blocoProj.style.borderRadius = '6px';
-    if (blocoProj) blocoProj.style.padding = '.5rem';
-    if (blocoProj) blocoProj.style.background = '#f0fdf4';
+    // Direta: projeto OBRIGATÓRIO — habilitar e destacar em verde
+    if (blocoProj) { blocoProj.style.border='2px solid #059669'; blocoProj.style.borderRadius='6px'; blocoProj.style.padding='.5rem'; blocoProj.style.background='#f0fdf4'; blocoProj.style.opacity='1'; }
+    if (selectProj) { selectProj.disabled = false; selectProj.style.opacity='1'; selectProj.style.cursor='pointer'; }
     if (obrigSpan) obrigSpan.style.display = 'inline';
     if (avisoClassif) { avisoClassif.style.display='block'; avisoClassif.innerHTML='<span style="color:#059669;font-weight:600">✔ Direta: vinculada a um projeto/cliente. <strong>Projeto obrigatório.</strong></span>'; }
     if (avisoProj) { avisoProj.style.display='block'; avisoProj.innerHTML='<span style="color:#059669">↑ Selecione o projeto ao qual este lançamento pertence.</span>'; }
+
   } else if (isIndireta) {
-    // Indireta: projeto NÃO deve ser preenchido
-    if (blocoProj) blocoProj.style.border = '2px solid #94a3b8';
-    if (blocoProj) blocoProj.style.borderRadius = '6px';
-    if (blocoProj) blocoProj.style.padding = '.5rem';
-    if (blocoProj) blocoProj.style.background = '#f8fafc';
-    if (selectProj) selectProj.value = '';
+    // Indireta: projeto NÃO deve ser preenchido — desabilitar e cinzar
+    if (blocoProj) { blocoProj.style.border='2px solid #e2e8f0'; blocoProj.style.borderRadius='6px'; blocoProj.style.padding='.5rem'; blocoProj.style.background='#f1f5f9'; blocoProj.style.opacity='.7'; }
+    if (selectProj) { selectProj.value = ''; selectProj.disabled = true; selectProj.style.opacity='.5'; selectProj.style.cursor='not-allowed'; }
     if (obrigSpan) obrigSpan.style.display = 'none';
-    if (avisoClassif) { avisoClassif.style.display='block'; avisoClassif.innerHTML='<span style="color:#64748b;font-weight:600">↔ Indireta: custo/receita da estrutura da empresa. <strong>Não preencha Projeto.</strong></span>'; }
-    if (avisoProj) { avisoProj.style.display='block'; avisoProj.innerHTML='<span style="color:#94a3b8">Lançamentos indiretos não pertencem a um projeto específico.</span>'; }
+    if (avisoClassif) { avisoClassif.style.display='block'; avisoClassif.innerHTML='<span style="color:#64748b;font-weight:600">↔ Indireta: custo/receita da estrutura da empresa. <strong>Projeto não se aplica.</strong></span>'; }
+    if (avisoProj) { avisoProj.style.display='block'; avisoProj.innerHTML='<span style="color:#94a3b8">🚫 Campo desabilitado — lançamentos indiretos não pertencem a um projeto específico.</span>'; }
+
   } else {
-    // Movimentação / Transferência / sem seleção
-    if (blocoProj) { blocoProj.style.border=''; blocoProj.style.padding=''; blocoProj.style.background=''; }
+    // Movimentação / Transferência / sem seleção — campo neutro e habilitado
+    if (blocoProj) { blocoProj.style.border=''; blocoProj.style.padding=''; blocoProj.style.background=''; blocoProj.style.opacity='1'; }
+    if (selectProj) { selectProj.disabled = false; selectProj.style.opacity='1'; selectProj.style.cursor=''; }
     if (obrigSpan) obrigSpan.style.display = 'none';
     if (avisoClassif) avisoClassif.style.display = 'none';
     if (avisoProj) avisoProj.style.display = 'none';
