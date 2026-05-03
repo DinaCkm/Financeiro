@@ -2901,6 +2901,8 @@ Responda em português, de forma objetiva e direta, citando os dados específico
         porAno[ano] = {};
         TIPOS_ORDEM.forEach(t => { porAno[ano][t] = {}; });
       }
+      // Garantir que o tipo existe no objeto do ano (proteção contra tipos inesperados)
+      if (!porAno[ano][tipo]) porAno[ano][tipo] = {};
       if (tipo === 'OPERACIONAL') {
         const empresa = clienteEfetivo(e);
         const projeto = projetoEfetivo(e);
@@ -4772,7 +4774,7 @@ async function excluirLanc(id) {
             <td style='font-size:.78rem;color:var(--gray-500)'>${r.usuario || '-'}</td>
           </tr>`;
         }).join('');
-        const html = page(renderNav(user, '/historico') + `
+        const html = page(`
 <section style='padding:2rem;max-width:1200px;margin:0 auto'>
   <h2 style='font-size:1.25rem;font-weight:700;color:var(--gray-800);margin-bottom:.25rem'>Histórico de Alterações <span style='font-size:.85rem;font-weight:400;color:var(--gray-500)'>${totalLog} registro(s)</span></h2>
   <p style='font-size:.85rem;color:var(--gray-400);margin-bottom:1rem'>Trilha completa de auditoria: toda alteração manual em lançamentos e revisões de cadastro é registrada aqui.</p>
