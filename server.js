@@ -5784,7 +5784,32 @@ function renderHistoricoRel() {
     const qNat = (url.searchParams.get('nat') || '').trim();
     const qDC  = (url.searchParams.get('dc') || '').trim();
 
-    let filtrados = (db.entries || []).filter(e => {
+    // Buscar dados do PostgreSQL
+    const pgExt = storage.getPool ? storage.getPool() : null;
+    let todasEntriesExt = [];
+    let naturezas = [];
+    let ccList = [];
+    if (pgExt) {
+      try {
+        const rExt = await pgExt.query("SELECT id, data FROM entries ORDER BY data->>'dataISO' ASC, id ASC");
+        todasEntriesExt = rExt.rows.map(row => ({
+          id: row.id,
+          ...row.data,
+          valor: parseFloat((row.data && row.data.valor) || 0)
+        }));
+        naturezas = [...new Set(todasEntriesExt.map(e => e.natureza||'').filter(Boolean))].sort();
+        ccList    = [...new Set(todasEntriesExt.map(e => (e.centroCusto||'SEM CC').toUpperCase()).filter(Boolean))].sort();
+      } catch(eExt) {
+        console.error('[extrato-pg]', eExt.message);
+        todasEntriesExt = db.entries || [];
+      }
+    } else {
+      todasEntriesExt = db.entries || [];
+      naturezas = [...new Set(todasEntriesExt.map(e => e.natureza||'').filter(Boolean))].sort();
+      ccList    = [...new Set(todasEntriesExt.map(e => (e.centroCusto||'SEM CC').toUpperCase()).filter(Boolean))].sort();
+    }
+
+    let filtrados = todasEntriesExt.filter(e => {
       if (e.isTransferenciaInterna) return false;
       const cc = (e.centroCusto || 'SEM CC').toUpperCase();
       if (qCC && !cc.includes(qCC.toUpperCase())) return false;
@@ -5807,11 +5832,16 @@ function renderHistoricoRel() {
       return (a.dataISO || a.data || '').localeCompare(b.dataISO || b.data || '');
     });
 
-    const grupos = new Map();
+    // Agrupar: CC -> Mes -> Lancamentos
+    const gruposCC = new Map();
     for (const e of filtrados) {
-      const cc = (e.centroCusto || 'SEM CC').toUpperCase();
-      if (!grupos.has(cc)) grupos.set(cc, []);
-      grupos.get(cc).push(e);
+      const cc  = (e.centroCusto || 'SEM CC').toUpperCase();
+      const iso = e.dataISO || e.data || '';
+      const mes = iso.length >= 7 ? iso.slice(0, 7) : 'SEM DATA'; // YYYY-MM
+      if (!gruposCC.has(cc)) gruposCC.set(cc, new Map());
+      const meses = gruposCC.get(cc);
+      if (!meses.has(mes)) meses.set(mes, []);
+      meses.get(mes).push(e);
     }
 
     const fmtBRL = (v) => {
@@ -5819,63 +5849,125 @@ function renderHistoricoRel() {
       return (v < 0 ? '-\u00a0' : '') + 'R\u00a0' + abs.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
     };
 
-    const naturezas = [...new Set((db.entries||[]).map(e => e.natureza||'').filter(Boolean))].sort();
-    const ccList    = [...new Set((db.entries||[]).map(e => (e.centroCusto||'SEM CC').toUpperCase()).filter(Boolean))].sort();
+    const fmtMes = (ym) => {
+      if (!ym || ym === 'SEM DATA') return 'SEM DATA';
+      const meses = ['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'];
+      const [y, m] = ym.split('-');
+      return (meses[parseInt(m,10)-1] || m) + '/' + y;
+    };
 
     let totalGeral = 0;
     let totalEntradas = 0;
     let totalSaidas = 0;
     let tabelaHTML = '';
+    const NCOLS = 9; // Nº | Data | D/C | CC | Cliente | Projeto | Descritivo | Natureza | Valor
 
-    for (const [cc, itens] of grupos) {
-      const subtotal = itens.reduce((s, e) => s + (e.valor || 0), 0);
-      const entradas = itens.filter(e => (e.valor || 0) > 0).reduce((s, e) => s + e.valor, 0);
-      const saidas   = itens.filter(e => (e.valor || 0) < 0).reduce((s, e) => s + e.valor, 0);
-      totalGeral    += subtotal;
-      totalEntradas += entradas;
-      totalSaidas   += saidas;
-      const subColor = subtotal >= 0 ? 'color:#065f46;font-weight:700' : 'color:#991b1b;font-weight:700';
+    for (const [cc, mesesMap] of gruposCC) {
+      const todosItensCC = [];
+      for (const its of mesesMap.values()) todosItensCC.push(...its);
+      const subtotalCC = todosItensCC.reduce((s, e) => s + (e.valor || 0), 0);
+      const entradasCC = todosItensCC.filter(e => (e.valor||0) > 0).reduce((s,e) => s+e.valor, 0);
+      const saidasCC   = todosItensCC.filter(e => (e.valor||0) < 0).reduce((s,e) => s+e.valor, 0);
+      totalGeral    += subtotalCC;
+      totalEntradas += entradasCC;
+      totalSaidas   += saidasCC;
+      const subColorCC = subtotalCC >= 0 ? 'color:#065f46;font-weight:700' : 'color:#991b1b;font-weight:700';
 
-      const linhas = itens.map(e => {
-        const dc = e.dc || (e.valor >= 0 ? 'C' : 'D');
-        const dcColor = dc === 'C' ? 'color:#065f46;font-weight:700' : 'color:#991b1b;font-weight:700';
-        const valColor = (e.valor || 0) >= 0 ? 'color:#065f46' : 'color:#991b1b';
-        const nome = e.cliente || e.parceiro || e.projeto || '-';
-        const nomeEsc = nome.replace(/'/g, '&#39;').replace(/"/g, '&quot;');
-        const descEsc = (e.descricao || '-').replace(/'/g, '&#39;').replace(/"/g, '&quot;');
-        return `<tr>
-          <td style='white-space:nowrap;font-size:.8rem'>${e.dataISO || e.data || '-'}</td>
-          <td style='${dcColor};font-size:.8rem;text-align:center'>${dc}</td>
-          <td style='font-size:.78rem;color:#64748b'>${e.centroCusto || '-'}</td>
-          <td style='font-size:.8rem;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap' title='${nomeEsc}'>${nome}</td>
-          <td style='font-size:.8rem;max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap' title='${descEsc}'>${e.descricao || '-'}</td>
-          <td style='font-size:.78rem;color:#64748b'>${e.natureza || '-'}</td>
-          <td style='${valColor};font-size:.8rem;text-align:right;white-space:nowrap'>${fmtBRL(e.valor || 0)}</td>
-        </tr>`;
-      }).join('');
+      // Cabecalho do CC
+      tabelaHTML += '<tr style="background:#1e40af;color:#fff;border-top:3px solid #0f172a">' +
+        '<td colspan="' + (NCOLS-1) + '" style="font-weight:700;font-size:.82rem;padding:.5rem .75rem">&#128193; ' + cc +
+        ' <span style="font-weight:400;font-size:.75rem;opacity:.8">(' + todosItensCC.length + ' lan\u00e7amento' + (todosItensCC.length!==1?'s':'') + ')</span></td>' +
+        '<td style="' + subColorCC + ';text-align:right;padding:.5rem .75rem;font-size:.82rem;background:#1e40af;color:' + (subtotalCC>=0?'#86efac':'#fca5a5') + '">' + fmtBRL(subtotalCC) + '</td>' +
+        '</tr>';
 
-      tabelaHTML += `
-      <tr style='background:#f1f5f9;border-top:2px solid #cbd5e1'>
-        <td colspan='6' style='font-weight:700;font-size:.82rem;padding:.5rem .75rem;color:#1e40af'>&#128193; ${cc} <span style='font-weight:400;font-size:.75rem;color:#64748b'>(${itens.length} lan\u00e7amento${itens.length!==1?'s':''})</span></td>
-        <td style='${subColor};text-align:right;padding:.5rem .75rem;font-size:.82rem'>${fmtBRL(subtotal)}</td>
-      </tr>
-      ${linhas}
-      <tr style='background:#f8fafc;border-bottom:2px solid #cbd5e1'>
-        <td colspan='5' style='font-size:.75rem;color:#64748b;padding:.35rem .75rem;text-align:right'>Subtotal ${cc}:</td>
-        <td style='font-size:.75rem;color:#059669;text-align:right;padding:.35rem .75rem'>Entradas: ${fmtBRL(entradas)}</td>
-        <td style='${subColor};text-align:right;padding:.35rem .75rem;font-size:.8rem'>${fmtBRL(subtotal)}</td>
-      </tr>`;
+      for (const [mes, itens] of mesesMap) {
+        const subtotalMes = itens.reduce((s, e) => s + (e.valor || 0), 0);
+        const subColorMes = subtotalMes >= 0 ? 'color:#065f46;font-weight:700' : 'color:#991b1b;font-weight:700';
+
+        // Cabecalho do mes
+        tabelaHTML += '<tr style="background:#e0e7ff;border-top:2px solid #c7d2fe">' +
+          '<td colspan="' + (NCOLS-1) + '" style="font-weight:700;font-size:.78rem;padding:.35rem .75rem;color:#3730a3">&#128197; ' + fmtMes(mes) +
+          ' <span style="font-weight:400;font-size:.72rem;color:#64748b">(' + itens.length + ' lan\u00e7amento' + (itens.length!==1?'s':'') + ')</span></td>' +
+          '<td style="' + subColorMes + ';text-align:right;padding:.35rem .75rem;font-size:.78rem;background:#e0e7ff">' + fmtBRL(subtotalMes) + '</td>' +
+          '</tr>';
+
+        // Linhas dos lancamentos
+        for (const e of itens) {
+          const dc = e.dc || (e.valor >= 0 ? 'C' : 'D');
+          const dcColor = dc === 'C' ? 'color:#065f46;font-weight:700' : 'color:#991b1b;font-weight:700';
+          const valColor = (e.valor || 0) >= 0 ? 'color:#065f46' : 'color:#991b1b';
+          const nome = e.cliente || e.parceiro || '-';
+          const nomeEsc = nome.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+          const descEsc = (e.descricao || '-').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+          const proj = e.projeto || '-';
+          const projEsc = proj.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+          const numLanc = e.id || e.numero || '-';
+          tabelaHTML += '<tr style="border-bottom:1px solid #f1f5f9">' +
+            '<td style="white-space:nowrap;font-size:.75rem;color:#94a3b8;text-align:center">' + numLanc + '</td>' +
+            '<td style="white-space:nowrap;font-size:.8rem">' + (e.dataISO || e.data || '-') + '</td>' +
+            '<td style="' + dcColor + ';font-size:.8rem;text-align:center">' + dc + '</td>' +
+            '<td style="font-size:.78rem;color:#64748b">' + (e.centroCusto || '-') + '</td>' +
+            '<td style="font-size:.8rem;max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + nomeEsc + '">' + nome + '</td>' +
+            '<td style="font-size:.78rem;max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#7c3aed" title="' + projEsc + '">' + proj + '</td>' +
+            '<td style="font-size:.8rem;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + descEsc + '">' + (e.descricao || '-') + '</td>' +
+            '<td style="font-size:.78rem;color:#64748b">' + (e.natureza || '-') + '</td>' +
+            '<td style="' + valColor + ';font-size:.8rem;text-align:right;white-space:nowrap">' + fmtBRL(e.valor || 0) + '</td>' +
+            '</tr>';
+        }
+
+        // Subtotais por Projeto dentro do mes
+        const projMes = new Map();
+        for (const e of itens) {
+          const p = e.projeto || 'SEM PROJETO';
+          if (!projMes.has(p)) projMes.set(p, 0);
+          projMes.set(p, projMes.get(p) + (e.valor || 0));
+        }
+        if (projMes.size > 1 || (projMes.size === 1 && !projMes.has('SEM PROJETO'))) {
+          tabelaHTML += '<tr style="background:#faf5ff;border-top:1px dashed #c4b5fd">' +
+            '<td colspan="5" style="font-size:.72rem;color:#7c3aed;padding:.25rem .75rem;text-align:right;font-style:italic">Subtotal por Projeto (' + fmtMes(mes) + '):</td>' +
+            '<td colspan="4" style="font-size:.72rem;color:#7c3aed;padding:.25rem .75rem">' +
+            [...projMes.entries()].map(([p, v]) => '<span style="margin-right:.75rem"><strong>' + p + '</strong>: ' + fmtBRL(v) + '</span>').join('') +
+            '</td></tr>';
+        }
+
+        // Subtotal do mes
+        tabelaHTML += '<tr style="background:#f8fafc;border-bottom:2px solid #c7d2fe">' +
+          '<td colspan="' + (NCOLS-1) + '" style="font-size:.75rem;color:#64748b;padding:.3rem .75rem;text-align:right">Subtotal ' + fmtMes(mes) + ':</td>' +
+          '<td style="' + subColorMes + ';text-align:right;padding:.3rem .75rem;font-size:.78rem">' + fmtBRL(subtotalMes) + '</td>' +
+          '</tr>';
+      }
+
+      // Subtotais por Projeto dentro do CC
+      const projCC = new Map();
+      for (const e of todosItensCC) {
+        const p = e.projeto || 'SEM PROJETO';
+        if (!projCC.has(p)) projCC.set(p, 0);
+        projCC.set(p, projCC.get(p) + (e.valor || 0));
+      }
+      if (projCC.size > 1 || (projCC.size === 1 && !projCC.has('SEM PROJETO'))) {
+        tabelaHTML += '<tr style="background:#ede9fe;border-top:1px solid #c4b5fd">' +
+          '<td colspan="5" style="font-size:.75rem;color:#5b21b6;padding:.35rem .75rem;text-align:right;font-weight:600">Subtotal por Projeto (' + cc + '):</td>' +
+          '<td colspan="4" style="font-size:.75rem;color:#5b21b6;padding:.35rem .75rem">' +
+          [...projCC.entries()].map(([p, v]) => '<span style="margin-right:.75rem"><strong>' + p + '</strong>: ' + fmtBRL(v) + '</span>').join('') +
+          '</td></tr>';
+      }
+
+      // Subtotal do CC
+      tabelaHTML += '<tr style="background:#f1f5f9;border-bottom:3px solid #1e40af">' +
+        '<td colspan="' + (NCOLS-1) + '" style="font-size:.8rem;color:#1e40af;padding:.4rem .75rem;text-align:right;font-weight:700">Subtotal ' + cc + ':</td>' +
+        '<td style="' + subColorCC + ';text-align:right;padding:.4rem .75rem;font-size:.82rem">' + fmtBRL(subtotalCC) + '</td>' +
+        '</tr>';
     }
 
     const totalColor = totalGeral >= 0 ? '#065f46' : '#991b1b';
-    const ccOptsHTML = ccList.map(c => `<option value='${c.replace(/'/g,"&#39;")}'>`).join('');
-    const natOptsHTML = naturezas.map(n => `<option value='${n}' ${qNat===n?'selected':''}>${n}</option>`).join('');
+    const ccOptsHTML = ccList.map(c => '<option value="' + c.replace(/"/g,'&quot;') + '">').join('');
+    const natOptsHTML = naturezas.map(n => '<option value="' + n + '" ' + (qNat===n?'selected':'') + '>' + n + '</option>').join('');
 
     const html = page('Extrato por Centro de Custo', `
 <section>
   <div style='display:flex;align-items:center;gap:1rem;margin-bottom:1rem;flex-wrap:wrap'>
     <h2 style='margin:0'>&#128202; Extrato por Centro de Custo</h2>
-    <span style='font-size:.82rem;color:var(--gray-400)'>${filtrados.length} lan\u00e7amento(s) &bull; ${grupos.size} centro(s) de custo</span>
+    <span style='font-size:.82rem;color:var(--gray-400)'>${filtrados.length} lan\u00e7amento(s) &bull; ${gruposCC.size} centro(s) de custo</span>
   </div>
 
   <form method='get' action='/extrato' style='display:flex;flex-wrap:wrap;gap:.6rem;align-items:flex-end;background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:1rem;margin-bottom:1.25rem'>
@@ -5927,25 +6019,27 @@ function renderHistoricoRel() {
     </div>
     <div style='flex:1;min-width:140px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:.75rem 1rem'>
       <div style='font-size:.78rem;color:#64748b'>Centros de Custo</div>
-      <div style='font-size:1.1rem;font-weight:700;color:#1e40af'>${grupos.size}</div>
+      <div style='font-size:1.1rem;font-weight:700;color:#1e40af'>${gruposCC.size}</div>
     </div>
   </div>
 
   <div style='overflow-x:auto'>
   <table style='width:100%;border-collapse:collapse;font-size:.85rem'>
     <thead><tr style='background:#1e40af;color:#fff'>
+      <th style='padding:.55rem .5rem;text-align:center;white-space:nowrap'>N\u00ba</th>
       <th style='padding:.55rem .75rem;text-align:left;white-space:nowrap'>Data</th>
-      <th style='padding:.55rem .75rem;text-align:center'>D/C</th>
+      <th style='padding:.55rem .5rem;text-align:center'>D/C</th>
       <th style='padding:.55rem .75rem;text-align:left'>C\u00f3digo CC</th>
-      <th style='padding:.55rem .75rem;text-align:left'>Cliente / Fornecedor / Prestador</th>
+      <th style='padding:.55rem .75rem;text-align:left'>Cliente / Fornecedor</th>
+      <th style='padding:.55rem .75rem;text-align:left'>Projeto</th>
       <th style='padding:.55rem .75rem;text-align:left'>Descritivo</th>
       <th style='padding:.55rem .75rem;text-align:left'>Natureza</th>
       <th style='padding:.55rem .75rem;text-align:right'>Valor</th>
     </tr></thead>
     <tbody>
-      ${tabelaHTML || '<tr><td colspan="7" style="text-align:center;padding:2rem;color:#94a3b8">Nenhum lan\u00e7amento encontrado com os filtros selecionados.</td></tr>'}
+      ${tabelaHTML || '<tr><td colspan="9" style="text-align:center;padding:2rem;color:#94a3b8">Nenhum lan\u00e7amento encontrado com os filtros selecionados.</td></tr>'}
       <tr style='background:#1e293b;color:#fff;border-top:3px solid #0f172a'>
-        <td colspan='5' style='padding:.6rem .75rem;font-weight:700;font-size:.85rem'>TOTAL GERAL (${filtrados.length} lan\u00e7amentos)</td>
+        <td colspan='7' style='padding:.6rem .75rem;font-weight:700;font-size:.85rem'>TOTAL GERAL (${filtrados.length} lan\u00e7amentos)</td>
         <td style='padding:.6rem .75rem;font-size:.82rem;color:#86efac;text-align:right'>Entradas: ${fmtBRL(totalEntradas)}</td>
         <td style='padding:.6rem .75rem;font-weight:700;font-size:.9rem;text-align:right;color:${totalGeral>=0?'#86efac':'#fca5a5'}'>${fmtBRL(totalGeral)}</td>
       </tr>
