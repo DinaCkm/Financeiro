@@ -2752,9 +2752,20 @@ Responda em português, de forma objetiva e direta, citando os dados específico
     return json(res, 200, { ok: true, numLanc: removed.numLanc });
   }
 
-  if (req.method === 'PATCH' && url.pathname.startsWith('/api/entries/')) {
+  if (req.method === 'PATCH' && url.pathname.startsWith('/api/entries/') && !url.pathname.endsWith('/conciliacao')) {
     const id = url.pathname.split('/').pop();
-    const entry = db.entries.find((e) => e.id === id);
+    const pgEdit = storage.getPool ? storage.getPool() : null;
+    let entry = db.entries.find((e) => e.id === id);
+    // Se não está no db local, buscar no PostgreSQL
+    if (!entry && pgEdit) {
+      try {
+        const r = await pgEdit.query(`SELECT data FROM entries WHERE data->>'id' = $1 LIMIT 1`, [id]);
+        if (r.rows.length > 0) {
+          entry = r.rows[0].data;
+          db.entries.push(entry); // adicionar ao cache local
+        }
+      } catch(eFind) { console.error('[patch-entry-find]', eFind.message); }
+    }
     if (!entry) return json(res, 404, { error: 'Lançamento não encontrado' });
     const changes = JSON.parse(await readBody(req) || '{}');
     const editable = ['cliente', 'projeto', 'natureza', 'centroCusto', 'parceiro', 'categoria', 'detalhe', 'conta', 'formaPagamento', 'status', 'data', 'dataISO', 'descricao', 'valor', 'dc', 'naturezaGerencial', 'grupoDespesa', 'tipoDespesa', 'cpfCnpj', 'documento', 'descritivo', 'favorecido', 'classificacao'];
@@ -2785,6 +2796,15 @@ Responda em português, de forma objetiva e direta, citando os dados específico
       changes
     });
     saveDb(db);
+    // Persistir no PostgreSQL
+    if (pgEdit) {
+      try {
+        await pgEdit.query(
+          `UPDATE entries SET data = data || $1::jsonb WHERE data->>'id' = $2`,
+          [JSON.stringify(entry), id]
+        );
+      } catch(ePg) { console.error('[patch-entry-pg]', ePg.message); }
+    }
     return json(res, 200, entry);
   }
 
@@ -8515,7 +8535,7 @@ async function ocultarConciliacao(id, btn) {
         const label = num ? '#'+String(num).padStart(6,'0') : 'Ver';
         const valFmt = fmtVal(c.valor||0);
         const cc = c.centroCusto || '';
-        return '<a href="'+href+'" target="_blank" style="color:#3b82f6;font-size:.78rem;font-weight:600" title="CC: '+esc(cc)+' | Valor: '+valFmt+'">🔗 '+label+'</a>';
+        return '<a href="'+href+'" style="color:#3b82f6;font-size:.78rem;font-weight:600" title="CC: '+esc(cc)+' | Valor: '+valFmt+'">🔗 '+label+'</a>';
       }).join(' + ');
       const somaRateio = cands.reduce((s,c)=>s+Math.abs(parseFloat(c.valor||0)),0);
       return '<tr style="border-bottom:1px solid #fef9c3">'
@@ -8540,8 +8560,8 @@ async function ocultarConciliacao(id, btn) {
       const numLancConc = lancConc._numLanc || null;
       const linkLancConc = it.lancamento_id
         ? (numLancConc
-            ? '<a href="/lancamentos?num='+numLancConc+'" target="_blank" style="color:#3b82f6;font-size:.78rem;font-weight:600">🔗 Ver #'+String(numLancConc).padStart(6,'0')+'</a>'
-            : '<a href="/lancamentos?q='+encodeURIComponent(it.memo||'')+'" target="_blank" style="color:#3b82f6;font-size:.78rem">🔗 Ver lançamento</a>')
+            ? '<a href="/lancamentos?num='+numLancConc+'" style="color:#3b82f6;font-size:.78rem;font-weight:600">🔗 Ver #'+String(numLancConc).padStart(6,'0')+'</a>'
+            : '<a href="/lancamentos?q='+encodeURIComponent(it.memo||'')+'" style="color:#3b82f6;font-size:.78rem">🔗 Ver lançamento</a>')
         : '';
       return '<tr id="cc-row-'+i+'" style="border-bottom:1px solid #dcfce7">'
         +'<td style="padding:.4rem .6rem;font-size:.82rem;white-space:nowrap">'+fmtData(it.dataISO)+'</td>'
