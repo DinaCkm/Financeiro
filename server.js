@@ -2788,6 +2788,37 @@ Responda em português, de forma objetiva e direta, citando os dados específico
     return json(res, 200, entry);
   }
 
+  // ---- PATCH /api/entries/:id/conciliacao — marcar/desmarcar conciliação manual ----
+  if (req.method === 'PATCH' && /^\/api\/entries\/[^/]+\/conciliacao$/.test(url.pathname)) {
+    const user = requireAuth(req, res, db); if (!user) return;
+    const id = url.pathname.split('/')[3];
+    const entry = db.entries.find(e => e.id === id);
+    if (!entry) return json(res, 404, { error: 'Lançamento não encontrado' });
+    const body = JSON.parse(await readBody(req) || '{}');
+    const acao = body.acao; // 'marcar' | 'desmarcar'
+    if (acao === 'marcar') {
+      entry.conciliacao_status = 'manual';
+      entry.conciliado_em = new Date().toISOString();
+      entry.conciliado_por = user.email || 'sistema';
+    } else {
+      entry.conciliacao_status = null;
+      entry.conciliado_em = null;
+      entry.conciliado_por = null;
+    }
+    saveDb(db);
+    // Persistir no PostgreSQL se disponível
+    const pgConc = storage.getPool ? storage.getPool() : null;
+    if (pgConc) {
+      try {
+        await pgConc.query(
+          `UPDATE entries SET data = data || $1::jsonb WHERE data->>'id' = $2`,
+          [JSON.stringify({ conciliacao_status: entry.conciliacao_status, conciliado_em: entry.conciliado_em, conciliado_por: entry.conciliado_por }), id]
+        );
+      } catch(e) { console.error('[conciliacao-patch]', e.message); }
+    }
+    return json(res, 200, { ok: true, conciliacao_status: entry.conciliacao_status });
+  }
+
   if (req.method === 'GET' && url.pathname === '/dashboard') {
     const user = requireAuth(req, res, db);
     if (!user) return;
@@ -4150,10 +4181,23 @@ async function excluirRef(tipo,nome){
         <td style="font-size:.72rem;color:#475569" title="${e.natureza||e.classificacao||''}"><span style="display:inline-block;max-width:130px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${(e.natureza||e.classificacao||'—')}</span></td>
         <td style="font-size:.72rem;color:#7c3aed;font-weight:500">${MAPA_PROJETOS_CKM[e.projeto] ? `<span title="${e.projeto}">${MAPA_PROJETOS_CKM[e.projeto]}</span>` : (e.projeto ? `<span style="color:#94a3b8">${e.projeto}</span>` : '<span style="color:#e2e8f0">—</span>')}</td>
         <td style="font-size:.72rem;color:#94a3b8" title="${STATUS_LABEL[status]||status}">${STATUS_LABEL[status]||status}</td>
+        ${(()=>{
+          const dataLanc = e.dataISO || '';
+          const aPartirMaio = dataLanc >= '2026-05-01';
+          if (!aPartirMaio) return '<td></td>';
+          const concStatus = e.conciliacao_status || '';
+          if (concStatus === 'extrato') {
+            return `<td style="text-align:center"><button onclick="event.stopPropagation();toggleConciliacao('${e.id}','extrato')" title="Conciliado via extrato bancário — clique para desfazer" style="background:none;border:none;cursor:pointer;font-size:1.3rem" aria-label="Conciliado via extrato">&#9989;</button></td>`;
+          } else if (concStatus === 'manual') {
+            return `<td style="text-align:center"><button onclick="event.stopPropagation();toggleConciliacao('${e.id}','manual')" title="Conciliado manualmente — clique para desfazer" style="background:none;border:none;cursor:pointer;font-size:1.3rem" aria-label="Conciliado manualmente">&#128994;</button></td>`;
+          } else {
+            return `<td style="text-align:center"><button onclick="event.stopPropagation();toggleConciliacao('${e.id}','marcar')" title="Clique para marcar como conciliado manualmente" style="background:none;border:none;cursor:pointer;font-size:1.3rem;opacity:.25" aria-label="Marcar como conciliado">&#9711;</button></td>`;
+          }
+        })()}
         <td style="text-align:center"><button onclick="event.stopPropagation();toggleEditLanc('${e.id}', ${incJson})" title="Editar lançamento" style="background:#ede9fe;color:#6d28d9;font-size:.75rem;padding:.25rem .5rem;box-shadow:none;border:1px solid #c4b5fd">&#9998;</button></td>
       </tr>
       <tr id="edit-lanc-${e.id}" style="display:none;background:#f0f9ff">
-        <td colspan="11" style="padding:1.25rem 1.5rem">
+        <td colspan="12" style="padding:1.25rem 1.5rem">
           <div style="background:#fff;border:1px solid #bfdbfe;border-radius:10px;padding:1.25rem;margin-bottom:.75rem">
           <p style="font-size:.75rem;font-weight:700;color:#1e40af;text-transform:uppercase;letter-spacing:.04em;margin:0 0 1rem">&#9998; Editar lançamento</p>
           <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:1rem">
@@ -4410,10 +4454,11 @@ ${paginacao}
       <th style="padding:.5rem .75rem;text-align:left">Classificação</th>
       <th style="padding:.5rem .75rem;text-align:left">Projeto</th>
       <th style="padding:.5rem .75rem;text-align:left">Status</th>
+      <th style="padding:.5rem .75rem;text-align:center" title="Conciliação bancária">Conc.</th>
       <th style="padding:.5rem .75rem;text-align:center">Ação</th>
     </tr>
   </thead>
-  <tbody>${rows || '<tr><td colspan="11" style="text-align:center;padding:2rem;color:#94a3b8">Nenhum lançamento encontrado com os filtros aplicados.</td></tr>'}</tbody>
+  <tbody>${rows || '<tr><td colspan="12" style="text-align:center;padding:2rem;color:#94a3b8">Nenhum lançamento encontrado com os filtros aplicados.</td></tr>'}</tbody>
 </table>
 </div>
 ${paginacao}
@@ -4591,6 +4636,37 @@ function atualizarRegraProjetoNovo() {
     if (obrigSpan) obrigSpan.style.display = 'none';
     if (avisoClassif) avisoClassif.style.display = 'none';
     if (avisoProj) avisoProj.style.display = 'none';
+  }
+}
+
+async function toggleConciliacao(id, estadoAtual) {
+  const acao = (estadoAtual === 'marcar') ? 'marcar' : 'desmarcar';
+  if (estadoAtual !== 'marcar') {
+    if (!confirm('Deseja remover a conciliação deste lançamento?')) return;
+  }
+  try {
+    const resp = await fetch('/api/entries/' + id + '/conciliacao', {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ acao })
+    });
+    if (resp.ok) {
+      const data = await resp.json();
+      const td = document.querySelector('#row-' + id + ' td:nth-last-child(2)');
+      if (td) {
+        if (data.conciliacao_status === 'manual') {
+          td.innerHTML = '<button onclick="event.stopPropagation();toggleConciliacao(\'' + id + '\',\'manual\')\" title="Conciliado manualmente \u2014 clique para desfazer" style="background:none;border:none;cursor:pointer;font-size:1.3rem" aria-label="Conciliado manualmente">&#128994;</button>';
+        } else if (data.conciliacao_status === 'extrato') {
+          td.innerHTML = '<button onclick="event.stopPropagation();toggleConciliacao(\'' + id + '\',\'extrato\')\" title="Conciliado via extrato banc\u00e1rio \u2014 clique para desfazer" style="background:none;border:none;cursor:pointer;font-size:1.3rem" aria-label="Conciliado via extrato">&#9989;</button>';
+        } else {
+          td.innerHTML = '<button onclick="event.stopPropagation();toggleConciliacao(\'' + id + '\',\'marcar\')\" title="Clique para marcar como conciliado manualmente" style="background:none;border:none;cursor:pointer;font-size:1.3rem;opacity:.25" aria-label="Marcar como conciliado">&#9711;</button>';
+        }
+      }
+    } else {
+      alert('Erro ao atualizar conciliação.');
+    }
+  } catch(e) {
+    alert('Erro de conexão: ' + e.message);
   }
 }
 
@@ -7989,7 +8065,56 @@ async function ocultarConciliacao(id, btn) {
           // Guardar todos os candidatos para exibir ao gerente
           candidatos = sorted.slice(0, 5).map(l => ({ id: l.id, dataISO: l.dataISO, dc: l.dc, valor: l.valor, centroCusto: l.centroCusto, cliente: l.cliente, projeto: l.projeto, descritivo: l.descritivo || l.descricao, numLanc: l.numLanc }));
         } else {
-          naoLancados++;
+          // ===== BUSCA POR RATEIO: soma de lançamentos que totalizam o valor do extrato =====
+          // Filtrar lançamentos com mesmo D/C e data próxima (±5 dias)
+          const trnDataMs = new Date(trn.dataISO).getTime();
+          const CINCO_DIAS = 5 * 24 * 60 * 60 * 1000;
+          const candidatosRateio = lancamentosDB.filter(l => {
+            const lDC = l.dc || (parseFloat(l.valor||0) >= 0 ? 'C' : 'D');
+            if (lDC !== trn.dc) return false;
+            const lDataMs = new Date(l.dataISO || '').getTime();
+            if (isNaN(lDataMs)) return false;
+            return Math.abs(lDataMs - trnDataMs) <= CINCO_DIAS;
+          });
+          // Buscar combinações de 2 ou 3 lançamentos que somam o valor do extrato
+          const valorAlvo = Math.round(Math.abs(trn.valor) * 100);
+          let rateioEncontrado = null;
+          // Combinações de 2
+          outer2: for (let i = 0; i < candidatosRateio.length; i++) {
+            for (let j = i + 1; j < candidatosRateio.length; j++) {
+              const soma = Math.round(Math.abs(parseFloat(candidatosRateio[i].valor||0)) * 100)
+                         + Math.round(Math.abs(parseFloat(candidatosRateio[j].valor||0)) * 100);
+              if (soma === valorAlvo) {
+                rateioEncontrado = [candidatosRateio[i], candidatosRateio[j]];
+                break outer2;
+              }
+            }
+          }
+          // Combinações de 3 (só se não encontrou 2)
+          if (!rateioEncontrado && candidatosRateio.length <= 30) {
+            outer3: for (let i = 0; i < candidatosRateio.length; i++) {
+              for (let j = i + 1; j < candidatosRateio.length; j++) {
+                for (let k2 = j + 1; k2 < candidatosRateio.length; k2++) {
+                  const soma = Math.round(Math.abs(parseFloat(candidatosRateio[i].valor||0)) * 100)
+                             + Math.round(Math.abs(parseFloat(candidatosRateio[j].valor||0)) * 100)
+                             + Math.round(Math.abs(parseFloat(candidatosRateio[k2].valor||0)) * 100);
+                  if (soma === valorAlvo) {
+                    rateioEncontrado = [candidatosRateio[i], candidatosRateio[j], candidatosRateio[k2]];
+                    break outer3;
+                  }
+                }
+              }
+            }
+          }
+          if (rateioEncontrado) {
+            status = 'RATEIO';
+            lancId = rateioEncontrado[0].id;
+            candidatos = rateioEncontrado.map(l => ({ id: l.id, dataISO: l.dataISO, dc: l.dc, valor: l.valor, centroCusto: l.centroCusto, cliente: l.cliente, projeto: l.projeto, descritivo: l.descritivo || l.descricao, numLanc: l.numLanc }));
+            conciliados++; // conta como conciliado (por rateio)
+          } else {
+            naoLancados++;
+          }
+          // ===================================================================================
         }
         itens.push({ fitid: trn.fitid, dataISO: trn.dataISO, valor: trn.valor, dc: trn.dc, memo: trn.memo, trntype: trn.trntype, status, lancamento_id: lancId, candidatos });
       }
@@ -8147,6 +8272,7 @@ async function ocultarConciliacao(id, btn) {
     // Status possíveis: NAO_LANCADO, PENDENTE_CRIACAO, LANCAMENTO_CONFIRMADO, DIVERGENTE, OK_CONCILIADO, EM_ANALISE, CONCILIADO
     const naoLancados = itens.filter(i=>['NAO_LANCADO','PENDENTE_CRIACAO'].includes(i.status));
     const divergentes = itens.filter(i=>['DIVERGENTE','EM_ANALISE'].includes(i.status));
+    const rateios = itens.filter(i=>i.status==='RATEIO');
     const conciliados = itens.filter(i=>['CONCILIADO','OK_CONCILIADO','LANCAMENTO_CONFIRMADO'].includes(i.status));
 
     const fmtVal = v => {
@@ -8281,6 +8407,29 @@ async function ocultarConciliacao(id, btn) {
         +'</div></td></tr>';
     }).join('');
 
+    // ---- Seção 2b: RATEADOS ----
+    const rowsRateio = rateios.map((it,i) => {
+      const cor = it.dc==='C' ? '#059669' : '#dc2626';
+      const cands = it.candidatos || [];
+      const linksLanc = cands.map(c => {
+        const num = c.numLanc || c.id;
+        const href = num ? '/lancamentos?num='+num : '/lancamentos?q='+encodeURIComponent(it.memo||'');
+        const label = num ? '#'+String(num).padStart(6,'0') : 'Ver';
+        const valFmt = fmtVal(c.valor||0);
+        const cc = c.centroCusto || '';
+        return '<a href="'+href+'" target="_blank" style="color:#3b82f6;font-size:.78rem;font-weight:600" title="CC: '+esc(cc)+' | Valor: '+valFmt+'">🔗 '+label+'</a>';
+      }).join(' + ');
+      const somaRateio = cands.reduce((s,c)=>s+Math.abs(parseFloat(c.valor||0)),0);
+      return '<tr style="border-bottom:1px solid #fef9c3">'
+        +'<td style="padding:.4rem .6rem;font-size:.82rem;white-space:nowrap">'+fmtData(it.dataISO)+'</td>'
+        +'<td style="padding:.4rem .6rem;font-size:.82rem;font-weight:700;color:'+cor+'">'+it.dc+'</td>'
+        +'<td style="padding:.4rem .6rem;font-size:.82rem;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="'+esc(it.memo)+'">'+esc(it.memo||'-')+'</td>'
+        +'<td style="padding:.4rem .6rem;font-size:.82rem;text-align:right;font-weight:700;color:'+cor+'">'+fmtVal(it.valor)+'</td>'
+        +'<td style="padding:.4rem .6rem;font-size:.78rem">'+linksLanc+'</td>'
+        +'<td style="padding:.4rem .6rem"><span style="background:#fef08a;color:#854d0e;font-size:.75rem;font-weight:700;padding:.2rem .5rem;border-radius:.3rem">✂️ Rateio ('+cands.length+')</span></td>'
+        +'</tr>';
+    }).join('');
+
     // ---- Seção 3: CONCILIADOS / CONFIRMADOS ----
     const rowsConc = conciliados.map((it,i) => {
       const cor = it.dc==='C' ? '#059669' : '#dc2626';
@@ -8331,6 +8480,7 @@ async function ocultarConciliacao(id, btn) {
       +'<div style="background:#f0fdf4;border:1px solid #86efac;border-radius:.5rem;padding:.75rem;text-align:center"><div style="font-size:1.6rem;font-weight:800;color:#059669">'+conciliados.length+'</div><div style="font-size:.75rem;color:#64748b">Conciliados</div></div>'
       +'<div style="background:#fffbeb;border:1px solid #fcd34d;border-radius:.5rem;padding:.75rem;text-align:center"><div style="font-size:1.6rem;font-weight:800;color:#d97706">'+divergentes.length+'</div><div style="font-size:.75rem;color:#64748b">Divergentes</div></div>'
       +'<div style="background:#fef2f2;border:1px solid #fca5a5;border-radius:.5rem;padding:.75rem;text-align:center"><div style="font-size:1.6rem;font-weight:800;color:#dc2626">'+naoLancados.length+'</div><div style="font-size:.75rem;color:#64748b">Não Lançados</div></div>'
+      +(rateios.length > 0 ? '<div style="background:#fefce8;border:1px solid #fde68a;border-radius:.5rem;padding:.75rem;text-align:center"><div style="font-size:1.6rem;font-weight:800;color:#b45309">'+rateios.length+'</div><div style="font-size:.75rem;color:#64748b">Rateados</div></div>' : '')
       +'</div>'
       // Seção 1: Não Lançados
       +(naoLancados.length > 0
@@ -8359,6 +8509,20 @@ async function ocultarConciliacao(id, btn) {
           +'<th style="padding:.4rem .6rem;font-size:.78rem;color:#92400e">Status</th>'
           +'<th style="padding:.4rem .6rem;font-size:.78rem;color:#92400e">Ação</th>'
           +'</tr></thead><tbody>'+rowsDiv+'</tbody></table></div></section>'
+        : '')
+      // Seção 2b: Rateados
+      +(rateios.length > 0
+        ? '<section style="margin-bottom:1.5rem">'
+          +'<h3 style="color:#b45309;margin-bottom:.5rem">✂️ Conciliados por Rateio ('+rateios.length+') — um pagamento dividido em múltiplos lançamentos</h3>'
+          +'<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse">'
+          +'<thead><tr style="background:#fefce8">'
+          +'<th style="padding:.4rem .6rem;text-align:left;font-size:.78rem;color:#854d0e">Data</th>'
+          +'<th style="padding:.4rem .6rem;text-align:left;font-size:.78rem;color:#854d0e">D/C</th>'
+          +'<th style="padding:.4rem .6rem;text-align:left;font-size:.78rem;color:#854d0e">Histórico do Extrato</th>'
+          +'<th style="padding:.4rem .6rem;text-align:right;font-size:.78rem;color:#854d0e">Valor</th>'
+          +'<th style="padding:.4rem .6rem;font-size:.78rem;color:#854d0e">Lançamentos do Rateio</th>'
+          +'<th style="padding:.4rem .6rem;font-size:.78rem;color:#854d0e">Status</th>'
+          +'</tr></thead><tbody>'+rowsRateio+'</tbody></table></div></section>'
         : '')
       // Seção 3: Conciliados
       +(conciliados.length > 0
