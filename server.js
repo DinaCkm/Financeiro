@@ -7513,9 +7513,175 @@ async function uploadExtrato(input) {
   }
 
   if (req.method === 'POST' && url.pathname === '/api/conciliacao/upload') {
-    // Processar upload do extrato
-    // Por ora, retorna uma resposta de placeholder até implementar o parser OFX
-    return json(res, 200, { ok: true, total: 0, conciliados: 0, divergentes: 0, nao_lancados: 0, id: 0, message: 'Parser OFX em implementação' });
+    const user = requireAuth(req, res, db); if (!user) return;
+    try {
+      // Receber arquivo via multer
+      const multer = require('multer');
+      const upload = multer({ dest: os.tmpdir() });
+      await new Promise((resolve, reject) => {
+        upload.single('arquivo')(req, res, (err) => { if (err) reject(err); else resolve(); });
+      });
+
+      const filePath = req.file && req.file.path;
+      const bancoId  = req.body && req.body.banco_id;
+      const formato  = (req.body && req.body.formato) || 'OFX';
+      if (!filePath) return json(res, 400, { ok: false, error: 'Arquivo não recebido' });
+      if (!bancoId)  return json(res, 400, { ok: false, error: 'Banco não selecionado' });
+
+      // Ler conteúdo do arquivo (tentar UTF-8, fallback LATIN1)
+      let conteudo = '';
+      try {
+        conteudo = fs.readFileSync(filePath, 'utf-8');
+      } catch(eRead) {
+        conteudo = fs.readFileSync(filePath, 'latin1');
+      }
+      // Se ainda tiver caracteres estranhos, tentar latin1
+      if (conteudo.includes('\uFFFD')) {
+        conteudo = fs.readFileSync(filePath, 'latin1');
+      }
+
+      // ===== PARSER OFX (SGML — formato do Banco do Brasil) =====
+      function parseOFX(txt) {
+        const trns = [];
+        // Extrair bloco BANKTRANLIST
+        const bloco = txt.replace(/\r/g, '');
+        // Encontrar todas as transacoes entre <STMTTRN> e </STMTTRN>
+        const re = /<STMTTRN>[\s\S]*?<\/STMTTRN>/gi;
+        let m;
+        while ((m = re.exec(bloco)) !== null) {
+          const blk = m[0];
+          const get = (tag) => {
+            const r = new RegExp('<' + tag + '>\\s*([^\n<]+)', 'i');
+            const match = blk.match(r);
+            return match ? match[1].trim() : '';
+          };
+          const trntype  = get('TRNTYPE');
+          const dtposted = get('DTPOSTED').slice(0, 8); // YYYYMMDD
+          const trnamt   = get('TRNAMT');
+          const fitid    = get('FITID');
+          const memo     = get('MEMO');
+          const checknum = get('CHECKNUM');
+          if (!dtposted || !trnamt) continue;
+          // Converter data YYYYMMDD -> YYYY-MM-DD
+          const dataISO = dtposted.slice(0,4) + '-' + dtposted.slice(4,6) + '-' + dtposted.slice(6,8);
+          const valor   = parseFloat(trnamt.replace(',', '.'));
+          const dc      = valor >= 0 ? 'C' : 'D';
+          trns.push({ fitid, dataISO, valor, dc, memo, trntype, checknum });
+        }
+        // Extrair saldo final
+        const balMatch = txt.match(/<BALAMT>\s*([\d.,-]+)/i);
+        const saldo    = balMatch ? parseFloat(balMatch[1].replace(',', '.')) : null;
+        // Extrair periodo
+        const dtStart  = (txt.match(/<DTSTART>\s*(\d{8})/i) || [])[1] || '';
+        const dtEnd    = (txt.match(/<DTEND>\s*(\d{8})/i) || [])[1] || '';
+        const dataInicio = dtStart ? dtStart.slice(0,4)+'-'+dtStart.slice(4,6)+'-'+dtStart.slice(6,8) : null;
+        const dataFim    = dtEnd   ? dtEnd.slice(0,4)+'-'+dtEnd.slice(4,6)+'-'+dtEnd.slice(6,8)       : null;
+        return { trns, saldo, dataInicio, dataFim };
+      }
+
+      const parsed = parseOFX(conteudo);
+      const { trns, saldo, dataInicio, dataFim } = parsed;
+
+      if (trns.length === 0) {
+        return json(res, 200, { ok: false, error: 'Nenhuma transação encontrada no arquivo OFX. Verifique o formato.' });
+      }
+
+      // ===== CONCILIAÇÃO: cruzar com lançamentos do PostgreSQL =====
+      const pgConc = storage.getPool ? storage.getPool() : null;
+      let lancamentosDB = [];
+      if (pgConc) {
+        const rConc = await pgConc.query("SELECT id, data FROM entries WHERE data->>'isTransferenciaInterna' IS DISTINCT FROM 'true'");
+        lancamentosDB = rConc.rows.map(row => ({ id: row.id, ...row.data, valor: parseFloat((row.data && row.data.valor) || 0) }));
+      } else {
+        lancamentosDB = (db.entries || []).filter(e => !e.isTransferenciaInterna);
+      }
+
+      // Indexar lançamentos por dataISO + valor arredondado
+      const lancIdx = new Map();
+      for (const l of lancamentosDB) {
+        const k = (l.dataISO || '') + '|' + Math.round(Math.abs(l.valor || 0) * 100);
+        if (!lancIdx.has(k)) lancIdx.set(k, []);
+        lancIdx.get(k).push(l);
+      }
+
+      let conciliados = 0, divergentes = 0, naoLancados = 0;
+      const itens = [];
+      for (const trn of trns) {
+        const k = trn.dataISO + '|' + Math.round(Math.abs(trn.valor) * 100);
+        const matches = lancIdx.get(k) || [];
+        let status = 'NAO_LANCADO';
+        let lancId  = null;
+        if (matches.length > 0) {
+          // Verificar se o sinal bate (C/D)
+          const match = matches.find(l => {
+            const lDC = l.dc || (l.valor >= 0 ? 'C' : 'D');
+            return lDC === trn.dc;
+          });
+          if (match) {
+            status  = 'CONCILIADO';
+            lancId  = match.id;
+            conciliados++;
+          } else {
+            status = 'DIVERGENTE';
+            divergentes++;
+          }
+        } else {
+          naoLancados++;
+        }
+        itens.push({ fitid: trn.fitid, dataISO: trn.dataISO, valor: trn.valor, dc: trn.dc, memo: trn.memo, trntype: trn.trntype, status, lancamento_id: lancId });
+      }
+
+      // ===== SALVAR no PostgreSQL =====
+      let extratoId = null;
+      if (pgConc) {
+        try {
+          // Criar tabelas se não existirem
+          await pgConc.query(`
+            CREATE TABLE IF NOT EXISTS conciliacao_extratos (
+              id SERIAL PRIMARY KEY,
+              banco_id INTEGER,
+              data_upload TIMESTAMPTZ DEFAULT NOW(),
+              data_extrato VARCHAR(20),
+              data_inicio VARCHAR(20),
+              data_fim VARCHAR(20),
+              total_lancamentos INTEGER DEFAULT 0,
+              total_conciliados INTEGER DEFAULT 0,
+              total_divergentes INTEGER DEFAULT 0,
+              total_nao_lancados INTEGER DEFAULT 0,
+              saldo_extrato NUMERIC(15,2),
+              formato VARCHAR(10) DEFAULT 'OFX',
+              usuario_id VARCHAR(100),
+              itens JSONB DEFAULT '[]'
+            )
+          `);
+          const rIns = await pgConc.query(
+            'INSERT INTO conciliacao_extratos (banco_id, data_extrato, data_inicio, data_fim, total_lancamentos, total_conciliados, total_divergentes, total_nao_lancados, saldo_extrato, formato, usuario_id, itens) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING id',
+            [bancoId, dataFim, dataInicio, dataFim, trns.length, conciliados, divergentes, naoLancados, saldo, formato, user.id || user.email, JSON.stringify(itens)]
+          );
+          extratoId = rIns.rows[0].id;
+        } catch(eSave) {
+          console.error('[conciliacao-save]', eSave.message);
+        }
+      }
+
+      // Limpar arquivo temporário
+      try { fs.unlinkSync(filePath); } catch(e) {}
+
+      return json(res, 200, {
+        ok: true,
+        id: extratoId || 0,
+        total: trns.length,
+        conciliados,
+        divergentes,
+        nao_lancados: naoLancados,
+        saldo,
+        data_inicio: dataInicio,
+        data_fim: dataFim
+      });
+    } catch(eCon) {
+      console.error('[conciliacao-upload]', eCon.message);
+      return json(res, 500, { ok: false, error: eCon.message });
+    }
   }
 
   res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
