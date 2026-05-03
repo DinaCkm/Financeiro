@@ -3916,7 +3916,11 @@ async function excluirRef(tipo,nome){
         const nat = (e.naturezaGerencial || e.natureza || '');
         const classifE = (e.classificacao || e.natureza || '').toLowerCase();
         const isDiretaE = classifE.includes('direta') && !classifE.includes('indireta');
-        const precisaProjetoE = isDiretaE || nat === 'Receita Operacional' || nat === 'Custo Direto';
+        // Valores reais de natureza no banco que exigem projeto
+        const NATS_DIRETAS = ['Receita Operacional','Custo Direto','Custo Direto do Projeto','Despesa Direta','Receita Direta','Faturamento de Projeto'];
+        const NATS_INDIRETAS = ['Despesa Indireta','Custo Indireto','Receita Indireta','Transferência Interna','Movimentação Financeira Não Op','Movimentação Interna','Receita Financeira','Saldo Inicial'];
+        const natEhIndireta = NATS_INDIRETAS.some(n => nat.includes(n.split(' ')[0]));
+        const precisaProjetoE = !natEhIndireta && (isDiretaE || NATS_DIRETAS.includes(nat));
         if (!precisaProjetoE || (e.projeto || '').trim()) return false;
       }
       if (qInc === 'sem_natureza') {
@@ -3938,7 +3942,11 @@ async function excluirRef(tipo,nome){
       const nat = (e.naturezaGerencial || e.natureza || '');
       const classifE = (e.classificacao || e.natureza || '').toLowerCase();
       const isDiretaE = classifE.includes('direta') && !classifE.includes('indireta');
-      return (isDiretaE || nat === 'Receita Operacional' || nat === 'Custo Direto') && !(e.projeto || '').trim();
+      const NATS_DIRETAS2 = ['Receita Operacional','Custo Direto','Custo Direto do Projeto','Despesa Direta','Receita Direta','Faturamento de Projeto'];
+      const NATS_INDIRETAS2 = ['Despesa Indireta','Custo Indireto','Receita Indireta','Transferência Interna','Movimentação Financeira Não Op','Movimentação Interna','Receita Financeira','Saldo Inicial'];
+      const natEhIndireta2 = NATS_INDIRETAS2.some(n => nat.includes(n.split(' ')[0]));
+      const precisaProj2 = !natEhIndireta2 && (isDiretaE || NATS_DIRETAS2.includes(nat));
+      return precisaProj2 && !(e.projeto || '').trim();
     }).length;
     const cntSemNatureza = allEntries.filter(e => {
       const nat = (e.naturezaGerencial || e.natureza || '');
@@ -4042,7 +4050,10 @@ async function excluirRef(tipo,nome){
       // Precisa de projeto SOMENTE se for Direta (Despesa Direta ou Receita Direta)
       // Lançamentos Indiretos, Movimentações e Transferências não precisam de projeto
       const isDiretaLanc = classifLanc.includes('direta') && !classifLanc.includes('indireta');
-      const precisaProjeto = isDiretaLanc || nat === 'Receita Operacional' || nat === 'Custo Direto';
+      const NATS_DIRETAS3 = ['Receita Operacional','Custo Direto','Custo Direto do Projeto','Despesa Direta','Receita Direta','Faturamento de Projeto'];
+      const NATS_INDIRETAS3 = ['Despesa Indireta','Custo Indireto','Receita Indireta','Transferência Interna','Movimentação Financeira Não Op','Movimentação Interna','Receita Financeira','Saldo Inicial'];
+      const natEhIndireta3 = NATS_INDIRETAS3.some(n => nat.includes(n.split(' ')[0]));
+      const precisaProjeto = !natEhIndireta3 && (isDiretaLanc || NATS_DIRETAS3.includes(nat));
       const inconsistencias = [];
       if (!(e.centroCusto || '').trim()) inconsistencias.push('sem_cc');
       if (!(e.favorecido || e.cliente || e.parceiro || '').trim()) inconsistencias.push('sem_nome');
