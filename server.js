@@ -2701,8 +2701,9 @@ Responda em português, de forma objetiva e direta, citando os dados específico
       descritivo: body.descritivo || '',
       valor,
       dc,
-      natureza: body.naturezaGerencial || body.natureza || 'Pendente de Classificação',
+      natureza: body.naturezaGerencial || body.natureza || body.classificacao || 'Pendente de Classificação',
       naturezaGerencial: body.naturezaGerencial || 'Pendente de Classificação',
+      classificacao: body.classificacao || body.natureza || '',
       grupoDespesa: body.grupoDespesa || '',
       tipoDespesa: body.tipoDespesa || '',
       centroCusto: body.centroCusto || '',
@@ -2756,7 +2757,9 @@ Responda em português, de forma objetiva e direta, citando os dados específico
     const entry = db.entries.find((e) => e.id === id);
     if (!entry) return json(res, 404, { error: 'Lançamento não encontrado' });
     const changes = JSON.parse(await readBody(req) || '{}');
-    const editable = ['cliente', 'projeto', 'natureza', 'centroCusto', 'parceiro', 'categoria', 'detalhe', 'conta', 'formaPagamento', 'status', 'data', 'dataISO', 'descricao', 'valor', 'dc', 'naturezaGerencial', 'grupoDespesa', 'tipoDespesa', 'cpfCnpj', 'documento', 'descritivo', 'favorecido'];
+    const editable = ['cliente', 'projeto', 'natureza', 'centroCusto', 'parceiro', 'categoria', 'detalhe', 'conta', 'formaPagamento', 'status', 'data', 'dataISO', 'descricao', 'valor', 'dc', 'naturezaGerencial', 'grupoDespesa', 'tipoDespesa', 'cpfCnpj', 'documento', 'descritivo', 'favorecido', 'classificacao'];
+    // Se vier classificacao, salvar também em natureza (campo real no banco)
+    if (changes.classificacao) { changes.natureza = changes.classificacao; }
     // Capturar estado anterior antes de aplicar as mudanças
     const entryAntes = {};
     editable.forEach((k) => { entryAntes[k] = entry[k]; });
