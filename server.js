@@ -5901,7 +5901,7 @@ function renderHistoricoRel() {
           const descEsc = (e.descricao || '-').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
           const proj = e.projeto || '-';
           const projEsc = proj.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
-          const numLanc = e.id || e.numero || '-';
+          const numLanc = e.numLanc ? '#' + String(e.numLanc).padStart(6, '0') : (e.numero ? '#' + String(e.numero).padStart(6, '0') : '-');
           tabelaHTML += '<tr style="border-bottom:1px solid #f1f5f9">' +
             '<td style="white-space:nowrap;font-size:.75rem;color:#94a3b8;text-align:center">' + numLanc + '</td>' +
             '<td style="white-space:nowrap;font-size:.8rem">' + (e.dataISO || e.data || '-') + '</td>' +
