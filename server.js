@@ -4191,7 +4191,7 @@ async function excluirRef(tipo,nome){
         <td style="font-size:.72rem;color:#94a3b8" title="${STATUS_LABEL[status]||status}">${STATUS_LABEL[status]||status}</td>
         ${(()=>{
           const dataLanc = e.dataISO || '';
-          const aPartirMaio = dataLanc >= '2026-05-01';
+          const aPartirMaio = dataLanc >= '2026-01-01';
           const concStatus = e.conciliacao_status || '';
           // Se já está conciliado, mostrar ícone independente da data
           if (concStatus === 'extrato') {
