@@ -5290,6 +5290,56 @@ ${secaoExclusoes}`, user, '/historico');
       return json(res, 500, { ok: false, error: e.message });
     }
   }
+  // ─── MIGRAÇÃO: unificar variantes de natureza/classificacao ────────────────
+  if (req.method === 'POST' && url.pathname === '/api/admin/migrar-natureza') {
+    const user = requireAuth(req, res, db); if (!user) return;
+    const pg = storage.getPool ? storage.getPool() : null;
+    const body = JSON.parse(await readBody(req) || '{}');
+    // Mapa de unificação: { valorAntigo: valorNovo }
+    const MAPA_NATUREZA = {
+      // Variantes de Custo Indireto
+      'Despesa Indireta': 'Custo Indireto',
+      'Indireto': 'Custo Indireto',
+      'Custos Indiretos': 'Custo Indireto',
+      'Custo Indireto da Estrutura': 'Custo Indireto',
+      'Despesa Indireta da Estrutura': 'Custo Indireto',
+      'Estrutura Indireta': 'Custo Indireto',
+      'Custo de Estrutura': 'Custo Indireto',
+      'Despesa de Estrutura': 'Custo Indireto',
+      // Adicionar outros mapeamentos do body se enviados
+      ...(body.mapa || {})
+    };
+    let totalAtualizado = 0;
+    const detalhes = [];
+    try {
+      if (pg) {
+        for (const [de, para] of Object.entries(MAPA_NATUREZA)) {
+          const r = await pg.query(
+            `UPDATE entries SET data = jsonb_set(jsonb_set(data, '{natureza}', $1::jsonb), '{classificacao}', $1::jsonb)
+             WHERE data->>'natureza' = $2 OR data->>'classificacao' = $2`,
+            [JSON.stringify(para), de]
+          );
+          if (r.rowCount > 0) {
+            detalhes.push({ de, para, total: r.rowCount });
+            totalAtualizado += r.rowCount;
+          }
+        }
+      } else {
+        // Fallback: atualizar em memória
+        for (const e of (db.entries || [])) {
+          let alterado = false;
+          if (MAPA_NATUREZA[e.natureza]) { e.natureza = MAPA_NATUREZA[e.natureza]; alterado = true; }
+          if (MAPA_NATUREZA[e.classificacao]) { e.classificacao = MAPA_NATUREZA[e.classificacao]; alterado = true; }
+          if (alterado) totalAtualizado++;
+        }
+        saveDb(db);
+      }
+      return json(res, 200, { ok: true, total: totalAtualizado, detalhes });
+    } catch(e) {
+      return json(res, 500, { ok: false, error: e.message });
+    }
+  }
+
   // ─── IA FINANCEIRA: ANÁLISE COM JUSTIFICATIVA ─────────────────────────────
   // ─── DIAGNÓSTICO: verificar variáveis de ambiente da IA ───────────────────────
   if (req.method === 'GET' && url.pathname === '/api/ia/diag') {
@@ -7857,6 +7907,14 @@ async function ocultarConciliacao(id, btn) {
           const memo     = get('MEMO');
           const checknum = get('CHECKNUM');
           if (!dtposted || !trnamt) continue;
+          // Filtrar linhas de saldo — não são transações, são informações de saldo do extrato
+          const memoUp = (memo || '').toUpperCase().trim();
+          const isSaldoLinha = [
+            'SALDO ANTERIOR', 'SALDO TOTAL DISPONIVEL DIA', 'SALDO TOTAL DISPONÍVEL DIA',
+            'SALDO DISPONIVEL', 'SALDO DISPONÍVEL', 'SALDO ATUAL', 'SALDO DO DIA',
+            'SALDO FINAL', 'SALDO INICIAL'
+          ].some(s => memoUp.includes(s)) || trntype === 'SALDO';
+          if (isSaldoLinha) continue; // ignorar linhas de saldo
           // Converter data YYYYMMDD -> YYYY-MM-DD
           const dataISO = dtposted.slice(0,4) + '-' + dtposted.slice(4,6) + '-' + dtposted.slice(6,8);
           const valor   = parseFloat(trnamt.replace(',', '.'));
