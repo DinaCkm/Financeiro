@@ -7472,11 +7472,28 @@ async function saveConta() {
       </select>
     </label>
   </div>
-  <div class='upload-area' onclick='document.getElementById("conc-file").click()'>
+  <div class='upload-area' id='conc-dropzone' onclick='document.getElementById("conc-file").click()'
+       ondragover='event.preventDefault();this.style.borderColor="#6366f1"'
+       ondragleave='this.style.borderColor=""'
+       ondrop='event.preventDefault();this.style.borderColor="";concFileSelected(event.dataTransfer.files[0])'>
     <div class='upload-icon'>🏦</div>
-    <p><strong>Clique para selecionar o extrato bancário</strong></p>
-    <p>Formatos aceitos: OFX, CSV, XLSX · Arraste e solte aqui</p>
-    <input type='file' id='conc-file' accept='.ofx,.csv,.xlsx,.xls' style='display:none' onchange='uploadExtrato(this)'>
+    <p id='conc-file-label'><strong>Clique para selecionar o extrato bancário</strong></p>
+    <p style='color:#94a3b8;font-size:.8rem'>Formatos aceitos: OFX, CSV, XLSX · Arraste e solte aqui</p>
+    <input type='file' id='conc-file' accept='.ofx,.csv,.xlsx,.xls' style='display:none' onchange='concFileSelected(this.files[0])'>
+  </div>
+  <div id='conc-arquivo-info' style='display:none;margin-top:.75rem;padding:.75rem 1rem;background:#f0fdf4;border:1px solid #86efac;border-radius:.5rem;display:flex;align-items:center;gap:.75rem'>
+    <span style='font-size:1.5rem'>📄</span>
+    <div style='flex:1'>
+      <div id='conc-arquivo-nome' style='font-weight:600;color:#166534'></div>
+      <div id='conc-arquivo-tamanho' style='font-size:.75rem;color:#4ade80'></div>
+    </div>
+    <button onclick='concLimpar()' style='background:none;border:none;cursor:pointer;color:#dc2626;font-size:1.1rem' title='Remover arquivo'>✕</button>
+  </div>
+  <div style='margin-top:.75rem'>
+    <button id='conc-btn-processar' onclick='uploadExtrato()' disabled
+      style='background:#1e40af;color:#fff;border:none;padding:.6rem 1.5rem;border-radius:.5rem;font-weight:600;cursor:pointer;opacity:.5;transition:opacity .2s'>
+      ⚡ Processar Extrato
+    </button>
   </div>
   <div id='conc-resultado' style='margin-top:1rem'></div>
 </section>
@@ -7489,28 +7506,98 @@ async function saveConta() {
 </section>
 
 <script>
-async function uploadExtrato(input) {
-  const file = input.files[0];
+let _concFile = null;
+
+function concFileSelected(file) {
   if (!file) return;
+  _concFile = file;
+  // Mostrar info do arquivo
+  const info = document.getElementById('conc-arquivo-info');
+  document.getElementById('conc-arquivo-nome').textContent = file.name;
+  const kb = (file.size / 1024).toFixed(1);
+  document.getElementById('conc-arquivo-tamanho').textContent = kb + ' KB — ' + file.type.split('/').pop().toUpperCase();
+  info.style.display = 'flex';
+  // Ativar botão
+  const btn = document.getElementById('conc-btn-processar');
+  btn.disabled = false;
+  btn.style.opacity = '1';
+  btn.style.cursor = 'pointer';
+  // Limpar resultado anterior
+  document.getElementById('conc-resultado').innerHTML = '';
+}
+
+function concLimpar() {
+  _concFile = null;
+  document.getElementById('conc-file').value = '';
+  document.getElementById('conc-arquivo-info').style.display = 'none';
+  const btn = document.getElementById('conc-btn-processar');
+  btn.disabled = true;
+  btn.style.opacity = '.5';
+  document.getElementById('conc-resultado').innerHTML = '';
+}
+
+async function uploadExtrato() {
+  const file = _concFile;
+  if (!file) { alert('Selecione um arquivo primeiro'); return; }
   const bancoId = document.getElementById('conc-banco').value;
-  if (!bancoId) { alert('Selecione o banco antes de fazer o upload'); return; }
+  if (!bancoId) { alert('Selecione o banco antes de processar'); return; }
   const formato = document.getElementById('conc-formato').value;
   const div = document.getElementById('conc-resultado');
-  div.innerHTML = '<div class="alert alert-info">⏳ Processando extrato...</div>';
+  const btn = document.getElementById('conc-btn-processar');
+
+  // Feedback de carregamento
+  btn.disabled = true;
+  btn.textContent = '\u23f3 Processando...';
+  btn.style.opacity = '.7';
+  div.innerHTML = '<div style="padding:1rem;background:#eff6ff;border:1px solid #93c5fd;border-radius:.5rem;display:flex;align-items:center;gap:.75rem">'
+    + '<div style="width:20px;height:20px;border:3px solid #3b82f6;border-top-color:transparent;border-radius:50%;animation:spin .8s linear infinite"></div>'
+    + '<span style="color:#1d4ed8;font-weight:600">Processando extrato banc\u00e1rio... aguarde.</span>'
+    + '</div><style>@keyframes spin{to{transform:rotate(360deg)}}</style>';
+
   const fd = new FormData();
   fd.append('arquivo', file);
   fd.append('banco_id', bancoId);
   fd.append('formato', formato);
+
   try {
     const r = await fetch('/api/conciliacao/upload', { method:'POST', body: fd });
     const d = await r.json();
     if (d.ok) {
-      div.innerHTML = '<div class="alert alert-success">\u2705 Extrato processado! ' + d.total + ' lan\u00e7amentos \u00b7 <strong>' + d.conciliados + ' conciliados</strong> \u00b7 ' + d.divergentes + ' divergentes \u00b7 ' + d.nao_lancados + ' n\u00e3o lan\u00e7ados. <a href="/conciliacao/detalhe?id=' + d.id + '" class="btn btn-sm" style="margin-left:.5rem">Ver detalhes</a></div>';
+      const cor   = d.total === 0 ? '#fef3c7' : '#f0fdf4';
+      const borda = d.total === 0 ? '#fcd34d' : '#86efac';
+      const icone = d.total === 0 ? '\u26a0\ufe0f' : '\u2705';
+      const fmtData = function(s){ if(!s) return '-'; var p=s.split('-'); return p.length===3?p[2]+'/'+p[1]+'/'+p[0]:s; };
+      const dataExtr = d.data_fim ? fmtData(d.data_fim) : '-';
+      const dataUpload = new Date().toLocaleString('pt-BR');
+      const linkDetalhe = d.id ? '<a href="/conciliacao/detalhe?id='+d.id+'" style="background:#1e40af;color:#fff;padding:.45rem 1rem;border-radius:.4rem;text-decoration:none;font-size:.85rem;font-weight:600">\ud83d\udd0d Ver detalhes</a>' : '';
+      div.innerHTML = '<div style="padding:1rem 1.25rem;background:'+cor+';border:1px solid '+borda+';border-radius:.5rem">'
+        + '<div style="font-size:1rem;font-weight:700;margin-bottom:.5rem">'+icone+' Extrato processado!</div>'
+        + '<div style="font-size:.78rem;color:#64748b;margin-bottom:.75rem">\ud83d\udcc5 Data do extrato: <strong>'+dataExtr+'</strong> &nbsp;|&nbsp; \ud83d\udd52 Upload realizado em: <strong>'+dataUpload+'</strong></div>'
+        + '<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:.5rem;margin-bottom:.75rem">'
+        + '<div style="background:#fff;border-radius:.4rem;padding:.5rem .75rem;text-align:center;border:1px solid #e2e8f0"><div style="font-size:1.4rem;font-weight:700;color:#1e40af">'+d.total+'</div><div style="font-size:.72rem;color:#64748b">Total</div></div>'
+        + '<div style="background:#fff;border-radius:.4rem;padding:.5rem .75rem;text-align:center;border:1px solid #e2e8f0"><div style="font-size:1.4rem;font-weight:700;color:#059669">'+d.conciliados+'</div><div style="font-size:.72rem;color:#64748b">Conciliados</div></div>'
+        + '<div style="background:#fff;border-radius:.4rem;padding:.5rem .75rem;text-align:center;border:1px solid #e2e8f0"><div style="font-size:1.4rem;font-weight:700;color:#d97706">'+d.divergentes+'</div><div style="font-size:.72rem;color:#64748b">Divergentes</div></div>'
+        + '<div style="background:#fff;border-radius:.4rem;padding:.5rem .75rem;text-align:center;border:1px solid #e2e8f0"><div style="font-size:1.4rem;font-weight:700;color:#dc2626">'+d.nao_lancados+'</div><div style="font-size:.72rem;color:#64748b">N\u00e3o lan\u00e7ados</div></div>'
+        + '</div>'
+        + linkDetalhe
+        + '</div>';
+      // Recarregar a p\u00e1gina ap\u00f3s 3s para atualizar o hist\u00f3rico
+      setTimeout(function(){ location.reload(); }, 3000);
     } else {
-      div.innerHTML = '<div class="alert alert-danger">❌ ' + d.error + '</div>';
+      div.innerHTML = '<div style="padding:1rem;background:#fef2f2;border:1px solid #fca5a5;border-radius:.5rem">'
+        + '<div style="color:#dc2626;font-weight:700;font-size:1rem;margin-bottom:.5rem">\u274c Erro ao processar o extrato</div>'
+        + '<div style="color:#7f1d1d;font-size:.85rem">' + (d.error || 'Falha desconhecida ao processar o arquivo') + '</div>'
+        + '</div>';
     }
   } catch(e) {
-    div.innerHTML = '<div class="alert alert-danger">❌ Erro: ' + e.message + '</div>';
+    div.innerHTML = '<div style="padding:1rem;background:#fef2f2;border:1px solid #fca5a5;border-radius:.5rem">'
+      + '<div style="color:#dc2626;font-weight:700;font-size:1rem;margin-bottom:.5rem">\u274c Erro de conex\u00e3o</div>'
+      + '<div style="color:#7f1d1d;font-size:.85rem">' + e.message + '</div>'
+      + '</div>';
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '\u26a1 Processar Extrato';
+    btn.style.opacity = '1';
   }
 }
 </script>`;
