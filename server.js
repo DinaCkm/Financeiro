@@ -7438,7 +7438,7 @@ async function saveConta() {
       const pg = storage.getPool ? storage.getPool() : null;
       if (pg) {
         bancos    = (await pg.query('SELECT * FROM bancos WHERE ativo=true ORDER BY nome')).rows;
-        historico = (await pg.query('SELECT ce.*, COALESCE(b.nome, ce.banco_nome) as banco_nome FROM conciliacao_extratos ce LEFT JOIN bancos b ON ce.banco_id=b.id ORDER BY ce.data_upload DESC LIMIT 20')).rows;
+        historico = (await pg.query('SELECT ce.*, COALESCE(b.nome, ce.banco_nome) as banco_nome FROM conciliacao_extratos ce LEFT JOIN bancos b ON ce.banco_id=b.id WHERE COALESCE(ce.oculto,FALSE)=FALSE ORDER BY ce.data_upload DESC LIMIT 20')).rows;
       }
     } catch(e) { console.error('[conciliacao]', e.message); }
 
@@ -7465,7 +7465,10 @@ async function saveConta() {
         <td><span class='badge badge-amber'>${h.total_divergentes||0} divergentes</span></td>
         <td><span class='badge badge-red'>${h.total_nao_lancados||0} não lançados</span></td>
         <td>${h.saldo_extrato!=null?'R$ '+Number(h.saldo_extrato).toLocaleString('pt-BR',{minimumFractionDigits:2}):'-'}</td>
-        <td><a href='/conciliacao/detalhe?id=${h.id}' class='btn btn-sm btn-outline'>Ver detalhes</a></td>
+        <td style="white-space:nowrap">
+          <a href='/conciliacao/detalhe?id=${h.id}' class='btn btn-sm btn-outline' style='margin-right:.4rem'>Ver detalhes</a>
+          <button onclick='ocultarConciliacao(${h.id},this)' title='Ocultar este registro' style='background:none;border:1px solid #e2e8f0;border-radius:.4rem;padding:.25rem .5rem;cursor:pointer;color:#94a3b8;font-size:.8rem' onmouseover='this.style.color="#dc2626";this.style.borderColor="#dc2626"' onmouseout='this.style.color="#94a3b8";this.style.borderColor="#e2e8f0"'>🗑 Ocultar</button>
+        </td>
       </tr>`;}).join('') || '<tr><td colspan="9" style="color:#808080;padding:1rem">Nenhuma conciliação realizada ainda.</td></tr>';
 
     const body = `
@@ -7616,6 +7619,22 @@ async function uploadExtrato() {
     btn.textContent = '\u26a1 Processar Extrato';
     btn.style.opacity = '1';
   }
+}
+
+async function ocultarConciliacao(id, btn) {
+  if (!confirm('Ocultar este registro do histórico? O dado não será excluído, apenas ocultado da lista.')) return;
+  try {
+    const r = await fetch('/api/conciliacao/ocultar', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({id}) });
+    const d = await r.json();
+    if (d.ok) {
+      const tr = btn.closest('tr');
+      tr.style.transition = 'opacity .4s';
+      tr.style.opacity = '0';
+      setTimeout(() => tr.remove(), 400);
+    } else {
+      alert('Erro ao ocultar: ' + (d.error||'desconhecido'));
+    }
+  } catch(e) { alert('Erro: ' + e.message); }
 }
 </script>`;
     const html = page('Conciliação Bancária', body, user, '/conciliacao');
@@ -7828,6 +7847,25 @@ async function uploadExtrato() {
             await pg.query('UPDATE conciliacao_extratos SET itens=$1 WHERE id=$2', [JSON.stringify(itens), extratoId]);
           }
         }
+      }
+      return json(res, 200, { ok: true });
+    } catch(e) { return json(res, 500, { ok: false, error: e.message }); }
+  }
+
+  // ============================================================
+  // CONCILIAÇÃO — OCULTAR /api/conciliacao/ocultar
+  // ============================================================
+  if (req.method === 'POST' && url.pathname === '/api/conciliacao/ocultar') {
+    const user = requireAuth(req, res, db); if (!user) return;
+    try {
+      const body = await readBody(req);
+      const { id } = JSON.parse(body);
+      if (!id) return json(res, 400, { ok: false, error: 'ID não informado' });
+      const pgOc = storage.getPool ? storage.getPool() : null;
+      if (pgOc) {
+        // Adicionar coluna oculto se não existir
+        try { await pgOc.query('ALTER TABLE conciliacao_extratos ADD COLUMN IF NOT EXISTS oculto BOOLEAN DEFAULT FALSE'); } catch(e) {}
+        await pgOc.query('UPDATE conciliacao_extratos SET oculto=TRUE WHERE id=$1', [id]);
       }
       return json(res, 200, { ok: true });
     } catch(e) { return json(res, 500, { ok: false, error: e.message }); }
