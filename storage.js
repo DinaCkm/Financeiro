@@ -88,6 +88,17 @@ function createPostgresStorage(databaseUrl) {
         key TEXT PRIMARY KEY,
         value JSONB NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS audit_log (
+        id TEXT PRIMARY KEY,
+        ts TIMESTAMPTZ NOT NULL DEFAULT now(),
+        entry_id TEXT,
+        usuario TEXT NOT NULL,
+        campo TEXT NOT NULL,
+        de TEXT,
+        para TEXT,
+        tipo TEXT DEFAULT 'lancamento',
+        created_at TIMESTAMPTZ DEFAULT now()
+      );
     `);
   }
 

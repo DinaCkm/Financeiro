@@ -209,24 +209,46 @@ function saveDb(db) {
 }
 
 // ===== AUDITORIA: registra alterações campo a campo em cada lançamento =====
-// Estrutura de cada registro: { id, ts, usuario, campo, de, para }
+// Salva no PostgreSQL (audit_log) quando disponível, e também no JSON (compatibilidade)
+async function registrarAuditoriaAsync(pg, db, entryId, usuario, changes, entryAntes, tipo) {
+  if (!db.auditLog) db.auditLog = [];
+  const ts = new Date().toISOString();
+  const user = usuario || 'sistema';
+  for (const [campo, novoValor] of Object.entries(changes)) {
+    const valorAnterior = entryAntes ? entryAntes[campo] : undefined;
+    if (String(valorAnterior ?? '') === String(novoValor ?? '')) continue;
+    const registro = {
+      id: crypto.randomUUID(), ts,
+      entryId: entryId || null,
+      usuario: user, campo,
+      de: String(valorAnterior ?? ''),
+      para: String(novoValor ?? ''),
+      tipo: tipo || 'lancamento'
+    };
+    db.auditLog.push(registro);
+    if (pg) {
+      try {
+        await pg.query(
+          `INSERT INTO audit_log (id, ts, entry_id, usuario, campo, de, para, tipo)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT DO NOTHING`,
+          [registro.id, registro.ts, registro.entryId, registro.usuario,
+           registro.campo, registro.de, registro.para, registro.tipo]
+        );
+      } catch(e) { /* tabela pode não existir ainda — ignora silenciosamente */ }
+    }
+  }
+}
+
+// Versão síncrona mantida para compatibilidade com código legado
 function registrarAuditoria(db, entryId, usuario, changes, entryAntes) {
   if (!db.auditLog) db.auditLog = [];
   const ts = new Date().toISOString();
   const user = usuario || 'sistema';
   for (const [campo, novoValor] of Object.entries(changes)) {
     const valorAnterior = entryAntes ? entryAntes[campo] : undefined;
-    // Só registra se houve mudança real
     if (String(valorAnterior ?? '') === String(novoValor ?? '')) continue;
-    db.auditLog.push({
-      id: crypto.randomUUID(),
-      ts,
-      entryId,
-      usuario: user,
-      campo,
-      de: valorAnterior ?? '',
-      para: novoValor ?? ''
-    });
+    db.auditLog.push({ id: crypto.randomUUID(), ts, entryId, usuario: user, campo,
+      de: valorAnterior ?? '', para: novoValor ?? '' });
   }
 }
 
@@ -237,17 +259,8 @@ function registrarAuditoriaRevisao(db, registroId, nomeOficial, usuario, changes
   for (const [campo, novoValor] of Object.entries(changes)) {
     const valorAnterior = registroAntes ? registroAntes[campo] : undefined;
     if (String(valorAnterior ?? '') === String(novoValor ?? '')) continue;
-    db.auditLog.push({
-      id: crypto.randomUUID(),
-      ts,
-      registroId,
-      nomeOficial,
-      usuario: user,
-      campo,
-      de: valorAnterior ?? '',
-      para: novoValor ?? '',
-      tipo: 'revisao'
-    });
+    db.auditLog.push({ id: crypto.randomUUID(), ts, registroId, nomeOficial,
+      usuario: user, campo, de: valorAnterior ?? '', para: novoValor ?? '', tipo: 'revisao' });
   }
 }
 
@@ -919,7 +932,6 @@ function page(title, body, user, activePage) {
   const navLinks = user ? [
     ['/', 'Home', ''],
     ['/upload', 'Upload', ''],
-    ['/pendencias', 'Pré-análise', ''],
     ['/fatura', 'Fatura', ''],
     ['/lancamentos', '✏ Lançamentos', ''],
     ['/historico', 'Histórico', ''],
@@ -1036,9 +1048,15 @@ function reviewCards(list, allEntries) {
       const natOpts = NATUREZAS_GERENCIAIS
         .map((n) => `<option value='${n}' ${n === (e.naturezaGerencial||e.natureza||'Pendente de Classificação') ? 'selected' : ''}>${n}</option>`).join('');
       const STATUS_NOVOS = [
-        ['PENDENTE','Pendente'],['PAGO','Pago'],['RECEBIDO','Recebido'],
-        ['CANCELADO','Cancelado'],['ESTORNADO','Estornado'],['DEVOLVIDO','Devolvido'],
-        ['RENEGOCIADO','Renegociado'],['NAO_REALIZADO','Não realizado'],['CONFIRMADO','Confirmado']
+        ['PENDENTE','Pendente — Lançamento criado, mas ainda não concluído'],
+        ['PAGO','Pago — Despesa já paga'],
+        ['RECEBIDO','Recebido — Receita já recebida'],
+        ['CANCELADO','Cancelado — Cancelado antes de se efetivar'],
+        ['ESTORNADO','Estornado — Revertido contabilmente/financeiramente'],
+        ['DEVOLVIDO','Devolvido — Valor devolvido ao cliente ou do fornecedor'],
+        ['RENEGOCIADO','Renegociado — Título ou obrigação renegociada'],
+        ['NAO_REALIZADO','Não realizado — Previsto, mas não aconteceu'],
+        ['CONFIRMADO','Confirmado — Validado, mas ainda não liquidado']
       ];
       const STATUS_LEGADO = ['PG','AG','RE','RT','TF','NT','ZZ','OK','RG','XF','AP','DE','MK','NR','BQ','CR','RD','importado','pendente','ok','cancelado','revisado'];
       const statusAtual = e.status || 'PENDENTE';
@@ -2769,16 +2787,40 @@ Responda em português, de forma objetiva e direta, citando os dados específico
     const filtroFim = url.searchParams.get('ate') || hoje;
     const visao = url.searchParams.get('visao') || 'resultado'; // 'fluxo' ou 'resultado'
 
+    // Buscar lançamentos do PostgreSQL
+    let lancsFiltrados = [];
+    let todosLancsDB = [];
+    try {
+      const pgDash = storage.getPool ? storage.getPool() : null;
+      if (pgDash) {
+        const resF = await pgDash.query(
+          `SELECT data FROM entries WHERE
+           (data->>'dataISO') >= $1 AND (data->>'dataISO') <= $2
+           AND (data->>'isTransferenciaInterna')::boolean IS NOT TRUE
+           AND UPPER(TRIM(data->>'centroCusto')) != 'SALDO ATUAL'`,
+          [filtroInicio, filtroFim]
+        );
+        lancsFiltrados = resF.rows.map(r => r.data);
+        const resT = await pgDash.query(
+          `SELECT data FROM entries WHERE
+           (data->>'isTransferenciaInterna')::boolean IS NOT TRUE
+           AND UPPER(TRIM(data->>'centroCusto')) != 'SALDO ATUAL'`
+        );
+        todosLancsDB = resT.rows.map(r => r.data);
+      }
+    } catch(e) { console.error('[dashboard-pg]', e.message); }
+    // Fallback para JSON se PostgreSQL não retornou dados
+    if (!lancsFiltrados.length && !todosLancsDB.length) {
+      lancsFiltrados = (db.entries || []).filter(e =>
+        (e.dataISO||'') >= filtroInicio && (e.dataISO||'') <= filtroFim &&
+        !e.isTransferenciaInterna && (e.centroCusto||'').toUpperCase().trim() !== 'SALDO ATUAL'
+      );
+      todosLancsDB = (db.entries || []).filter(e =>
+        !e.isTransferenciaInterna && (e.centroCusto||'').toUpperCase().trim() !== 'SALDO ATUAL'
+      );
+    }
     // Calcular métricas gerais (sem filtro de período — para os cards de saldo)
     const metrics = calculateDashboard(db);
-
-    // Calcular métricas filtradas pelo período selecionado
-    const lancsFiltrados = db.entries.filter(e =>
-      (e.dataISO||'') >= filtroInicio &&
-      (e.dataISO||'') <= filtroFim &&
-      !e.isTransferenciaInterna &&
-      (e.centroCusto||'').toUpperCase().trim() !== 'SALDO ATUAL'
-    );
     const totalReceitasFiltro = lancsFiltrados.filter(e=>(e.valor||0)>0).reduce((a,e)=>a+(e.valor||0),0);
     const totalDespesasFiltro = lancsFiltrados.filter(e=>(e.valor||0)<0).reduce((a,e)=>a+Math.abs(e.valor||0),0);
     const saldoFiltro = totalReceitasFiltro - totalDespesasFiltro;
@@ -2844,10 +2886,7 @@ Responda em português, de forma objetiva e direta, citando os dados específico
     }
 
     // Todos os lançamentos (sem filtro de data), exceto TEF e SALDO ATUAL
-    const todosLancs = db.entries.filter(e =>
-      !e.isTransferenciaInterna &&
-      (e.centroCusto||'').toUpperCase().trim() !== 'SALDO ATUAL'
-    );
+    const todosLancs = todosLancsDB;
 
     const porAno = {}; // { '2021': { OPERACIONAL: {}, ESTRUTURA: {}, FINANCEIRO: {} }, ... }
 
@@ -3901,7 +3940,7 @@ async function excluirRef(tipo,nome){
 
     // Datalists para autocomplete — CCs: apenas os oficiais cadastrados no banco
     // ── Listas de filtro: 100% originadas dos cadastros (banco) ──────────────
-    let ccs = [], clientesCad = [], clientesMapCpf = {}, projetosCad = [], naturezasCad = [], gruposCad = [], tiposDespesaCad = [], bancosCad = [];
+    let ccs = [], clientesCad = [], clientesMapCpf = {}, projetosCad = [], naturezasCad = [], gruposCad = [], tiposDespesaCad = [], bancosCad = [], contratosCad = [];
     const contas = [...new Set(db.entries.map(e => e.conta).filter(Boolean))].sort();
     try {
       const pg = storage.getPool ? storage.getPool() : null;
@@ -3919,6 +3958,7 @@ async function excluirRef(tipo,nome){
         gruposCad      = (await pg.query('SELECT codigo, nome FROM grupos_despesa WHERE ativo=true ORDER BY nome')).rows;
         tiposDespesaCad= (await pg.query('SELECT td.codigo, td.nome, td.grupo_id, gd.nome as grupo_nome, gd.codigo as grupo_cod FROM tipos_despesa td LEFT JOIN grupos_despesa gd ON gd.id=td.grupo_id WHERE td.ativo=true ORDER BY gd.nome NULLS LAST, td.nome')).rows;
         bancosCad      = (await pg.query('SELECT codigo, nome FROM bancos WHERE ativo=true ORDER BY nome')).rows;
+        contratosCad   = (await pg.query(`SELECT ct.id, ct.numero, ct.descricao, ct.valor_total, ct.data_inicio, ct.data_fim, ct.status, cl.nome as cliente_nome, cl.id as cliente_id FROM contratos ct LEFT JOIN clientes cl ON ct.cliente_id=cl.id WHERE ct.status='Ativo' ORDER BY cl.nome, ct.numero`)).rows;
       }
     } catch(e) { console.error('[lancamentos-filtros]', e.message); }
     const NATUREZAS = naturezasCad.map(r => r.nome);
@@ -3926,9 +3966,15 @@ async function excluirRef(tipo,nome){
     const TIPOS = tiposDespesaCad;
     // Status novos (ativos para novos lançamentos)
     const STATUS_NOVOS = [
-      ['PENDENTE','Pendente'],['PAGO','Pago'],['RECEBIDO','Recebido'],
-      ['CANCELADO','Cancelado'],['ESTORNADO','Estornado'],['DEVOLVIDO','Devolvido'],
-      ['RENEGOCIADO','Renegociado'],['NAO_REALIZADO','Não realizado'],['CONFIRMADO','Confirmado']
+      ['PENDENTE','Pendente — Lançamento criado, mas ainda não concluído'],
+      ['PAGO','Pago — Despesa já paga'],
+      ['RECEBIDO','Recebido — Receita já recebida'],
+      ['CANCELADO','Cancelado — Cancelado antes de se efetivar'],
+      ['ESTORNADO','Estornado — Revertido contabilmente/financeiramente'],
+      ['DEVOLVIDO','Devolvido — Valor devolvido ao cliente ou do fornecedor'],
+      ['RENEGOCIADO','Renegociado — Título ou obrigação renegociada'],
+      ['NAO_REALIZADO','Não realizado — Previsto, mas não aconteceu'],
+      ['CONFIRMADO','Confirmado — Validado, mas ainda não liquidado']
     ];
     // Status legados (mantidos apenas para exibição de lançamentos antigos)
     const STATUS_LEGADO_LISTA = ['PG','AG','RE','RT','TF','NT','ZZ','OK','RG','XF','AP','DE','MK','NR','BQ','CR','RD','importado','pendente','ok','cancelado','revisado'];
@@ -3962,6 +4008,13 @@ async function excluirRef(tipo,nome){
     // Projetos do cadastro
     const dlProjetos     = projetosCad.map(p => `<option value="${p.codigo}" label="${p.nome} (${p.codigo})">`).join('');
     const dlProjetosNome = projetosCad.map(p => `<option value="${p.codigo}">${p.nome} (${p.codigo})</option>`).join('');
+    // Mapa de contratos por nome do cliente (para select dinâmico no formulário)
+    const CONTRATOS_MAP = contratosCad.reduce((m, ct) => {
+      const key = (ct.cliente_nome || '').trim();
+      if (!m[key]) m[key] = [];
+      m[key].push({ id: ct.id, numero: ct.numero, descricao: ct.descricao || '', valor: ct.valor_total || 0 });
+      return m;
+    }, {});
 
     // Paginação
     const paginacao = totalPages > 1 ? `<div style="display:flex;gap:.5rem;align-items:center;margin-top:1rem;flex-wrap:wrap">
@@ -4120,8 +4173,14 @@ async function excluirRef(tipo,nome){
     <input id="novo-valor" type="number" step="0.01" placeholder="0,00" style="font-size:.8rem;padding:.3rem .5rem;width:100%"/></div>
     <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Status</label>
     <select id="novo-status" style="font-size:.8rem;padding:.3rem .5rem;width:100%">${statusOpts}</select></div>
-    <div style="grid-column:span 2"><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Documento / Referência (NF, Recibo, Contrato)</label>
-    <input id="novo-doc" placeholder="Ex: NF 11921943 - Contrato 42156427" style="font-size:.8rem;padding:.3rem .5rem;width:100%"/></div>
+    <div style="grid-column:span 2" id="bloco-doc">
+      <label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase" id="label-doc">Documento / Referência (NF, Recibo, Contrato)</label>
+      <input id="novo-doc" placeholder="Ex: NF 11921943 - Contrato 42156427" style="font-size:.8rem;padding:.3rem .5rem;width:100%"/>
+      <select id="novo-doc-contrato" style="font-size:.8rem;padding:.3rem .5rem;width:100%;display:none">
+        <option value="">-- Selecione o Contrato --</option>
+      </select>
+      <span id="doc-sem-contrato" style="font-size:.75rem;color:#f59e0b;display:none">&#9888; Nenhum contrato ativo cadastrado para este cliente. <a href='/contratos' target='_blank' style='color:#2563eb'>Cadastrar agora</a></span>
+    </div>
     <div style="grid-column:span 2"><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Descritivo (finalidade do gasto)</label>
     <input id="novo-descritivo" placeholder="Ex: Serviço de hospedagem para manutenção da presença digital" style="font-size:.8rem;padding:.3rem .5rem;width:100%"/></div>
   </div>
@@ -4254,6 +4313,41 @@ const GRUPOS_LISTA = ${JSON.stringify(GRUPOS.map(g=>({codigo:g.codigo,nome:g.nom
 const CLIENTES_MAP_CPF = ${JSON.stringify(clientesMapCpf)};
 // Mapa NOME → { cpf, tipo } para autocomplete inverso
 const CLIENTES_MAP_NOME = ${JSON.stringify(clientesCad.reduce((m,c)=>{ m[c.nome]={cpf:c.cpf||'',tipo:c.tipo||''}; return m; }, {}))};
+// Mapa NOME_CLIENTE → [contratos] para select dinâmico no formulário
+const CONTRATOS_POR_CLIENTE = ${JSON.stringify(CONTRATOS_MAP)};
+function atualizarContratoSelect(nomeCliente, tipoCliente) {
+  var inputDoc = document.getElementById('novo-doc');
+  var selectDoc = document.getElementById('novo-doc-contrato');
+  var avisoSem = document.getElementById('doc-sem-contrato');
+  var labelDoc = document.getElementById('label-doc');
+  if (!inputDoc || !selectDoc) return;
+  // Apenas para clientes do tipo CLIENTE
+  if ((tipoCliente||'').toUpperCase() === 'CLIENTE') {
+    var contratos = CONTRATOS_POR_CLIENTE[nomeCliente] || [];
+    if (contratos.length > 0) {
+      selectDoc.innerHTML = '<option value="">-- Selecione o Contrato --</option>' +
+        contratos.map(function(ct){
+          var label = ct.numero + (ct.descricao ? ' — ' + ct.descricao : '');
+          return '<option value="' + ct.numero + '">' + label + '</option>';
+        }).join('');
+      inputDoc.style.display = 'none';
+      selectDoc.style.display = 'block';
+      if(avisoSem) avisoSem.style.display = 'none';
+      if(labelDoc) labelDoc.textContent = 'Contrato *';
+    } else {
+      inputDoc.style.display = 'none';
+      selectDoc.style.display = 'none';
+      if(avisoSem) avisoSem.style.display = 'block';
+      if(labelDoc) labelDoc.textContent = 'Contrato';
+    }
+  } else {
+    // Para fornecedores/prestadores: campo de texto livre
+    inputDoc.style.display = 'block';
+    selectDoc.style.display = 'none';
+    if(avisoSem) avisoSem.style.display = 'none';
+    if(labelDoc) labelDoc.textContent = 'Documento / Referência (NF, Recibo, Contrato)';
+  }
+}
 function selecionarFavorecido(cpf, nome, tipo) {
   var campoCpf = document.getElementById('novo-cpf');
   var campoNome = document.getElementById('novo-cliente');
@@ -4263,6 +4357,8 @@ function selecionarFavorecido(cpf, nome, tipo) {
   if(campoNome) campoNome.value = nome;
   if(aviso) aviso.innerHTML = '<span style="color:#059669">\u2713 ' + (tipo||'Cadastrado') + '</span>';
   if(sugestoes) sugestoes.style.display = 'none';
+  // Atualizar campo de contrato conforme tipo do cliente
+  atualizarContratoSelect(nome, tipo);
 }
 function autocompleteFavorecido(val) {
   var cpfLimpo = val.replace(/\D/g,'');
@@ -4484,7 +4580,9 @@ async function criarLancamento() {
     valor: parseFloat(document.getElementById('novo-valor')?.value || 0),
     status: document.getElementById('novo-status')?.value,
     classificacao: document.getElementById('novo-classif')?.value,
-    documento: document.getElementById('novo-doc')?.value,
+    documento: (document.getElementById('novo-doc-contrato')?.style.display !== 'none'
+      ? document.getElementById('novo-doc-contrato')?.value
+      : document.getElementById('novo-doc')?.value) || '',
     descritivo: document.getElementById('novo-descritivo')?.value,
   };
   // Validar CPF/CNPJ obrigatório e cadastrado
@@ -4500,8 +4598,19 @@ async function criarLancamento() {
     document.getElementById('novo-cpf').focus();
     return;
   }
-  if (!data.data || !data.valor || !data.centroCusto) {
-    fb.innerHTML = '<span style="color:#dc2626">⚠ Preencha Data, Código (CC) e Valor.</span>';
+  // Validação detalhada com lista de impedimentos
+  const erros = [];
+  if (!data.data) erros.push('<li><strong>Data</strong> — campo obrigatório</li>');
+  if (!data.dc) erros.push('<li><strong>Débito/Crédito</strong> — selecione se é entrada ou saída</li>');
+  if (!data.classificacao) erros.push('<li><strong>Classificação</strong> — selecione o tipo do lançamento</li>');
+  if (!data.centroCusto) erros.push('<li><strong>Código (CC)</strong> — campo obrigatório</li>');
+  if (!data.valor || data.valor === 0) erros.push('<li><strong>Valor (R$)</strong> — deve ser maior que zero</li>');
+  if (!data.status) erros.push('<li><strong>Status</strong> — selecione o status do lançamento</li>');
+  if (erros.length > 0) {
+    fb.innerHTML = '<div style="background:#fef2f2;border:1px solid #fca5a5;border-radius:.5rem;padding:.75rem 1rem;color:#991b1b">'
+      + '<strong>\u274c N\u00e3o foi poss\u00edvel salvar. Corrija os seguintes campos:</strong>'
+      + '<ul style="margin:.5rem 0 0 1rem;padding:0">' + erros.join('') + '</ul>'
+      + '</div>';
     return;
   }
   var recorrencia = document.getElementById('novo-recorrencia')?.value || 'nao';
@@ -4595,13 +4704,104 @@ async function excluirLanc(id) {
     const page_num = Math.max(1, parseInt(url.searchParams.get('p') || '1', 10));
     const qFilter = (url.searchParams.get('q') || '').toLowerCase().trim();
 
-    // Construir mapa de entries para lookup rápido
-    const entryMap = new Map(db.entries.map(e => [e.id, e]));
-
-    // Ordenar e filtrar sem gerar HTML de todas as linhas de uma vez
-    let log = (db.auditLog || []).slice().sort((a, b) => b.ts.localeCompare(a.ts));
-
-    // Filtro server-side por texto (registro, campo, usuário)
+    // Buscar do PostgreSQL (fonte principal) ou fallback para JSON
+    let log = [];
+    try {
+      const pg = storage.getPool ? storage.getPool() : null;
+      if (pg) {
+        let whereClause = '';
+        const params = [];
+        if (qFilter) {
+          params.push('%' + qFilter + '%');
+          whereClause = `WHERE (LOWER(campo) LIKE $1 OR LOWER(de) LIKE $1 OR LOWER(para) LIKE $1 OR LOWER(usuario) LIKE $1 OR LOWER(entry_id) LIKE $1)`;
+        }
+        const countRes = await pg.query(`SELECT COUNT(*)::int AS c FROM audit_log ${whereClause}`, params);
+        const totalLog = countRes.rows[0].c;
+        const totalPages = Math.max(1, Math.ceil(totalLog / PAGE_SIZE));
+        const currentPage = Math.min(page_num, totalPages);
+        const offset = (currentPage - 1) * PAGE_SIZE;
+        const rows2 = (await pg.query(
+          `SELECT id, ts, entry_id, usuario, campo, de, para, tipo FROM audit_log ${whereClause} ORDER BY ts DESC LIMIT $${params.length+1} OFFSET $${params.length+2}`,
+          [...params, PAGE_SIZE, offset]
+        )).rows;
+        // Buscar descritivo dos lançamentos referenciados
+        const entryIds = [...new Set(rows2.map(r => r.entry_id).filter(Boolean))];
+        const entryDescMap = {};
+        if (entryIds.length > 0) {
+          const eRows = (await pg.query(
+            `SELECT id, data->>'descritivo' as descritivo, data->>'favorecido' as favorecido FROM entries WHERE id = ANY($1)`,
+            [entryIds]
+          )).rows;
+          eRows.forEach(e => { entryDescMap[e.id] = e.descritivo || e.favorecido || e.id.slice(0,8); });
+        }
+        const LABELS = {
+          cliente: 'Cliente', projeto: 'Projeto', parceiro: 'Parceiro', centroCusto: 'Centro de Custo',
+          natureza: 'Natureza', categoria: 'Categoria', detalhe: 'Detalhe', conta: 'Conta',
+          formaPagamento: 'Forma de Pagamento', status: 'Status', descricao: 'Descrição',
+          valor: 'Valor', dc: 'D/C', data: 'Data', dataISO: 'Data ISO',
+          tipoFinal: 'Tipo Final', statusRevisao: 'Status Revisão',
+          clienteVinculado: 'Cliente Vinculado', projetoVinculado: 'Projeto Vinculado', observacao: 'Observação',
+          favorecido: 'Favorecido', grupoDespesa: 'Grupo da Despesa', tipoDespesa: 'Tipo de Despesa',
+          cpfCnpj: 'CPF/CNPJ', documento: 'Documento/Referência', descritivo: 'Descritivo'
+        };
+        const formatTs = ts => {
+          const d = new Date(ts);
+          return d.toLocaleDateString('pt-BR') + ' ' + d.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+        };
+        const buildPageUrl = (p) => '/historico?p=' + p + (qFilter ? '&q=' + encodeURIComponent(qFilter) : '');
+        const pagination = totalPages <= 1 ? '' : `
+    <div style='display:flex;gap:.5rem;align-items:center;flex-wrap:wrap;margin-top:1rem'>
+      ${currentPage > 1 ? `<a href='${buildPageUrl(1)}' style='padding:.3rem .7rem;border:1px solid var(--gray-200);border-radius:6px;font-size:.82rem;text-decoration:none;color:var(--gray-700)'>&laquo; Primeira</a>` : ''}
+      ${currentPage > 1 ? `<a href='${buildPageUrl(currentPage-1)}' style='padding:.3rem .7rem;border:1px solid var(--gray-200);border-radius:6px;font-size:.82rem;text-decoration:none;color:var(--gray-700)'>&lsaquo; Anterior</a>` : ''}
+      <span style='font-size:.82rem;color:var(--gray-500)'>Página ${currentPage} de ${totalPages} (${totalLog} registros)</span>
+      ${currentPage < totalPages ? `<a href='${buildPageUrl(currentPage+1)}' style='padding:.3rem .7rem;border:1px solid var(--gray-200);border-radius:6px;font-size:.82rem;text-decoration:none;color:var(--gray-700)'>Próxima &rsaquo;</a>` : ''}
+      ${currentPage < totalPages ? `<a href='${buildPageUrl(totalPages)}' style='padding:.3rem .7rem;border:1px solid var(--gray-200);border-radius:6px;font-size:.82rem;text-decoration:none;color:var(--gray-700)'>Última &raquo;</a>` : ''}
+    </div>`;
+        const rowsHtml = rows2.map(r => {
+          const descricao = r.entry_id ? (entryDescMap[r.entry_id] || r.entry_id.slice(0,8)) : '-';
+          const tipoLog = r.tipo === 'revisao' ? '<span style="font-size:.72rem;background:#ede9fe;color:#7c3aed;padding:.15rem .45rem;border-radius:4px">Revisão</span>' : '<span style="font-size:.72rem;background:#dbeafe;color:#1d4ed8;padding:.15rem .45rem;border-radius:4px">Lançamento</span>';
+          return `<tr>
+            <td style='font-size:.78rem;color:var(--gray-500);white-space:nowrap'>${formatTs(r.ts)}</td>
+            <td>${tipoLog}</td>
+            <td style='font-size:.82rem;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap' title='${descricao}'>${descricao}</td>
+            <td style='font-size:.82rem'><strong>${LABELS[r.campo] || r.campo}</strong></td>
+            <td style='font-size:.82rem;color:var(--red);text-decoration:line-through;max-width:160px;overflow:hidden;text-overflow:ellipsis' title='${r.de}'>${r.de || '<em style="color:var(--gray-400)">(vazio)</em>'}</td>
+            <td style='font-size:.82rem;color:var(--green);max-width:160px;overflow:hidden;text-overflow:ellipsis' title='${r.para}'>${r.para || '<em style="color:var(--gray-400)">(vazio)</em>'}</td>
+            <td style='font-size:.78rem;color:var(--gray-500)'>${r.usuario || '-'}</td>
+          </tr>`;
+        }).join('');
+        const html = page(renderNav(user, '/historico') + `
+<section style='padding:2rem;max-width:1200px;margin:0 auto'>
+  <h2 style='font-size:1.25rem;font-weight:700;color:var(--gray-800);margin-bottom:.25rem'>Histórico de Alterações <span style='font-size:.85rem;font-weight:400;color:var(--gray-500)'>${totalLog} registro(s)</span></h2>
+  <p style='font-size:.85rem;color:var(--gray-400);margin-bottom:1rem'>Trilha completa de auditoria: toda alteração manual em lançamentos e revisões de cadastro é registrada aqui.</p>
+  <form method='get' action='/historico' style='display:flex;gap:.5rem;margin-bottom:1rem'>
+    <input name='q' value='${qFilter.replace(/"/g,'&quot;')}' placeholder='Buscar por registro, campo ou usuário...' style='flex:1;padding:.5rem .8rem;border:1px solid var(--gray-200);border-radius:8px;font-size:.88rem'/>
+    <button type='submit' style='padding:.5rem 1rem;font-size:.88rem'>Buscar</button>
+    ${qFilter ? `<a href='/historico' style='padding:.5rem .8rem;border:1px solid var(--gray-200);border-radius:8px;font-size:.88rem;text-decoration:none;color:var(--gray-600)'>Limpar</a>` : ''}
+  </form>
+  ${pagination}
+  <div style='overflow-x:auto;margin-top:.75rem'>
+  <table style='width:100%;border-collapse:collapse;font-size:.85rem'>
+    <thead><tr style='background:var(--gray-50);border-bottom:2px solid var(--gray-200)'>
+      <th style='text-align:left;padding:.5rem .75rem;font-size:.78rem;color:var(--gray-500)'>DATA/HORA</th>
+      <th style='text-align:left;padding:.5rem .75rem;font-size:.78rem;color:var(--gray-500)'>TIPO</th>
+      <th style='text-align:left;padding:.5rem .75rem;font-size:.78rem;color:var(--gray-500)'>REGISTRO</th>
+      <th style='text-align:left;padding:.5rem .75rem;font-size:.78rem;color:var(--gray-500)'>CAMPO</th>
+      <th style='text-align:left;padding:.5rem .75rem;font-size:.78rem;color:var(--gray-500)'>ANTES</th>
+      <th style='text-align:left;padding:.5rem .75rem;font-size:.78rem;color:var(--gray-500)'>DEPOIS</th>
+      <th style='text-align:left;padding:.5rem .75rem;font-size:.78rem;color:var(--gray-500)'>USUÁRIO</th>
+    </tr></thead>
+    <tbody>${rowsHtml || '<tr><td colspan="7" style="text-align:center;padding:2rem;color:var(--gray-400)">Nenhuma alteração registrada ainda.</td></tr>'}</tbody>
+  </table></div>
+  ${pagination}
+</section>`, user, '/historico');
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+        return res.end(html);
+      }
+    } catch(e) { console.error('[historico]', e.message); }
+    // Fallback: JSON (legado)
+    const entryMap = new Map((db.entries || []).map(e => [e.id, e]));
+    log = (db.auditLog || []).slice().sort((a, b) => (b.ts||'').localeCompare(a.ts||''));
     if (qFilter) {
       log = log.filter(r => {
         const entry = r.entryId ? entryMap.get(r.entryId) : null;
@@ -4609,7 +4809,6 @@ async function excluirLanc(id) {
         return (descricao + r.campo + (r.de || '') + (r.para || '') + (r.usuario || '')).toLowerCase().includes(qFilter);
       });
     }
-
     const totalLog = log.length;
     const totalPages = Math.max(1, Math.ceil(totalLog / PAGE_SIZE));
     const currentPage = Math.min(page_num, totalPages);
