@@ -6025,16 +6025,16 @@ function renderHistoricoRel() {
 
   <div style='overflow-x:auto'>
   <table style='width:100%;border-collapse:collapse;font-size:.85rem'>
-    <thead><tr style='background:#1e40af;color:#fff'>
-      <th style='padding:.55rem .5rem;text-align:center;white-space:nowrap'>N\u00ba</th>
-      <th style='padding:.55rem .75rem;text-align:left;white-space:nowrap'>Data</th>
-      <th style='padding:.55rem .5rem;text-align:center'>D/C</th>
-      <th style='padding:.55rem .75rem;text-align:left'>C\u00f3digo CC</th>
-      <th style='padding:.55rem .75rem;text-align:left'>Cliente / Fornecedor</th>
-      <th style='padding:.55rem .75rem;text-align:left'>Projeto</th>
-      <th style='padding:.55rem .75rem;text-align:left'>Descritivo</th>
-      <th style='padding:.55rem .75rem;text-align:left'>Natureza</th>
-      <th style='padding:.55rem .75rem;text-align:right'>Valor</th>
+    <thead><tr style='background:#1e40af'>
+      <th style='padding:.55rem .5rem;text-align:center;white-space:nowrap;color:#fff;font-weight:700'>N\u00ba</th>
+      <th style='padding:.55rem .75rem;text-align:left;white-space:nowrap;color:#fff;font-weight:700'>Data</th>
+      <th style='padding:.55rem .5rem;text-align:center;color:#fff;font-weight:700'>D/C</th>
+      <th style='padding:.55rem .75rem;text-align:left;color:#fff;font-weight:700'>C\u00f3digo CC</th>
+      <th style='padding:.55rem .75rem;text-align:left;color:#fff;font-weight:700'>Cliente / Fornecedor</th>
+      <th style='padding:.55rem .75rem;text-align:left;color:#fff;font-weight:700'>Projeto</th>
+      <th style='padding:.55rem .75rem;text-align:left;color:#fff;font-weight:700'>Descritivo</th>
+      <th style='padding:.55rem .75rem;text-align:left;color:#fff;font-weight:700'>Natureza</th>
+      <th style='padding:.55rem .75rem;text-align:right;color:#fff;font-weight:700'>Valor</th>
     </tr></thead>
     <tbody>
       ${tabelaHTML || '<tr><td colspan="9" style="text-align:center;padding:2rem;color:#94a3b8">Nenhum lan\u00e7amento encontrado com os filtros selecionados.</td></tr>'}
