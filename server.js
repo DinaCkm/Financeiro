@@ -7708,10 +7708,12 @@ async function uploadExtrato() {
         lancamentosDB = (db.entries || []).filter(e => !e.isTransferenciaInterna);
       }
 
-      // Indexar lançamentos por dataISO + valor arredondado
+      // Indexar lançamentos por valor arredondado + D/C (sem data)
+      // Critério flexível: o gerente decide se o candidato encontrado é o correto
       const lancIdx = new Map();
       for (const l of lancamentosDB) {
-        const k = (l.dataISO || '') + '|' + Math.round(Math.abs(l.valor || 0) * 100);
+        const lDC = l.dc || (parseFloat(l.valor||0) >= 0 ? 'C' : 'D');
+        const k = Math.round(Math.abs(parseFloat(l.valor || 0)) * 100) + '|' + lDC;
         if (!lancIdx.has(k)) lancIdx.set(k, []);
         lancIdx.get(k).push(l);
       }
@@ -7719,28 +7721,36 @@ async function uploadExtrato() {
       let conciliados = 0, divergentes = 0, naoLancados = 0;
       const itens = [];
       for (const trn of trns) {
-        const k = trn.dataISO + '|' + Math.round(Math.abs(trn.valor) * 100);
+        const k = Math.round(Math.abs(trn.valor) * 100) + '|' + trn.dc;
         const matches = lancIdx.get(k) || [];
         let status = 'NAO_LANCADO';
         let lancId  = null;
+        let candidatos = [];
         if (matches.length > 0) {
-          // Verificar se o sinal bate (C/D)
-          const match = matches.find(l => {
-            const lDC = l.dc || (l.valor >= 0 ? 'C' : 'D');
-            return lDC === trn.dc;
+          // Há candidatos com mesmo valor e D/C — gerente vai confirmar
+          // Priorizar o mais próximo pela data
+          const sorted = matches.slice().sort((a,b) => {
+            const da = Math.abs(new Date(a.dataISO||0) - new Date(trn.dataISO));
+            const db2 = Math.abs(new Date(b.dataISO||0) - new Date(trn.dataISO));
+            return da - db2;
           });
-          if (match) {
-            status  = 'CONCILIADO';
-            lancId  = match.id;
+          const best = sorted[0];
+          lancId = best.id;
+          // Se a data também bate exatamente → CONCILIADO automático
+          if (best.dataISO === trn.dataISO) {
+            status = 'CONCILIADO';
             conciliados++;
           } else {
+            // Data difere → marcar como DIVERGENTE para o gerente confirmar
             status = 'DIVERGENTE';
             divergentes++;
           }
+          // Guardar todos os candidatos para exibir ao gerente
+          candidatos = sorted.slice(0, 5).map(l => ({ id: l.id, dataISO: l.dataISO, dc: l.dc, valor: l.valor, centroCusto: l.centroCusto, cliente: l.cliente, projeto: l.projeto, descritivo: l.descritivo || l.descricao, numLanc: l.numLanc }));
         } else {
           naoLancados++;
         }
-        itens.push({ fitid: trn.fitid, dataISO: trn.dataISO, valor: trn.valor, dc: trn.dc, memo: trn.memo, trntype: trn.trntype, status, lancamento_id: lancId });
+        itens.push({ fitid: trn.fitid, dataISO: trn.dataISO, valor: trn.valor, dc: trn.dc, memo: trn.memo, trntype: trn.trntype, status, lancamento_id: lancId, candidatos });
       }
 
       // ===== SALVAR no PostgreSQL =====
