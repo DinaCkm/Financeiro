@@ -2814,19 +2814,37 @@ Responda em português, de forma objetiva e direta, citando os dados específico
     const id = url.pathname.split('/')[3];
     const body = JSON.parse(await readBody(req) || '{}');
     const acao = body.acao; // 'marcar' | 'desmarcar'
+    const pgConc = storage.getPool ? storage.getPool() : null;
+
+    // Verificar status atual no PostgreSQL para não sobrescrever 'extrato' com 'manual'
+    let statusAtualPg = null;
+    if (pgConc) {
+      try {
+        const rCheck = await pgConc.query(`SELECT data->>'conciliacao_status' AS status FROM entries WHERE data->>'id' = $1 LIMIT 1`, [id]);
+        if (rCheck.rows.length > 0) statusAtualPg = rCheck.rows[0].status || null;
+      } catch(eCheck) { console.error('[conciliacao-check]', eCheck.message); }
+    }
+    // Verificar também no db local
+    const entry = db.entries.find(e => e.id === id);
+    const statusAtual = statusAtualPg || (entry ? entry.conciliacao_status : null) || '';
+
+    // Se ação é 'marcar' mas já está como 'extrato', não sobrescrever — retornar status atual
+    if (acao === 'marcar' && statusAtual === 'extrato') {
+      return json(res, 200, { ok: true, conciliacao_status: 'extrato' });
+    }
+
     const novoStatus = acao === 'marcar' ? 'manual' : null;
     const conciliadoEm = acao === 'marcar' ? new Date().toISOString() : null;
     const conciliadoPor = acao === 'marcar' ? (user.email || 'sistema') : null;
+
     // Atualizar no db local se existir
-    const entry = db.entries.find(e => e.id === id);
     if (entry) {
       entry.conciliacao_status = novoStatus;
       entry.conciliado_em = conciliadoEm;
       entry.conciliado_por = conciliadoPor;
       saveDb(db);
     }
-    // Persistir no PostgreSQL (funciona mesmo se não estiver no db local)
-    const pgConc = storage.getPool ? storage.getPool() : null;
+    // Persistir no PostgreSQL
     if (pgConc) {
       try {
         if (acao === 'marcar') {
@@ -3963,6 +3981,19 @@ async function excluirRef(tipo,nome){
     const PAGE_SIZE = 50;
 
     // Filtrar lançamentos
+    // Quando busca por número específico, atualizar conciliacao_status do db local com o valor do PostgreSQL
+    const pgLanc = storage.getPool ? storage.getPool() : null;
+    if (qNumLanc && pgLanc) {
+      try {
+        const rSync = await pgLanc.query(`SELECT data->>'id' AS id, data->>'conciliacao_status' AS cs FROM entries WHERE (data->>'numLanc')::int = $1 LIMIT 1`, [qNumLanc]);
+        if (rSync.rows.length > 0) {
+          const { id: syncId, cs: syncStatus } = rSync.rows[0];
+          const entryLocal = db.entries.find(e => e.id === syncId);
+          if (entryLocal) { entryLocal.conciliacao_status = syncStatus || null; }
+        }
+      } catch(eSync) { /* silencioso */ }
+    }
+
     let entries = db.entries.filter(e => {
       if (qNumLanc && e.numLanc !== qNumLanc) return false;
       if (q) {
