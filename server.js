@@ -2764,8 +2764,16 @@ Responda em português, de forma objetiva e direta, citando os dados específico
     const entryAntes = {};
     editable.forEach((k) => { entryAntes[k] = entry[k]; });
     editable.forEach((k) => { if (changes[k] !== undefined) entry[k] = changes[k]; });
-    // Registrar na trilha de auditoria (campo a campo, antes vs. depois)
+    // Identificar usuário atual
     const userAtual = currentUser(req, db);
+    // Ao editar manualmente, o lançamento é considerado confirmado — remover flag de pendência
+    if (entry.pendente_confirmacao) {
+      entry.pendente_confirmacao = false;
+      entry.motivo_confirmacao = null;
+      entry.confirmado_em = new Date().toISOString();
+      entry.confirmado_por = userAtual ? userAtual.email : 'sistema';
+    }
+    // Registrar na trilha de auditoria (campo a campo, antes vs. depois)
     registrarAuditoria(db, entry.id, userAtual ? userAtual.email : 'sistema', changes, entryAntes);
     // Manter manualAdjustments para compatibilidade
     db.manualAdjustments = db.manualAdjustments || [];
@@ -4139,12 +4147,13 @@ async function excluirRef(tipo,nome){
         <td style="font-size:.78rem">${nome} ${origem} ${incBadge} ${confirmarBadge}</td>
         <td style="font-size:.78rem;color:#475569" title="${(e.descritivo||e.descricao||'')}">${ desc}</td>
         <td style="${valCls};font-size:.8rem;text-align:right;font-weight:600">${valStr}</td>
+        <td style="font-size:.72rem;color:#475569" title="${e.natureza||e.classificacao||''}"><span style="display:inline-block;max-width:110px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${(e.natureza||e.classificacao||'—').replace('Despesa ','').replace('Receita ','').replace('Movimentação ','Mov. ')}</span></td>
         <td style="font-size:.72rem;color:#7c3aed;font-weight:500">${MAPA_PROJETOS_CKM[e.projeto] ? `<span title="${e.projeto}">${MAPA_PROJETOS_CKM[e.projeto]}</span>` : (e.projeto ? `<span style="color:#94a3b8">${e.projeto}</span>` : '<span style="color:#e2e8f0">—</span>')}</td>
         <td style="font-size:.72rem;color:#94a3b8" title="${STATUS_LABEL[status]||status}">${STATUS_LABEL[status]||status}</td>
         <td style="text-align:center"><button onclick="event.stopPropagation();toggleEditLanc('${e.id}', ${incJson})" title="Editar lançamento" style="background:#ede9fe;color:#6d28d9;font-size:.75rem;padding:.25rem .5rem;box-shadow:none;border:1px solid #c4b5fd">&#9998;</button></td>
       </tr>
       <tr id="edit-lanc-${e.id}" style="display:none;background:#f0f9ff">
-        <td colspan="10" style="padding:1.25rem 1.5rem">
+        <td colspan="11" style="padding:1.25rem 1.5rem">
           <div style="background:#fff;border:1px solid #bfdbfe;border-radius:10px;padding:1.25rem;margin-bottom:.75rem">
           <p style="font-size:.75rem;font-weight:700;color:#1e40af;text-transform:uppercase;letter-spacing:.04em;margin:0 0 1rem">&#9998; Editar lançamento</p>
           <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:1rem">
@@ -4371,6 +4380,11 @@ async function excluirRef(tipo,nome){
       ${STATUS_LEGADO_LISTA.map(s => `<option value="${s}" ${qStatus===s?'selected':''} style="color:#94a3b8">${STATUS_LABEL[s]||s}</option>`).join('')}
       </optgroup>
     </select></div>
+    <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Classificação</label>
+    <select name="nat" style="font-size:.8rem;padding:.3rem .5rem;width:100%">
+      <option value="">Todas</option>
+      ${NATUREZAS.map(n => `<option value="${n}" ${qNat===n?'selected':''}>${n}</option>`).join('')}
+    </select></div>
     <div style="display:flex;gap:.4rem;align-items:flex-end">
       <input type="hidden" name="inc" value="${qInc}">
       <button type="submit" style="background:#6d28d9;font-size:.8rem;padding:.4rem .8rem;flex:1">🔍 Pesquisar</button>
@@ -4393,12 +4407,13 @@ ${paginacao}
       <th style="padding:.5rem .75rem;text-align:left">Cliente / Fornecedor / Prestador</th>
       <th style="padding:.5rem .75rem;text-align:left">Descritivo</th>
       <th style="padding:.5rem .75rem;text-align:right">Valor</th>
+      <th style="padding:.5rem .75rem;text-align:left">Classificação</th>
       <th style="padding:.5rem .75rem;text-align:left">Projeto</th>
       <th style="padding:.5rem .75rem;text-align:left">Status</th>
       <th style="padding:.5rem .75rem;text-align:center">Ação</th>
     </tr>
   </thead>
-  <tbody>${rows || '<tr><td colspan="10" style="text-align:center;padding:2rem;color:#94a3b8">Nenhum lançamento encontrado com os filtros aplicados.</td></tr>'}</tbody>
+  <tbody>${rows || '<tr><td colspan="11" style="text-align:center;padding:2rem;color:#94a3b8">Nenhum lançamento encontrado com os filtros aplicados.</td></tr>'}</tbody>
 </table>
 </div>
 ${paginacao}
