@@ -7784,6 +7784,255 @@ async function uploadExtrato() {
     }
   }
 
+  // ============================================================
+  // CONCILIAÇÃO — DETALHE /conciliacao/detalhe?id=X
+  // ============================================================
+  if (req.method === 'GET' && url.pathname === '/conciliacao/detalhe') {
+    const user = requireAuth(req, res, db); if (!user) return;
+    const extratoId = parseInt(url.searchParams.get('id') || '0');
+    if (!extratoId) { res.writeHead(302,{Location:'/conciliacao'}); res.end(); return; }
+
+    let extrato = null;
+    let bancoNome = '-';
+    let ccs = [], projetos = [], clientes = [], naturezas = [];
+    try {
+      if (pg) {
+        const r = await pg.query('SELECT ce.*, b.nome as banco_nome FROM conciliacao_extratos ce LEFT JOIN bancos b ON ce.banco_id=b.id WHERE ce.id=$1', [extratoId]);
+        if (r.rows.length > 0) {
+          extrato = r.rows[0];
+          bancoNome = extrato.banco_nome || '-';
+        }
+        // Buscar CCs, projetos, clientes para o formulário
+        const rCC = await pg.query("SELECT DISTINCT data->>'centroCusto' as cc FROM entries WHERE data->>'centroCusto' IS NOT NULL AND data->>'centroCusto' != '' ORDER BY 1");
+        ccs = rCC.rows.map(r=>r.cc).filter(Boolean);
+        const rProj = await pg.query("SELECT DISTINCT data->>'projeto' as p FROM entries WHERE data->>'projeto' IS NOT NULL AND data->>'projeto' != '' ORDER BY 1");
+        projetos = rProj.rows.map(r=>r.p).filter(Boolean);
+        const rCli = await pg.query("SELECT DISTINCT data->>'cliente' as c FROM entries WHERE data->>'cliente' IS NOT NULL AND data->>'cliente' != '' ORDER BY 1 LIMIT 200");
+        clientes = rCli.rows.map(r=>r.c).filter(Boolean);
+      }
+    } catch(e) { console.error('[conc-detalhe]', e.message); }
+
+    if (!extrato) {
+      res.writeHead(302,{Location:'/conciliacao'}); res.end(); return;
+    }
+
+    const itens = extrato.itens || [];
+    const naoLancados = itens.filter(i=>i.status==='NAO_LANCADO');
+    const divergentes = itens.filter(i=>i.status==='DIVERGENTE');
+    const conciliados = itens.filter(i=>i.status==='CONCILIADO');
+
+    const fmtVal = v => {
+      const n = Number(v||0);
+      const s = Math.abs(n).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2});
+      return n < 0 ? '- R$ '+s : 'R$ '+s;
+    };
+    const fmtData = s => { if(!s) return '-'; const p=String(s).split('-'); return p.length===3?p[2]+'/'+p[1]+'/'+p[0]:s; };
+
+    const ccOpts = ccs.map(c=>`<option value='${c}'>${c}</option>`).join('');
+    const projOpts = projetos.map(p=>`<option value='${p}'>${p}</option>`).join('');
+    const cliOpts = clientes.map(c=>`<option value='${c}'>${c}</option>`).join('');
+    const natOpts = ['Receita Operacional','Receita Direta','Despesa Direta','Despesa Indireta','Transferência Interna','Investimento','Imposto','Folha de Pagamento'].map(n=>`<option value='${n}'>${n}</option>`).join('');
+
+    // Renderizar linhas de Não Lançados
+    const rowsNaoLanc = naoLancados.map((it,i) => {
+      const cor = it.dc==='C' ? '#059669' : '#dc2626';
+      return `<tr id='nl-row-${i}' style='border-bottom:1px solid #f1f5f9'>
+        <td style='padding:.4rem .6rem;font-size:.82rem;white-space:nowrap'>${fmtData(it.dataISO)}</td>
+        <td style='padding:.4rem .6rem;font-size:.82rem;font-weight:700;color:${cor}'>${it.dc}</td>
+        <td style='padding:.4rem .6rem;font-size:.82rem;max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap' title='${(it.memo||'').replace(/'/g,'')}'>${it.memo||'-'}</td>
+        <td style='padding:.4rem .6rem;font-size:.82rem;text-align:right;font-weight:700;color:${cor}'>${fmtVal(it.valor)}</td>
+        <td style='padding:.4rem .6rem'>
+          <button onclick='abrirFormLanc(${i})' style='background:#1e40af;color:#fff;border:none;padding:.3rem .75rem;border-radius:.4rem;cursor:pointer;font-size:.78rem;font-weight:600'>+ Incluir</button>
+        </td>
+      </tr>
+      <tr id='nl-form-${i}' style='display:none;background:#f8fafc'>
+        <td colspan='5' style='padding:.75rem 1rem'>
+          <div style='background:#fff;border:1px solid #c7d2fe;border-radius:.5rem;padding:1rem'>
+            <div style='font-weight:700;color:#1e40af;margin-bottom:.75rem'>📝 Novo Lançamento — ${fmtData(it.dataISO)} | ${fmtVal(it.valor)}</div>
+            <div style='display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:.5rem'>
+              <label style='font-size:.78rem;font-weight:600'>Data<input id='nf-data-${i}' type='date' value='${it.dataISO||''}' style='display:block;width:100%;padding:.35rem .5rem;border:1px solid #d1d5db;border-radius:.35rem;margin-top:.2rem'></label>
+              <label style='font-size:.78rem;font-weight:600'>D/C<select id='nf-dc-${i}' style='display:block;width:100%;padding:.35rem .5rem;border:1px solid #d1d5db;border-radius:.35rem;margin-top:.2rem'><option value='D' ${it.dc==='D'?'selected':''}>D — Débito</option><option value='C' ${it.dc==='C'?'selected':''}>C — Crédito</option></select></label>
+              <label style='font-size:.78rem;font-weight:600'>Valor (R$)<input id='nf-valor-${i}' type='number' step='0.01' value='${Math.abs(it.valor||0)}' style='display:block;width:100%;padding:.35rem .5rem;border:1px solid #d1d5db;border-radius:.35rem;margin-top:.2rem'></label>
+              <label style='font-size:.78rem;font-weight:600'>Centro de Custo<select id='nf-cc-${i}' style='display:block;width:100%;padding:.35rem .5rem;border:1px solid #d1d5db;border-radius:.35rem;margin-top:.2rem'><option value=''>-- Selecione --</option>${ccOpts}</select></label>
+              <label style='font-size:.78rem;font-weight:600'>Cliente / Fornecedor<select id='nf-cli-${i}' style='display:block;width:100%;padding:.35rem .5rem;border:1px solid #d1d5db;border-radius:.35rem;margin-top:.2rem'><option value=''>-- Selecione --</option>${cliOpts}</select></label>
+              <label style='font-size:.78rem;font-weight:600'>Projeto<select id='nf-proj-${i}' style='display:block;width:100%;padding:.35rem .5rem;border:1px solid #d1d5db;border-radius:.35rem;margin-top:.2rem'><option value=''>-- Selecione --</option>${projOpts}</select></label>
+              <label style='font-size:.78rem;font-weight:600'>Natureza<select id='nf-nat-${i}' style='display:block;width:100%;padding:.35rem .5rem;border:1px solid #d1d5db;border-radius:.35rem;margin-top:.2rem'><option value=''>-- Selecione --</option>${natOpts}</select></label>
+              <label style='font-size:.78rem;font-weight:600;grid-column:1/-1'>Descritivo<input id='nf-desc-${i}' type='text' value='${(it.memo||'').replace(/'/g,'').slice(0,120)}' style='display:block;width:100%;padding:.35rem .5rem;border:1px solid #d1d5db;border-radius:.35rem;margin-top:.2rem'></label>
+            </div>
+            <div style='margin-top:.75rem;display:flex;gap:.5rem'>
+              <button onclick='salvarLanc(${i})' style='background:#059669;color:#fff;border:none;padding:.4rem 1rem;border-radius:.4rem;cursor:pointer;font-weight:600;font-size:.82rem'>✅ Salvar Lançamento</button>
+              <button onclick='fecharFormLanc(${i})' style='background:#e2e8f0;color:#374151;border:none;padding:.4rem .75rem;border-radius:.4rem;cursor:pointer;font-size:.82rem'>Cancelar</button>
+            </div>
+            <div id='nf-msg-${i}' style='margin-top:.5rem;font-size:.8rem'></div>
+          </div>
+        </td>
+      </tr>`;
+    }).join('');
+
+    // Renderizar linhas de Divergentes
+    const rowsDiv = divergentes.map((it,i) => {
+      const cor = it.dc==='C' ? '#059669' : '#dc2626';
+      return `<tr id='dv-row-${i}' style='border-bottom:1px solid #f1f5f9'>
+        <td style='padding:.4rem .6rem;font-size:.82rem;white-space:nowrap'>${fmtData(it.dataISO)}</td>
+        <td style='padding:.4rem .6rem;font-size:.82rem;font-weight:700;color:${cor}'>${it.dc}</td>
+        <td style='padding:.4rem .6rem;font-size:.82rem;max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap' title='${(it.memo||'').replace(/'/g,'')}'>${it.memo||'-'}</td>
+        <td style='padding:.4rem .6rem;font-size:.82rem;text-align:right;font-weight:700;color:${cor}'>${fmtVal(it.valor)}</td>
+        <td style='padding:.4rem .6rem;font-size:.82rem;color:#d97706;font-weight:600'>⚠️ D/C diverge</td>
+        <td style='padding:.4rem .6rem'>
+          <a href='/lancamentos?busca=${encodeURIComponent((it.memo||'').slice(0,40))}' style='background:#d97706;color:#fff;padding:.3rem .75rem;border-radius:.4rem;text-decoration:none;font-size:.78rem;font-weight:600'>✏️ Corrigir</a>
+        </td>
+      </tr>`;
+    }).join('');
+
+    // Renderizar linhas de Conciliados
+    const rowsConc = conciliados.map((it,i) => {
+      const cor = it.dc==='C' ? '#059669' : '#dc2626';
+      return `<tr id='cc-row-${i}' style='border-bottom:1px solid #f1f5f9'>
+        <td style='padding:.4rem .6rem;font-size:.82rem;white-space:nowrap'>${fmtData(it.dataISO)}</td>
+        <td style='padding:.4rem .6rem;font-size:.82rem;font-weight:700;color:${cor}'>${it.dc}</td>
+        <td style='padding:.4rem .6rem;font-size:.82rem;max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap' title='${(it.memo||'').replace(/'/g,'')}'>${it.memo||'-'}</td>
+        <td style='padding:.4rem .6rem;font-size:.82rem;text-align:right;font-weight:700;color:${cor}'>${fmtVal(it.valor)}</td>
+        <td style='padding:.4rem .6rem'><span style='color:#059669;font-weight:700'>✅ OK</span></td>
+        <td style='padding:.4rem .6rem'>${it.lancamento_id ? '<a href="/lancamentos?id='+it.lancamento_id+'" style="color:#3b82f6;font-size:.78rem">Ver lançamento</a>' : ''}</td>
+      </tr>`;
+    }).join('');
+
+    const saldoFmt = fmtVal(extrato.saldo_extrato||0);
+    const dataFmt = fmtData(extrato.data_fim);
+    const dataUpFmt = extrato.data_upload ? new Date(extrato.data_upload).toLocaleString('pt-BR') : '-';
+
+    const body = `
+<h2 class='page-title'>🏦 Detalhe da Conciliação #${extratoId}</h2>
+<div style='display:flex;gap:.5rem;margin-bottom:1rem;flex-wrap:wrap;align-items:center'>
+  <a href='/conciliacao' style='color:#6366f1;font-size:.85rem'>← Voltar</a>
+  <span style='color:#94a3b8'>|</span>
+  <span style='font-size:.85rem;color:#64748b'>Banco: <strong>${bancoNome}</strong></span>
+  <span style='color:#94a3b8'>|</span>
+  <span style='font-size:.85rem;color:#64748b'>Data extrato: <strong>${dataFmt}</strong></span>
+  <span style='color:#94a3b8'>|</span>
+  <span style='font-size:.85rem;color:#64748b'>Upload: <strong>${dataUpFmt}</strong></span>
+  <span style='color:#94a3b8'>|</span>
+  <span style='font-size:.85rem;color:#64748b'>Saldo: <strong>${saldoFmt}</strong></span>
+</div>
+
+<!-- Cards resumo -->
+<div style='display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:.75rem;margin-bottom:1.5rem'>
+  <div style='background:#eff6ff;border:1px solid #93c5fd;border-radius:.5rem;padding:.75rem;text-align:center'>
+    <div style='font-size:1.6rem;font-weight:800;color:#1e40af'>${itens.length}</div>
+    <div style='font-size:.75rem;color:#64748b'>Total</div>
+  </div>
+  <div style='background:#f0fdf4;border:1px solid #86efac;border-radius:.5rem;padding:.75rem;text-align:center'>
+    <div style='font-size:1.6rem;font-weight:800;color:#059669'>${conciliados.length}</div>
+    <div style='font-size:.75rem;color:#64748b'>Conciliados</div>
+  </div>
+  <div style='background:#fffbeb;border:1px solid #fcd34d;border-radius:.5rem;padding:.75rem;text-align:center'>
+    <div style='font-size:1.6rem;font-weight:800;color:#d97706'>${divergentes.length}</div>
+    <div style='font-size:.75rem;color:#64748b'>Divergentes</div>
+  </div>
+  <div style='background:#fef2f2;border:1px solid #fca5a5;border-radius:.5rem;padding:.75rem;text-align:center'>
+    <div style='font-size:1.6rem;font-weight:800;color:#dc2626'>${naoLancados.length}</div>
+    <div style='font-size:.75rem;color:#64748b'>Não Lançados</div>
+  </div>
+</div>
+
+<!-- Seção 1: Não Lançados -->
+${naoLancados.length > 0 ? `
+<section style='margin-bottom:1.5rem'>
+  <h3 style='color:#dc2626;margin-bottom:.5rem'>🔴 Não Lançados (${naoLancados.length}) — clique em "+ Incluir" para registrar</h3>
+  <div style='overflow-x:auto'>
+  <table style='width:100%;border-collapse:collapse'>
+    <thead><tr style='background:#fef2f2'>
+      <th style='padding:.4rem .6rem;text-align:left;font-size:.78rem;color:#991b1b'>Data</th>
+      <th style='padding:.4rem .6rem;text-align:left;font-size:.78rem;color:#991b1b'>D/C</th>
+      <th style='padding:.4rem .6rem;text-align:left;font-size:.78rem;color:#991b1b'>Histórico</th>
+      <th style='padding:.4rem .6rem;text-align:right;font-size:.78rem;color:#991b1b'>Valor</th>
+      <th style='padding:.4rem .6rem;font-size:.78rem;color:#991b1b'></th>
+    </thead>
+    <tbody>${rowsNaoLanc}</tbody>
+  </table></div>
+</section>` : '<div style="background:#f0fdf4;border:1px solid #86efac;border-radius:.5rem;padding:.75rem;margin-bottom:1rem;color:#166534">✅ Todos os lançamentos foram encontrados no sistema.</div>'}
+
+<!-- Seção 2: Divergentes -->
+${divergentes.length > 0 ? `
+<section style='margin-bottom:1.5rem'>
+  <h3 style='color:#d97706;margin-bottom:.5rem'>⚠️ Divergentes (${divergentes.length}) — encontrados no sistema mas com D/C diferente</h3>
+  <div style='overflow-x:auto'>
+  <table style='width:100%;border-collapse:collapse'>
+    <thead><tr style='background:#fffbeb'>
+      <th style='padding:.4rem .6rem;text-align:left;font-size:.78rem;color:#92400e'>Data</th>
+      <th style='padding:.4rem .6rem;text-align:left;font-size:.78rem;color:#92400e'>D/C</th>
+      <th style='padding:.4rem .6rem;text-align:left;font-size:.78rem;color:#92400e'>Histórico</th>
+      <th style='padding:.4rem .6rem;text-align:right;font-size:.78rem;color:#92400e'>Valor</th>
+      <th style='padding:.4rem .6rem;font-size:.78rem;color:#92400e'>Motivo</th>
+      <th style='padding:.4rem .6rem;font-size:.78rem;color:#92400e'></th>
+    </thead>
+    <tbody>${rowsDiv}</tbody>
+  </table></div>
+</section>` : ''}
+
+<!-- Seção 3: Conciliados -->
+${conciliados.length > 0 ? `
+<section style='margin-bottom:1.5rem'>
+  <h3 style='color:#059669;margin-bottom:.5rem'>✅ Conciliados (${conciliados.length}) — lançamentos confirmados no sistema</h3>
+  <div style='overflow-x:auto'>
+  <table style='width:100%;border-collapse:collapse'>
+    <thead><tr style='background:#f0fdf4'>
+      <th style='padding:.4rem .6rem;text-align:left;font-size:.78rem;color:#166534'>Data</th>
+      <th style='padding:.4rem .6rem;text-align:left;font-size:.78rem;color:#166534'>D/C</th>
+      <th style='padding:.4rem .6rem;text-align:left;font-size:.78rem;color:#166534'>Histórico</th>
+      <th style='padding:.4rem .6rem;text-align:right;font-size:.78rem;color:#166534'>Valor</th>
+      <th style='padding:.4rem .6rem;font-size:.78rem;color:#166534'>Status</th>
+      <th style='padding:.4rem .6rem;font-size:.78rem;color:#166534'></th>
+    </thead>
+    <tbody>${rowsConc}</tbody>
+  </table></div>
+</section>` : ''}
+
+<script>
+function abrirFormLanc(i) {
+  document.getElementById('nl-form-'+i).style.display = 'table-row';
+  document.getElementById('nl-row-'+i).querySelector('button').style.display = 'none';
+}
+function fecharFormLanc(i) {
+  document.getElementById('nl-form-'+i).style.display = 'none';
+  document.getElementById('nl-row-'+i).querySelector('button').style.display = '';
+}
+async function salvarLanc(i) {
+  const data   = document.getElementById('nf-data-'+i).value;
+  const dc     = document.getElementById('nf-dc-'+i).value;
+  const valor  = parseFloat(document.getElementById('nf-valor-'+i).value);
+  const cc     = document.getElementById('nf-cc-'+i).value;
+  const cli    = document.getElementById('nf-cli-'+i).value;
+  const proj   = document.getElementById('nf-proj-'+i).value;
+  const nat    = document.getElementById('nf-nat-'+i).value;
+  const desc   = document.getElementById('nf-desc-'+i).value;
+  const msg    = document.getElementById('nf-msg-'+i);
+  if (!data||!dc||!valor||!cc) { msg.innerHTML='<span style="color:#dc2626">Preencha Data, D/C, Valor e Centro de Custo.</span>'; return; }
+  msg.innerHTML = '<span style="color:#1d4ed8">Salvando...</span>';
+  try {
+    const r = await fetch('/api/entries', { method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ data, dataISO: data, dc, valor: dc==='D'?-Math.abs(valor):Math.abs(valor),
+        centroCusto: cc, cliente: cli, projeto: proj, natureza: nat, descritivo: desc, status:'confirmado' }) });
+    const d = await r.json();
+    if (d.ok || d.id || d.numLanc) {
+      msg.innerHTML = '<span style="color:#059669;font-weight:700">✅ Lançamento #'+(d.numLanc||d.id||'')+ ' criado com sucesso!</span>';
+      document.getElementById('nl-row-'+i).style.background = '#f0fdf4';
+      document.getElementById('nl-row-'+i).cells[4].innerHTML = '<span style="color:#059669;font-weight:700">✅ Incluído</span>';
+    } else {
+      msg.innerHTML = '<span style="color:#dc2626">Erro: '+(d.error||JSON.stringify(d))+'</span>';
+    }
+  } catch(e) {
+    msg.innerHTML = '<span style="color:#dc2626">Erro: '+e.message+'</span>';
+  }
+}
+</script>`;
+
+    const html = page('Detalhe Conciliação #'+extratoId, body, user, '/conciliacao');
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+    res.end(html);
+    return;
+  }
+
   res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
   res.end('Not found');
 });
