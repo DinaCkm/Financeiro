@@ -7501,7 +7501,7 @@ async function saveConta() {
 <section>
   <h2>📋 Histórico de Conciliações</h2>
   <div style='overflow-x:auto'>
-  <table><thead><tr><th>Banco</th><th>Data Extrato</th><th>Upload</th><th>Total</th><th>Conciliados</th><th>Divergentes</th><th>Não Lançados</th><th>Saldo</th><th></th></tr></thead>
+  <table id='hist-conciliacao'><thead><tr><th>Banco</th><th>Data Extrato</th><th>Upload</th><th>Total</th><th>Conciliados</th><th>Divergentes</th><th>Não Lançados</th><th>Saldo</th><th></th></tr></thead>
   <tbody>${renderHist}</tbody></table></div>
 </section>
 
@@ -7581,8 +7581,13 @@ async function uploadExtrato() {
         + '</div>'
         + linkDetalhe
         + '</div>';
-      // Recarregar a p\u00e1gina ap\u00f3s 3s para atualizar o hist\u00f3rico
-      setTimeout(function(){ location.reload(); }, 3000);
+      // Adicionar entrada no historico sem recarregar a pagina
+      const tbody = document.querySelector('#hist-conciliacao tbody');
+      if(tbody && d.id) {
+        const tr = document.createElement('tr');
+        tr.innerHTML = '<td>'+( d.banco_nome||'-')+'</td><td>'+(dataExtr)+'</td><td>'+dataUpload+'</td><td>'+d.total+'</td><td style="color:#059669;font-weight:600">'+d.conciliados+'</td><td style="color:#d97706">'+d.divergentes+'</td><td style="color:#dc2626">'+d.nao_lancados+'</td><td>-</td><td><a href="/conciliacao/detalhe?id='+d.id+'" class="btn btn-sm btn-outline">Ver detalhes</a></td>';
+        tbody.insertBefore(tr, tbody.firstChild);
+      }
     } else {
       div.innerHTML = '<div style="padding:1rem;background:#fef2f2;border:1px solid #fca5a5;border-radius:.5rem">'
         + '<div style="color:#dc2626;font-weight:700;font-size:1rem;margin-bottom:.5rem">\u274c Erro ao processar o extrato</div>'
