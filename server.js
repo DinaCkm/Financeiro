@@ -2438,7 +2438,7 @@ async function perguntarIA(cardId){
       const { OpenAI } = require('openai');
       const openai = new OpenAI();
       const completion = await openai.chat.completions.create({
-        model: 'gemini-2.5-flash',
+        model: 'gpt-4.1-mini',
         messages: [{ role: 'user', content: prompt }],
         temperature: 0.2,
         max_tokens: 300
@@ -2543,7 +2543,7 @@ async function perguntarIA(cardId){
         const prompt = 'Você é um assistente financeiro da empresa CKM Consultoria. Classifique cada nome abaixo em um dos tipos: ' + tipos.join(', ') + '.\n\nExemplos de cadastros já classificados na empresa:\n' + exemplosCtx + '\n\nNomes para classificar:\n' + listaParaIA + '\n\nResponda APENAS em JSON válido, array com objetos {"nome": "...", "tipo": "...", "confianca": "alta|media|baixa"}.\nUse "baixa" quando não tiver certeza. Retorne exatamente ' + loteIA.length + ' objetos, na mesma ordem.';
 
         const completion = await openai.chat.completions.create({
-          model: 'gemini-2.5-flash',
+          model: 'gpt-4.1-mini',
           messages: [{ role: 'user', content: prompt }],
           temperature: 0.1,
           max_tokens: 2000
@@ -2633,7 +2633,7 @@ Responda em português, de forma objetiva e direta, citando os dados específico
       const { OpenAI } = require('openai');
       const openai = new OpenAI();
       const completion = await openai.chat.completions.create({
-        model: 'gemini-2.5-flash',
+        model: 'gpt-4.1-mini',
         messages: [{ role: 'user', content: prompt }],
         temperature: 0.1,
         max_tokens: 600
@@ -3701,7 +3701,7 @@ Regras:
       const { OpenAI } = require('openai');
       const openai = new OpenAI();
       const completion = await openai.chat.completions.create({
-        model: 'gemini-2.5-flash',
+        model: 'gpt-4.1-mini',
         messages: [{ role: 'user', content: prompt }],
         temperature: 0.1,
         max_tokens: 4000
@@ -5320,7 +5320,7 @@ Responda seguindo OBRIGATORIAMENTE a estrutura:
       const { OpenAI } = require('openai');
       const openai = new OpenAI();
       const completion = await openai.chat.completions.create({
-        model: 'gemini-2.5-flash',
+        model: 'gpt-4.1-mini',
         messages: [
           { role: 'system', content: systemPrompt },
           { role: 'user', content: userPrompt }
@@ -5641,7 +5641,7 @@ Gere o relatório mensal completo seguindo a estrutura definida.`;
       const { OpenAI } = require('openai');
       const openai = new OpenAI();
       const completion = await openai.chat.completions.create({
-        model: 'gemini-2.5-flash',
+        model: 'gpt-4.1-mini',
         messages: [
           { role: 'system', content: systemPrompt },
           { role: 'user', content: userPrompt }
