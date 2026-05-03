@@ -4688,8 +4688,9 @@ async function toggleConciliacao(id, estadoAtual) {
 
 async function toggleConciliacaoForm(id) {
   const btn = document.getElementById('btn-conc-' + id);
-  const estadoAtual = btn ? btn.dataset.status || btn.textContent.trim() : '';
-  const isConc = estadoAtual.includes('Conciliado');
+  // Detectar estado pelo texto: se contém 'Marcar' está sem conciliação; se contém 'Conciliado' já está conciliado
+  const texto = btn ? btn.textContent.trim() : '';
+  const isConc = texto.includes('Conciliado') && !texto.includes('Marcar');
   if (isConc) {
     if (!confirm('Deseja remover a conciliação deste lançamento?')) return;
   }
