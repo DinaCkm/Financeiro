@@ -4262,7 +4262,7 @@ async function excluirRef(tipo,nome){
           <div style="display:flex;gap:.5rem;margin-top:1rem;align-items:center;flex-wrap:wrap">
             <button onclick="salvarLancEdit('${e.id}')" style="background:#059669;font-size:.8rem;padding:.4rem .9rem">✓ Salvar</button>
             <button onclick="toggleEditLanc('${e.id}')" style="background:#e2e8f0;color:#475569;font-size:.8rem;padding:.4rem .9rem;box-shadow:none">Cancelar</button>
-            <button id="btn-conc-${e.id}" onclick="toggleConciliacaoForm('${e.id}')" style="background:${e.conciliacao_status === 'extrato' ? '#dcfce7' : e.conciliacao_status === 'manual' ? '#fef9c3' : '#f1f5f9'};color:${e.conciliacao_status === 'extrato' ? '#15803d' : e.conciliacao_status === 'manual' ? '#a16207' : '#64748b'};font-size:.8rem;padding:.4rem .9rem;box-shadow:none;border:1px solid ${e.conciliacao_status === 'extrato' ? '#86efac' : e.conciliacao_status === 'manual' ? '#fde047' : '#cbd5e1'}" title="${e.conciliacao_status === 'extrato' ? 'Conciliado via extrato — clique para desfazer' : e.conciliacao_status === 'manual' ? 'Conciliado manualmente — clique para desfazer' : 'Marcar como conciliado'}">${e.conciliacao_status === 'extrato' ? '✅ Conciliado (Extrato)' : e.conciliacao_status === 'manual' ? '🟡 Conciliado (Manual)' : '⭕ Marcar Conciliado'}</button>
+            <button id="btn-conc-${e.id}" data-status="${e.conciliacao_status || ''}" onclick="toggleConciliacaoForm('${e.id}')" style="background:${e.conciliacao_status === 'extrato' ? '#dcfce7' : e.conciliacao_status === 'manual' ? '#fef9c3' : '#f1f5f9'};color:${e.conciliacao_status === 'extrato' ? '#15803d' : e.conciliacao_status === 'manual' ? '#a16207' : '#64748b'};font-size:.8rem;padding:.4rem .9rem;box-shadow:none;border:1px solid ${e.conciliacao_status === 'extrato' ? '#86efac' : e.conciliacao_status === 'manual' ? '#fde047' : '#cbd5e1'}" title="${e.conciliacao_status === 'extrato' ? 'Conciliado via extrato — clique para desfazer' : e.conciliacao_status === 'manual' ? 'Conciliado manualmente — clique para desfazer' : 'Marcar como conciliado'}">${e.conciliacao_status === 'extrato' ? '✅ Conciliado (Extrato)' : e.conciliacao_status === 'manual' ? '🟡 Conciliado (Manual)' : '⭕ Marcar Conciliado'}</button>
             <button onclick="if(confirm('Excluir lançamento ${numStr ? numStr.replace(/<[^>]+>/g,'') : '#?'}? A exclusão ficará registrada no histórico.')) excluirLanc('${e.id}')" style="background:#fee2e2;color:#991b1b;font-size:.78rem;padding:.4rem .9rem;box-shadow:none;border:1px solid #fca5a5;margin-left:auto">🗑 Excluir</button>
           </div>
           </div>
@@ -4696,9 +4696,9 @@ async function toggleConciliacao(id, estadoAtual) {
 
 async function toggleConciliacaoForm(id) {
   const btn = document.getElementById('btn-conc-' + id);
-  // Detectar estado pelo texto: se contém 'Marcar' está sem conciliação; se contém 'Conciliado' já está conciliado
-  const texto = btn ? btn.textContent.trim() : '';
-  const isConc = texto.includes('Conciliado') && !texto.includes('Marcar');
+  // Detectar estado pelo atributo data-status (mais confiável que textContent)
+  const statusAtual = btn ? (btn.dataset.status || '') : '';
+  const isConc = statusAtual === 'manual' || statusAtual === 'extrato';
   if (isConc) {
     if (!confirm('Deseja remover a conciliação deste lançamento?')) return;
   }
@@ -4714,6 +4714,7 @@ async function toggleConciliacaoForm(id) {
       const s = data.conciliacao_status;
       // Atualizar botão no formulário
       if (btn) {
+        btn.dataset.status = s || ''; // Atualizar data-status para próximos cliques
         if (s === 'extrato') {
           btn.textContent = '✅ Conciliado (Extrato)';
           btn.style.background = '#dcfce7'; btn.style.color = '#15803d'; btn.style.border = '1px solid #86efac';
