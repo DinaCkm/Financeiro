@@ -4251,9 +4251,10 @@ async function excluirRef(tipo,nome){
             <div style="grid-column:span 2"><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Descritivo (finalidade do gasto)</label>
             <input id="el-descritivo-${e.id}" value="${(e.descritivo||'').replace(/"/g,'&quot;')}" placeholder="Ex: Serviço de hospedagem para manutenção da presença digital" style="font-size:.8rem;padding:.3rem .5rem;width:100%"/></div>
           </div>
-          <div style="display:flex;gap:.5rem;margin-top:1rem;align-items:center">
+          <div style="display:flex;gap:.5rem;margin-top:1rem;align-items:center;flex-wrap:wrap">
             <button onclick="salvarLancEdit('${e.id}')" style="background:#059669;font-size:.8rem;padding:.4rem .9rem">✓ Salvar</button>
             <button onclick="toggleEditLanc('${e.id}')" style="background:#e2e8f0;color:#475569;font-size:.8rem;padding:.4rem .9rem;box-shadow:none">Cancelar</button>
+            <button id="btn-conc-${e.id}" onclick="toggleConciliacaoForm('${e.id}')" style="background:${e.conciliacao_status === 'extrato' ? '#dcfce7' : e.conciliacao_status === 'manual' ? '#fef9c3' : '#f1f5f9'};color:${e.conciliacao_status === 'extrato' ? '#15803d' : e.conciliacao_status === 'manual' ? '#a16207' : '#64748b'};font-size:.8rem;padding:.4rem .9rem;box-shadow:none;border:1px solid ${e.conciliacao_status === 'extrato' ? '#86efac' : e.conciliacao_status === 'manual' ? '#fde047' : '#cbd5e1'}" title="${e.conciliacao_status === 'extrato' ? 'Conciliado via extrato — clique para desfazer' : e.conciliacao_status === 'manual' ? 'Conciliado manualmente — clique para desfazer' : 'Marcar como conciliado'}">${e.conciliacao_status === 'extrato' ? '✅ Conciliado (Extrato)' : e.conciliacao_status === 'manual' ? '🟡 Conciliado (Manual)' : '⭕ Marcar Conciliado'}</button>
             <button onclick="if(confirm('Excluir lançamento ${numStr ? numStr.replace(/<[^>]+>/g,'') : '#?'}? A exclusão ficará registrada no histórico.')) excluirLanc('${e.id}')" style="background:#fee2e2;color:#991b1b;font-size:.78rem;padding:.4rem .9rem;box-shadow:none;border:1px solid #fca5a5;margin-left:auto">🗑 Excluir</button>
           </div>
           </div>
@@ -4683,6 +4684,55 @@ async function toggleConciliacao(id, estadoAtual) {
   } catch(e) {
     alert('Erro de conexão: ' + e.message);
   }
+}
+
+async function toggleConciliacaoForm(id) {
+  const btn = document.getElementById('btn-conc-' + id);
+  const estadoAtual = btn ? btn.dataset.status || btn.textContent.trim() : '';
+  const isConc = estadoAtual.includes('Conciliado');
+  if (isConc) {
+    if (!confirm('Deseja remover a conciliação deste lançamento?')) return;
+  }
+  const acao = isConc ? 'desmarcar' : 'marcar';
+  try {
+    const resp = await fetch('/api/entries/' + id + '/conciliacao', {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ acao })
+    });
+    if (resp.ok) {
+      const data = await resp.json();
+      const s = data.conciliacao_status;
+      // Atualizar botão no formulário
+      if (btn) {
+        if (s === 'extrato') {
+          btn.textContent = '✅ Conciliado (Extrato)';
+          btn.style.background = '#dcfce7'; btn.style.color = '#15803d'; btn.style.border = '1px solid #86efac';
+          btn.title = 'Conciliado via extrato — clique para desfazer';
+        } else if (s === 'manual') {
+          btn.textContent = '🟡 Conciliado (Manual)';
+          btn.style.background = '#fef9c3'; btn.style.color = '#a16207'; btn.style.border = '1px solid #fde047';
+          btn.title = 'Conciliado manualmente — clique para desfazer';
+        } else {
+          btn.textContent = '⭕ Marcar Conciliado';
+          btn.style.background = '#f1f5f9'; btn.style.color = '#64748b'; btn.style.border = '1px solid #cbd5e1';
+          btn.title = 'Marcar como conciliado';
+        }
+      }
+      // Atualizar também a coluna CONC. na linha da tabela
+      const q = String.fromCharCode(39);
+      const td = document.querySelector('#row-' + id + ' td:nth-last-child(2)');
+      if (td) {
+        if (s === 'manual') {
+          td.innerHTML = '<button onclick=' + q + 'event.stopPropagation();toggleConciliacao(' + q + id + q + ',' + q + 'manual' + q + ')' + q + ' style=' + q + 'background:none;border:none;cursor:pointer;font-size:1.4rem' + q + '>&#128993;</button>';
+        } else if (s === 'extrato') {
+          td.innerHTML = '<button onclick=' + q + 'event.stopPropagation();toggleConciliacao(' + q + id + q + ',' + q + 'extrato' + q + ')' + q + ' style=' + q + 'background:none;border:none;cursor:pointer;font-size:1.4rem' + q + '>&#9989;</button>';
+        } else {
+          td.innerHTML = '<button onclick=' + q + 'event.stopPropagation();toggleConciliacao(' + q + id + q + ',' + q + 'marcar' + q + ')' + q + ' style=' + q + 'background:none;border:none;cursor:pointer;font-size:1.4rem;opacity:.3' + q + '>&#9711;</button>';
+        }
+      }
+    } else { alert('Erro ao atualizar conciliação.'); }
+  } catch(e) { alert('Erro de conexão: ' + e.message); }
 }
 
 function toggleEditLanc(id, inconsistencias) {
