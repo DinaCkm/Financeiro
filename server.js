@@ -2436,7 +2436,7 @@ async function perguntarIA(cardId){
 
     try {
       const { OpenAI } = require('openai');
-      const openai = new OpenAI();
+      const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY, baseURL: process.env.OPENAI_BASE_URL || undefined });
       const completion = await openai.chat.completions.create({
         model: 'gpt-4.1-mini',
         messages: [{ role: 'user', content: prompt }],
@@ -2529,7 +2529,7 @@ async function perguntarIA(cardId){
     if (loteIA.length > 0) {
       try {
         const { OpenAI } = require('openai');
-        const openai = new OpenAI();
+        const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY, baseURL: process.env.OPENAI_BASE_URL || undefined });
 
         // Montar contexto de exemplos já revisados
         const revisados = db.reviewRegistry.filter(r => r.statusRevisao === 'revisado' && r.tipoFinal && r.tipoFinal !== 'Pendente de Classificação').slice(0, 50);
@@ -2631,7 +2631,7 @@ Pergunta do usuário: ${pergunta}
 Responda em português, de forma objetiva e direta, citando os dados específicos encontrados na planilha.`;
     try {
       const { OpenAI } = require('openai');
-      const openai = new OpenAI();
+      const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY, baseURL: process.env.OPENAI_BASE_URL || undefined });
       const completion = await openai.chat.completions.create({
         model: 'gpt-4.1-mini',
         messages: [{ role: 'user', content: prompt }],
@@ -3699,7 +3699,7 @@ Regras:
 - Ignore linhas de total, subtotal, pagamento anterior e saldo`;
     try {
       const { OpenAI } = require('openai');
-      const openai = new OpenAI();
+      const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY, baseURL: process.env.OPENAI_BASE_URL || undefined });
       const completion = await openai.chat.completions.create({
         model: 'gpt-4.1-mini',
         messages: [{ role: 'user', content: prompt }],
@@ -5318,7 +5318,7 @@ Responda seguindo OBRIGATORIAMENTE a estrutura:
 [Alta/Média/Baixa — e por quê]`;
 
       const { OpenAI } = require('openai');
-      const openai = new OpenAI();
+      const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY, baseURL: process.env.OPENAI_BASE_URL || undefined });
       const completion = await openai.chat.completions.create({
         model: 'gpt-4.1-mini',
         messages: [
@@ -5639,7 +5639,7 @@ ${mutuoMes.length} lançamentos | saldo: R$${mutuoMes.reduce((a,e)=>a+(e.valor||
 Gere o relatório mensal completo seguindo a estrutura definida.`;
 
       const { OpenAI } = require('openai');
-      const openai = new OpenAI();
+      const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY, baseURL: process.env.OPENAI_BASE_URL || undefined });
       const completion = await openai.chat.completions.create({
         model: 'gpt-4.1-mini',
         messages: [
