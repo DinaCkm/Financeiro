@@ -3914,8 +3914,10 @@ async function excluirRef(tipo,nome){
       if (qInc === 'sem_nome' && (e.favorecido || e.cliente || e.parceiro || '').trim()) return false;
       if (qInc === 'sem_projeto') {
         const nat = (e.naturezaGerencial || e.natureza || '');
-        const precisaProjeto = nat === 'Receita Operacional' || nat === 'Custo Direto';
-        if (!precisaProjeto || (e.projeto || '').trim()) return false;
+        const classifE = (e.classificacao || e.natureza || '').toLowerCase();
+        const isDiretaE = classifE.includes('direta') && !classifE.includes('indireta');
+        const precisaProjetoE = isDiretaE || nat === 'Receita Operacional' || nat === 'Custo Direto';
+        if (!precisaProjetoE || (e.projeto || '').trim()) return false;
       }
       if (qInc === 'sem_natureza') {
         const nat = (e.naturezaGerencial || e.natureza || '');
@@ -3934,7 +3936,9 @@ async function excluirRef(tipo,nome){
     const cntSemNome = allEntries.filter(e => !(e.favorecido || e.cliente || e.parceiro || '').trim()).length;
     const cntSemProjeto = allEntries.filter(e => {
       const nat = (e.naturezaGerencial || e.natureza || '');
-      return (nat === 'Receita Operacional' || nat === 'Custo Direto') && !(e.projeto || '').trim();
+      const classifE = (e.classificacao || e.natureza || '').toLowerCase();
+      const isDiretaE = classifE.includes('direta') && !classifE.includes('indireta');
+      return (isDiretaE || nat === 'Receita Operacional' || nat === 'Custo Direto') && !(e.projeto || '').trim();
     }).length;
     const cntSemNatureza = allEntries.filter(e => {
       const nat = (e.naturezaGerencial || e.natureza || '');
@@ -4034,7 +4038,11 @@ async function excluirRef(tipo,nome){
     const rows = paginated.map(e => {
       // Detectar inconsistências deste lançamento
       const nat = (e.naturezaGerencial || e.natureza || '');
-      const precisaProjeto = nat === 'Receita Operacional' || nat === 'Custo Direto';
+      const classifLanc = (e.classificacao || e.natureza || '').toLowerCase();
+      // Precisa de projeto SOMENTE se for Direta (Despesa Direta ou Receita Direta)
+      // Lançamentos Indiretos, Movimentações e Transferências não precisam de projeto
+      const isDiretaLanc = classifLanc.includes('direta') && !classifLanc.includes('indireta');
+      const precisaProjeto = isDiretaLanc || nat === 'Receita Operacional' || nat === 'Custo Direto';
       const inconsistencias = [];
       if (!(e.centroCusto || '').trim()) inconsistencias.push('sem_cc');
       if (!(e.favorecido || e.cliente || e.parceiro || '').trim()) inconsistencias.push('sem_nome');
@@ -4068,9 +4076,11 @@ async function excluirRef(tipo,nome){
         <td style="font-size:.72rem;color:#94a3b8" title="${STATUS_LABEL[status]||status}">${STATUS_LABEL[status]||status}</td>
         <td style="text-align:center"><button onclick="event.stopPropagation();toggleEditLanc('${e.id}', ${incJson})" title="Editar lançamento" style="background:#ede9fe;color:#6d28d9;font-size:.75rem;padding:.25rem .5rem;box-shadow:none;border:1px solid #c4b5fd">&#9998;</button></td>
       </tr>
-      <tr id="edit-lanc-${e.id}" style="display:none;background:#f8fafc">
-        <td colspan="10" style="padding:.75rem 1rem">
-          <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:.75rem">
+      <tr id="edit-lanc-${e.id}" style="display:none;background:#f0f9ff">
+        <td colspan="10" style="padding:1.25rem 1.5rem">
+          <div style="background:#fff;border:1px solid #bfdbfe;border-radius:10px;padding:1.25rem;margin-bottom:.75rem">
+          <p style="font-size:.75rem;font-weight:700;color:#1e40af;text-transform:uppercase;letter-spacing:.04em;margin:0 0 1rem">&#9998; Editar lançamento</p>
+          <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:1rem">
             <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Data</label>
             <input id="el-data-${e.id}" value="${e.dataISO||''}" type="date" style="font-size:.8rem;padding:.3rem .5rem;width:100%"/></div>
             <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">D/C</label>
@@ -4111,10 +4121,11 @@ async function excluirRef(tipo,nome){
             <div style="grid-column:span 2"><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Descritivo (finalidade do gasto)</label>
             <input id="el-descritivo-${e.id}" value="${(e.descritivo||'').replace(/"/g,'&quot;')}" placeholder="Ex: Serviço de hospedagem para manutenção da presença digital" style="font-size:.8rem;padding:.3rem .5rem;width:100%"/></div>
           </div>
-          <div style="display:flex;gap:.5rem;margin-top:.75rem;align-items:center">
+          <div style="display:flex;gap:.5rem;margin-top:1rem;align-items:center">
             <button onclick="salvarLancEdit('${e.id}')" style="background:#059669;font-size:.8rem;padding:.4rem .9rem">✓ Salvar</button>
             <button onclick="toggleEditLanc('${e.id}')" style="background:#e2e8f0;color:#475569;font-size:.8rem;padding:.4rem .9rem;box-shadow:none">Cancelar</button>
             <button onclick="if(confirm('Excluir lançamento ${numStr ? numStr.replace(/<[^>]+>/g,'') : '#?'}? A exclusão ficará registrada no histórico.')) excluirLanc('${e.id}')" style="background:#fee2e2;color:#991b1b;font-size:.78rem;padding:.4rem .9rem;box-shadow:none;border:1px solid #fca5a5;margin-left:auto">🗑 Excluir</button>
+          </div>
           </div>
         </td>
       </tr>`;
@@ -4133,9 +4144,9 @@ async function excluirRef(tipo,nome){
 </div>
 
 <!-- FORMULÁRIO DE NOVO LANÇAMENTO -->
-<div id="form-novo" style="display:none;background:#f8fafc;border:1px solid #e2e8f0;border-radius:12px;padding:1.5rem;margin-bottom:1.5rem">
-  <h3 style="margin:0 0 1rem;color:#1e293b">Novo Lançamento</h3>
-  <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:.75rem">
+<div id="form-novo" style="display:none;background:#f8fafc;border:1px solid #e2e8f0;border-radius:12px;padding:2rem;margin-bottom:1.5rem">
+  <h3 style="margin:0 0 1.25rem;color:#1e293b;font-size:1.1rem">✏ Novo Lançamento</h3>
+  <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:1rem">
     <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Data *</label>
     <input id="novo-data" type="date" value="${new Date().toISOString().slice(0,10)}" style="font-size:.8rem;padding:.3rem .5rem;width:100%"/></div>
     <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">D/C *</label>
@@ -4143,16 +4154,21 @@ async function excluirRef(tipo,nome){
       <option value="D">D — Débito (saída)</option>
       <option value="C">C — Crédito (entrada)</option>
     </select></div>
-    <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Classificação</label>
-    <select id="novo-classif" style="font-size:.8rem;padding:.3rem .5rem;width:100%">
-      <option value="">-- Selecione --</option>
-      <option value="Despesa Direta">Despesa Direta</option>
-      <option value="Despesa Indireta">Despesa Indireta</option>
-      <option value="Receita Direta">Receita Direta</option>
-      <option value="Receita Indireta">Receita Indireta</option>
-      <option value="Movimentação Financeira">Movimentação Financeira</option>
-      <option value="Transferência Interna">Transferência Interna</option>
-    </select></div>
+    <div>
+      <label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Classificação *
+        <span title="Direta = vinculada a um projeto/cliente específico (exige Projeto). Indireta = custo/receita da estrutura da empresa (sem projeto)." style="display:inline-block;width:15px;height:15px;background:#6d28d9;color:#fff;border-radius:50%;font-size:.65rem;font-weight:700;text-align:center;line-height:15px;cursor:help;margin-left:4px">?</span>
+      </label>
+      <select id="novo-classif" onchange="atualizarRegraProjetoNovo()" style="font-size:.8rem;padding:.35rem .5rem;width:100%">
+        <option value="">-- Selecione --</option>
+        <option value="Despesa Direta">Despesa Direta</option>
+        <option value="Despesa Indireta">Despesa Indireta</option>
+        <option value="Receita Direta">Receita Direta</option>
+        <option value="Receita Indireta">Receita Indireta</option>
+        <option value="Movimentação Financeira">Movimentação Financeira</option>
+        <option value="Transferência Interna">Transferência Interna</option>
+      </select>
+      <div id="novo-classif-aviso" style="font-size:.72rem;margin-top:.25rem;display:none"></div>
+    </div>
     <div>
       <label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">CPF / CNPJ</label>
       <div style="position:relative">
@@ -4163,11 +4179,16 @@ async function excluirRef(tipo,nome){
     </div>
     <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Cliente / Fornecedor / Prestador</label>
     <input id="novo-cliente" readonly placeholder="Preenchido automaticamente pelo CPF/CNPJ" style="font-size:.8rem;padding:.3rem .5rem;width:100%;background:#f1f5f9;color:#475569;cursor:not-allowed"/></div>
-    <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Projeto</label>
-    <select id="novo-proj" style="font-size:.8rem;padding:.3rem .5rem;width:100%">
-      <option value="">-- Selecione o Projeto --</option>
-      ${projetosCad.map(p=>`<option value="${p.codigo}">${p.nome} (${p.codigo})</option>`).join('')}
-    </select></div>
+    <div id="bloco-novo-proj">
+      <label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase" id="label-novo-proj">Projeto
+        <span id="novo-proj-obrig" style="color:#dc2626;display:none"> *</span>
+      </label>
+      <select id="novo-proj" style="font-size:.8rem;padding:.35rem .5rem;width:100%">
+        <option value="">-- Selecione o Projeto --</option>
+        ${projetosCad.map(p=>`<option value="${p.codigo}">${p.nome} (${p.codigo})</option>`).join('')}
+      </select>
+      <div id="novo-proj-aviso" style="font-size:.72rem;margin-top:.2rem;display:none"></div>
+    </div>
     <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Grupo da Despesa</label>
     <select id="novo-grupo" style="font-size:.8rem;padding:.3rem .5rem;width:100%" onchange="filtrarTiposNoSelect('novo-grupo','novo-tipo','')">${grupoOpts}</select></div>
     <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Tipo de Despesa</label>
@@ -4437,6 +4458,45 @@ function filtrarTiposNoSelect(grupoSelectId, tipoSelectId, valorAtual) {
   tSel.innerHTML = opts;
 }
 
+// ── REGRA DIRETA / INDIRETA ─────────────────────────────────────────────────
+function atualizarRegraProjetoNovo() {
+  var classif = (document.getElementById('novo-classif')?.value || '').toLowerCase();
+  var blocoProj = document.getElementById('bloco-novo-proj');
+  var selectProj = document.getElementById('novo-proj');
+  var avisoClassif = document.getElementById('novo-classif-aviso');
+  var avisoProj = document.getElementById('novo-proj-aviso');
+  var obrigSpan = document.getElementById('novo-proj-obrig');
+  var isDireta = classif.includes('direta');
+  var isIndireta = classif.includes('indireta');
+  var isMovim = classif.includes('movimenta') || classif.includes('transfer');
+  if (isDireta) {
+    // Direta: projeto OBRIGATÓRIO
+    if (blocoProj) blocoProj.style.border = '2px solid #059669';
+    if (blocoProj) blocoProj.style.borderRadius = '6px';
+    if (blocoProj) blocoProj.style.padding = '.5rem';
+    if (blocoProj) blocoProj.style.background = '#f0fdf4';
+    if (obrigSpan) obrigSpan.style.display = 'inline';
+    if (avisoClassif) { avisoClassif.style.display='block'; avisoClassif.innerHTML='<span style="color:#059669;font-weight:600">✔ Direta: vinculada a um projeto/cliente. <strong>Projeto obrigatório.</strong></span>'; }
+    if (avisoProj) { avisoProj.style.display='block'; avisoProj.innerHTML='<span style="color:#059669">↑ Selecione o projeto ao qual este lançamento pertence.</span>'; }
+  } else if (isIndireta) {
+    // Indireta: projeto NÃO deve ser preenchido
+    if (blocoProj) blocoProj.style.border = '2px solid #94a3b8';
+    if (blocoProj) blocoProj.style.borderRadius = '6px';
+    if (blocoProj) blocoProj.style.padding = '.5rem';
+    if (blocoProj) blocoProj.style.background = '#f8fafc';
+    if (selectProj) selectProj.value = '';
+    if (obrigSpan) obrigSpan.style.display = 'none';
+    if (avisoClassif) { avisoClassif.style.display='block'; avisoClassif.innerHTML='<span style="color:#64748b;font-weight:600">↔ Indireta: custo/receita da estrutura da empresa. <strong>Não preencha Projeto.</strong></span>'; }
+    if (avisoProj) { avisoProj.style.display='block'; avisoProj.innerHTML='<span style="color:#94a3b8">Lançamentos indiretos não pertencem a um projeto específico.</span>'; }
+  } else {
+    // Movimentação / Transferência / sem seleção
+    if (blocoProj) { blocoProj.style.border=''; blocoProj.style.padding=''; blocoProj.style.background=''; }
+    if (obrigSpan) obrigSpan.style.display = 'none';
+    if (avisoClassif) avisoClassif.style.display = 'none';
+    if (avisoProj) avisoProj.style.display = 'none';
+  }
+}
+
 function toggleEditLanc(id, inconsistencias) {
   const row = document.getElementById('edit-lanc-' + id);
   if (!row) return;
@@ -4610,6 +4670,10 @@ async function criarLancamento() {
   if (!data.data) erros.push('<li><strong>Data</strong> — campo obrigatório</li>');
   if (!data.dc) erros.push('<li><strong>Débito/Crédito</strong> — selecione se é entrada ou saída</li>');
   if (!data.classificacao) erros.push('<li><strong>Classificação</strong> — selecione o tipo do lançamento</li>');
+  // Regra Direta/Indireta: Direta exige Projeto; Indireta não deve ter Projeto
+  if (data.classificacao && data.classificacao.toLowerCase().includes('direta') && !data.classificacao.toLowerCase().includes('in') && !data.projeto) {
+    erros.push('<li><strong>Projeto</strong> — obrigatório para lançamentos <em>Diretos</em> (vinculados a um projeto/cliente específico)</li>');
+  }
   if (!data.centroCusto) erros.push('<li><strong>Código (CC)</strong> — campo obrigatório</li>');
   if (!data.valor || data.valor === 0) erros.push('<li><strong>Valor (R$)</strong> — deve ser maior que zero</li>');
   if (!data.status) erros.push('<li><strong>Status</strong> — selecione o status do lançamento</li>');
