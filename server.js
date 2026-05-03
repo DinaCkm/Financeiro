@@ -7438,7 +7438,7 @@ async function saveConta() {
       const pg = storage.getPool ? storage.getPool() : null;
       if (pg) {
         bancos    = (await pg.query('SELECT * FROM bancos WHERE ativo=true ORDER BY nome')).rows;
-        historico = (await pg.query('SELECT ce.*, b.nome as banco_nome FROM conciliacao_extratos ce LEFT JOIN bancos b ON ce.banco_id=b.id ORDER BY ce.data_upload DESC LIMIT 20')).rows;
+        historico = (await pg.query('SELECT ce.*, COALESCE(b.nome, ce.banco_nome) as banco_nome FROM conciliacao_extratos ce LEFT JOIN bancos b ON ce.banco_id=b.id ORDER BY ce.data_upload DESC LIMIT 20')).rows;
       }
     } catch(e) { console.error('[conciliacao]', e.message); }
 
@@ -7735,32 +7735,34 @@ async function uploadExtrato() {
       let extratoId = null;
       if (pgConc) {
         try {
-          // Criar tabelas se não existirem
-          await pgConc.query(`
-            CREATE TABLE IF NOT EXISTS conciliacao_extratos (
-              id SERIAL PRIMARY KEY,
-              banco_id INTEGER,
-              data_upload TIMESTAMPTZ DEFAULT NOW(),
-              data_extrato VARCHAR(20),
-              data_inicio VARCHAR(20),
-              data_fim VARCHAR(20),
-              total_lancamentos INTEGER DEFAULT 0,
-              total_conciliados INTEGER DEFAULT 0,
-              total_divergentes INTEGER DEFAULT 0,
-              total_nao_lancados INTEGER DEFAULT 0,
-              saldo_extrato NUMERIC(15,2),
-              formato VARCHAR(10) DEFAULT 'OFX',
-              usuario_id VARCHAR(100),
-              itens JSONB DEFAULT '[]'
-            )
-          `);
+          // Garantir que a tabela existe com todas as colunas necessárias
+          await pgConc.query(`CREATE TABLE IF NOT EXISTS conciliacao_extratos (id SERIAL PRIMARY KEY, banco_id INTEGER, data_upload TIMESTAMPTZ DEFAULT NOW(), data_extrato DATE, total_lancamentos INTEGER DEFAULT 0, total_conciliados INTEGER DEFAULT 0, total_divergentes INTEGER DEFAULT 0, total_nao_lancados INTEGER DEFAULT 0, saldo_extrato NUMERIC(15,2))`);
+          // Adicionar colunas novas se não existirem (migração segura)
+          const migracoes = [
+            `ALTER TABLE conciliacao_extratos ADD COLUMN IF NOT EXISTS data_inicio VARCHAR(20)`,
+            `ALTER TABLE conciliacao_extratos ADD COLUMN IF NOT EXISTS data_fim VARCHAR(20)`,
+            `ALTER TABLE conciliacao_extratos ADD COLUMN IF NOT EXISTS formato VARCHAR(10) DEFAULT 'OFX'`,
+            `ALTER TABLE conciliacao_extratos ADD COLUMN IF NOT EXISTS usuario_id VARCHAR(100)`,
+            `ALTER TABLE conciliacao_extratos ADD COLUMN IF NOT EXISTS itens JSONB DEFAULT '[]'`,
+            `ALTER TABLE conciliacao_extratos ADD COLUMN IF NOT EXISTS banco_nome VARCHAR(100)`,
+          ];
+          for (const sql of migracoes) {
+            try { await pgConc.query(sql); } catch(em) { /* coluna já existe */ }
+          }
+          // Buscar nome do banco
+          let bancoNomeIns = '';
+          try {
+            const bRow = await pgConc.query('SELECT nome FROM bancos WHERE id=$1', [bancoId]);
+            bancoNomeIns = bRow.rows[0] ? bRow.rows[0].nome : '';
+          } catch(eb) {}
           const rIns = await pgConc.query(
-            'INSERT INTO conciliacao_extratos (banco_id, data_extrato, data_inicio, data_fim, total_lancamentos, total_conciliados, total_divergentes, total_nao_lancados, saldo_extrato, formato, usuario_id, itens) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING id',
-            [bancoId, dataFim, dataInicio, dataFim, trns.length, conciliados, divergentes, naoLancados, saldo, formato, user.id || user.email, JSON.stringify(itens)]
+            'INSERT INTO conciliacao_extratos (banco_id, banco_nome, data_extrato, data_inicio, data_fim, total_lancamentos, total_conciliados, total_divergentes, total_nao_lancados, saldo_extrato, formato, usuario_id, itens) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING id',
+            [bancoId, bancoNomeIns, dataFim || null, dataInicio || null, dataFim || null, trns.length, conciliados, divergentes, naoLancados, saldo, formato, user.id || user.email, JSON.stringify(itens)]
           );
           extratoId = rIns.rows[0].id;
+          console.log('[conciliacao-save] Salvo com id=', extratoId);
         } catch(eSave) {
-          console.error('[conciliacao-save]', eSave.message);
+          console.error('[conciliacao-save] ERRO:', eSave.message);
         }
       }
 
