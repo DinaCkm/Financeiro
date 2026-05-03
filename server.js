@@ -7443,10 +7443,22 @@ async function saveConta() {
     } catch(e) { console.error('[conciliacao]', e.message); }
 
     const bancoOpts2 = bancos.map(b => `<option value='${b.id}'>${b.nome}</option>`).join('');
-    const renderHist = historico.map(h => `
+    const renderHist = historico.map(h => {
+      // Formatar data_extrato: pode vir como Date object ou string ISO
+      let dataExtrFmt = '-';
+      if (h.data_extrato) {
+        const d = new Date(h.data_extrato);
+        if (!isNaN(d)) {
+          dataExtrFmt = d.toLocaleDateString('pt-BR', {timeZone:'UTC'});
+        } else {
+          const p = String(h.data_extrato).split('-');
+          dataExtrFmt = p.length===3 ? p[2]+'/'+p[1]+'/'+p[0] : String(h.data_extrato);
+        }
+      }
+      return `
       <tr>
         <td>${h.banco_nome||'-'}</td>
-        <td>${h.data_extrato||'-'}</td>
+        <td>${dataExtrFmt}</td>
         <td>${new Date(h.data_upload).toLocaleString('pt-BR')}</td>
         <td>${h.total_lancamentos||0}</td>
         <td><span class='badge badge-green'>${h.total_conciliados||0} OK</span></td>
@@ -7454,7 +7466,7 @@ async function saveConta() {
         <td><span class='badge badge-red'>${h.total_nao_lancados||0} não lançados</span></td>
         <td>${h.saldo_extrato!=null?'R$ '+Number(h.saldo_extrato).toLocaleString('pt-BR',{minimumFractionDigits:2}):'-'}</td>
         <td><a href='/conciliacao/detalhe?id=${h.id}' class='btn btn-sm btn-outline'>Ver detalhes</a></td>
-      </tr>`).join('') || '<tr><td colspan="9" style="color:#808080;padding:1rem">Nenhuma conciliação realizada ainda.</td></tr>';
+      </tr>`;}).join('') || '<tr><td colspan="9" style="color:#808080;padding:1rem">Nenhuma conciliação realizada ainda.</td></tr>';
 
     const body = `
 <h2 class='page-title'>🏦 Conciliação Bancária</h2>
