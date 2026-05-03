@@ -5907,6 +5907,7 @@ function renderHistoricoRel() {
     </label>
     <div style='display:flex;gap:.4rem;align-items:flex-end'>
       <button type='submit'>&#128269;&nbsp; Filtrar</button>
+      <a href='/api/extrato-cc/export?cc=${encodeURIComponent(qCC)}&de=${qDe}&ate=${qAte}&dc=${qDC}&nat=${encodeURIComponent(qNat)}&q=${encodeURIComponent(qQ)}' style='padding:.45rem .9rem;background:#16a34a;border:1px solid #15803d;border-radius:8px;text-decoration:none;font-size:.85rem;color:#fff;font-weight:600'>&#128196;&nbsp; Exportar Excel</a>
       <a href='/extrato' style='padding:.45rem .9rem;background:#f1f5f9;border:1px solid #e2e8f0;border-radius:8px;text-decoration:none;font-size:.85rem;color:#475569'>Limpar</a>
     </div>
   </form>
@@ -5954,6 +5955,179 @@ function renderHistoricoRel() {
 </section>`, user, '/extrato');
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
     res.end(html);
+    return;
+  }
+
+  // ============================================================
+  // EXTRATO CC — EXPORTAR EXCEL
+  // ============================================================
+  if (req.method === 'GET' && url.pathname === '/api/extrato-cc/export') {
+    const user = requireAuth(req, res, db); if (!user) return;
+    try {
+      const ExcelJS = require('exceljs');
+      const qCC  = (url.searchParams.get('cc') || '').trim();
+      const qDe  = (url.searchParams.get('de') || '').trim();
+      const qAte = (url.searchParams.get('ate') || '').trim();
+      const qQ   = (url.searchParams.get('q') || '').trim().toLowerCase();
+      const qNat = (url.searchParams.get('nat') || '').trim();
+      const qDC  = (url.searchParams.get('dc') || '').trim();
+
+      // Buscar dados do PostgreSQL
+      const pg = storage.getPool ? storage.getPool() : null;
+      let todasEntries = [];
+      if (pg) {
+        const r = await pg.query('SELECT * FROM entries ORDER BY data_iso ASC, id ASC');
+        todasEntries = r.rows.map(row => ({
+          id: row.id, data: row.data, dataISO: row.data_iso, dc: row.dc,
+          centroCusto: row.centro_custo, cliente: row.cliente, parceiro: row.parceiro,
+          projeto: row.projeto, descricao: row.descricao, natureza: row.natureza,
+          valor: parseFloat(row.valor) || 0, status: row.status,
+          isTransferenciaInterna: row.is_transferencia_interna
+        }));
+      } else {
+        todasEntries = db.entries || [];
+      }
+
+      let filtrados = todasEntries.filter(e => {
+        if (e.isTransferenciaInterna) return false;
+        const cc = (e.centroCusto || 'SEM CC').toUpperCase();
+        if (qCC && !cc.includes(qCC.toUpperCase())) return false;
+        const data = e.dataISO || e.data || '';
+        if (qDe && data < qDe) return false;
+        if (qAte && data > qAte) return false;
+        if (qNat && (e.natureza || '') !== qNat) return false;
+        if (qDC && (e.dc || (e.valor >= 0 ? 'C' : 'D')) !== qDC) return false;
+        if (qQ) {
+          const txt = [(e.descricao||''),(e.cliente||''),(e.parceiro||''),(e.projeto||''),(e.centroCusto||'')].join(' ').toLowerCase();
+          if (!txt.includes(qQ)) return false;
+        }
+        return true;
+      });
+
+      filtrados.sort((a, b) => {
+        const ccA = (a.centroCusto || 'SEM CC').toUpperCase();
+        const ccB = (b.centroCusto || 'SEM CC').toUpperCase();
+        if (ccA !== ccB) return ccA.localeCompare(ccB, 'pt-BR');
+        return (a.dataISO || a.data || '').localeCompare(b.dataISO || b.data || '');
+      });
+
+      const wb = new ExcelJS.Workbook();
+      wb.creator = 'Sistema Financeiro Eco do Bem';
+      wb.created = new Date();
+      const ws = wb.addWorksheet('Extrato CC', { views: [{ state: 'frozen', ySplit: 1 }] });
+
+      // Colunas
+      ws.columns = [
+        { header: 'Data',                    key: 'data',    width: 14 },
+        { header: 'D/C',                     key: 'dc',      width: 6  },
+        { header: 'Centro de Custo',         key: 'cc',      width: 20 },
+        { header: 'Cliente / Fornecedor',    key: 'nome',    width: 35 },
+        { header: 'Descritivo',              key: 'desc',    width: 50 },
+        { header: 'Natureza',                key: 'nat',     width: 25 },
+        { header: 'Status',                  key: 'status',  width: 14 },
+        { header: 'Valor (R$)',              key: 'valor',   width: 16 },
+      ];
+
+      // Estilo do cabeçalho
+      ws.getRow(1).eachCell(cell => {
+        cell.fill   = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1E40AF' } };
+        cell.font   = { bold: true, color: { argb: 'FFFFFFFF' }, size: 11 };
+        cell.alignment = { vertical: 'middle', horizontal: 'center' };
+        cell.border = { bottom: { style: 'medium', color: { argb: 'FF1E3A8A' } } };
+      });
+
+      // Agrupar por CC para subtotais
+      const grupos = new Map();
+      for (const e of filtrados) {
+        const cc = (e.centroCusto || 'SEM CC').toUpperCase();
+        if (!grupos.has(cc)) grupos.set(cc, []);
+        grupos.get(cc).push(e);
+      }
+
+      let totalGeral = 0;
+      let totalEntradas = 0;
+      let totalSaidas = 0;
+      let rowIdx = 2;
+
+      for (const [cc, itens] of grupos) {
+        // Linha de cabeçalho do grupo
+        const grpRow = ws.addRow([`📁 ${cc}`, '', '', '', `${itens.length} lançamento(s)`, '', '', '']);
+        grpRow.eachCell(cell => {
+          cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE2E8F0' } };
+          cell.font = { bold: true, size: 10, color: { argb: 'FF1E40AF' } };
+        });
+        rowIdx++;
+
+        let subtotal = 0;
+        for (const e of itens) {
+          const dc = e.dc || (e.valor >= 0 ? 'C' : 'D');
+          const nome = e.cliente || e.parceiro || e.projeto || '-';
+          const row = ws.addRow([
+            e.dataISO || e.data || '-',
+            dc,
+            e.centroCusto || '-',
+            nome,
+            e.descricao || '-',
+            e.natureza || '-',
+            e.status || '-',
+            e.valor || 0
+          ]);
+          // Formatar valor
+          row.getCell(8).numFmt = 'R$ #,##0.00;[Red]-R$ #,##0.00';
+          row.getCell(8).alignment = { horizontal: 'right' };
+          // Cor da linha por D/C
+          if (dc === 'C') {
+            row.getCell(8).font = { color: { argb: 'FF065F46' } };
+          } else {
+            row.getCell(8).font = { color: { argb: 'FF991B1B' } };
+          }
+          row.getCell(2).alignment = { horizontal: 'center' };
+          subtotal += (e.valor || 0);
+          rowIdx++;
+        }
+
+        // Linha de subtotal do grupo
+        const subRow = ws.addRow(['', '', '', '', '', `Subtotal ${cc}:`, '', subtotal]);
+        subRow.getCell(6).font = { bold: true, size: 10 };
+        subRow.getCell(6).alignment = { horizontal: 'right' };
+        subRow.getCell(8).numFmt = 'R$ #,##0.00;[Red]-R$ #,##0.00';
+        subRow.getCell(8).font = { bold: true, color: { argb: subtotal >= 0 ? 'FF065F46' : 'FF991B1B' } };
+        subRow.getCell(8).alignment = { horizontal: 'right' };
+        subRow.eachCell(cell => {
+          cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF8FAFC' } };
+          cell.border = { top: { style: 'thin', color: { argb: 'FFCBD5E1' } }, bottom: { style: 'medium', color: { argb: 'FFCBD5E1' } } };
+        });
+        rowIdx++;
+
+        totalGeral += subtotal;
+        totalEntradas += itens.filter(e => (e.valor||0) > 0).reduce((s,e) => s+e.valor, 0);
+        totalSaidas  += itens.filter(e => (e.valor||0) < 0).reduce((s,e) => s+e.valor, 0);
+      }
+
+      // Linha de total geral
+      const totRow = ws.addRow(['TOTAL GERAL', '', '', `${filtrados.length} lançamentos`, '', `Entradas: R$ ${totalEntradas.toLocaleString('pt-BR',{minimumFractionDigits:2})}`, '', totalGeral]);
+      totRow.eachCell(cell => {
+        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1E293B' } };
+        cell.font = { bold: true, color: { argb: 'FFFFFFFF' }, size: 11 };
+      });
+      totRow.getCell(8).numFmt = 'R$ #,##0.00;[Red]-R$ #,##0.00';
+      totRow.getCell(8).font = { bold: true, color: { argb: totalGeral >= 0 ? 'FF86EFAC' : 'FFFCA5A5' }, size: 11 };
+      totRow.getCell(8).alignment = { horizontal: 'right' };
+
+      // Gerar buffer e enviar
+      const buffer = await wb.xlsx.writeBuffer();
+      const dataStr = new Date().toISOString().slice(0,10);
+      const nomeArq = `extrato-cc-${qCC || 'todos'}-${dataStr}.xlsx`;
+      res.writeHead(200, {
+        'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        'Content-Disposition': `attachment; filename="${nomeArq}"`,
+        'Content-Length': buffer.length
+      });
+      res.end(buffer);
+    } catch(e) {
+      console.error('[extrato-export]', e.message);
+      json(res, 500, { error: e.message });
+    }
     return;
   }
 
