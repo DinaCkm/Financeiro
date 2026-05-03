@@ -4162,7 +4162,7 @@ async function excluirRef(tipo,nome){
             <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Código (CC)</label>
             <select id="el-cc-${e.id}" style="font-size:.8rem;padding:.3rem .5rem;width:100%">${(()=>{ const ccAtual = e.centroCusto||''; const temNoCad = ccs.find(c=>c.codigo===ccAtual); return '<option value="">-- Selecione o CC --</option>' + ccs.map(c=>`<option value="${c.codigo}" ${c.codigo===ccAtual?'selected':''}>${c.codigo} — ${c.nome}</option>`).join('') + (ccAtual && !temNoCad ? `<option value="${ccAtual}" selected style="color:#94a3b8">${ccAtual} (legado)</option>` : ''); })()}</select></div>
             <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Cliente / Fornecedor / Prestador</label>
-            <select id="el-cliente-${e.id}" style="font-size:.8rem;padding:.3rem .5rem;width:100%">${(()=>{ const nomeAtual = e.favorecido||e.cliente||e.parceiro||''; const temNoCad = clientesCad.find(c=>c.nome===nomeAtual); return '<option value="">-- Selecione --</option>' + clientesCad.map(c=>`<option value="${c.nome}" ${c.nome===nomeAtual?'selected':''}>${c.nome}</option>`).join('') + (nomeAtual && !temNoCad ? `<option value="${nomeAtual}" selected style="color:#94a3b8">${nomeAtual} (legado)</option>` : ''); })()}</select></div>
+            <select id="el-cliente-${e.id}" onchange="autocompleteCpfEdit('${e.id}',this.value)" style="font-size:.8rem;padding:.3rem .5rem;width:100%">${(()=>{ const nomeAtual = e.favorecido||e.cliente||e.parceiro||''; const temNoCad = clientesCad.find(c=>c.nome===nomeAtual); return '<option value="">-- Selecione --</option>' + clientesCad.map(c=>`<option value="${c.nome}" ${c.nome===nomeAtual?'selected':''}>${c.nome}</option>`).join('') + (nomeAtual && !temNoCad ? `<option value="${nomeAtual}" selected style="color:#94a3b8">${nomeAtual} (legado)</option>` : ''); })()}</select></div>
             <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">CPF / CNPJ</label>
             <input id="el-cpf-${e.id}" value="${e.cpfCnpj||''}" placeholder="000.000.000-00" style="font-size:.8rem;padding:.3rem .5rem;width:100%"/></div>
             <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Conta / Banco</label>
@@ -4244,8 +4244,11 @@ async function excluirRef(tipo,nome){
       </div>
       <div id="novo-cpf-aviso" style="font-size:.72rem;margin-top:.2rem"></div>
     </div>
-    <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Cliente / Fornecedor / Prestador</label>
-    <input id="novo-cliente" readonly placeholder="Preenchido automaticamente pelo CPF/CNPJ" style="font-size:.8rem;padding:.3rem .5rem;width:100%;background:#f1f5f9;color:#475569;cursor:not-allowed"/></div>
+    <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Cliente / Fornecedor / Prestador *</label>
+    <select id="novo-cliente" onchange="autocompletePorNome(this.value)" style="font-size:.8rem;padding:.3rem .5rem;width:100%">
+      <option value="">-- Selecione o Cliente/Fornecedor --</option>
+      ${clientesCad.map(c=>`<option value="${c.nome}">${c.nome}</option>`).join('')}
+    </select></div>
     <div id="bloco-novo-proj">
       <label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase" id="label-novo-proj">Projeto
         <span id="novo-proj-obrig" style="color:#dc2626;display:none"> *</span>
@@ -4406,8 +4409,8 @@ const TODOS_TIPOS = ${JSON.stringify(tiposDespesaCad.map(t=>({codigo:t.codigo,no
 const GRUPOS_LISTA = ${JSON.stringify(GRUPOS.map(g=>({codigo:g.codigo,nome:g.nome})))};
 // Mapa CPF/CNPJ (sem máscara) → { nome, tipo } para autocomplete no formulário
 const CLIENTES_MAP_CPF = ${JSON.stringify(clientesMapCpf)};
-// Mapa NOME → { cpf, tipo } para autocomplete inverso
-const CLIENTES_MAP_NOME = ${JSON.stringify(clientesCad.reduce((m,c)=>{ m[c.nome]={cpf:c.cpf||'',tipo:c.tipo||''}; return m; }, {}))};
+// Mapa NOME → { cpf, cnpj, tipo } para autocomplete inverso
+const CLIENTES_MAP_NOME = ${JSON.stringify(clientesCad.reduce((m,c)=>{ m[c.nome]={cpf:c.cpf||'',cnpj:c.cnpj||'',tipo:c.tipo||''}; return m; }, {}))};
 // Mapa NOME_CLIENTE → [contratos] para select dinâmico no formulário
 const CONTRATOS_POR_CLIENTE = ${JSON.stringify(CONTRATOS_MAP)};
 function atualizarContratoSelect(nomeCliente, tipoCliente) {
@@ -4505,11 +4508,23 @@ function autocompleteFavorecido(val) {
 }
 function autocompletePorNome(val) {
   var cli = CLIENTES_MAP_NOME[val];
-  if (cli && cli.cpf) {
+  if (cli) {
     var campoCpf = document.getElementById('novo-cpf');
-    if(campoCpf) campoCpf.value = cli.cpf;
+    var cpfVal = cli.cpf || cli.cnpj || '';
+    if(campoCpf && cpfVal) campoCpf.value = cpfVal;
     var aviso = document.getElementById('novo-cpf-aviso');
-    if(aviso) aviso.innerHTML = '<span style="color:#059669">\u2713 ' + (cli.tipo||'Cadastrado') + '</span>';
+    if(aviso) aviso.innerHTML = cpfVal ? '<span style="color:#059669">✓ ' + (cli.tipo||'Cadastrado') + '</span>' : '';
+    // Atualizar contratos
+    if(typeof atualizarContratoSelect === 'function') atualizarContratoSelect(val, cli.tipo||'');
+  }
+}
+// Preenche CPF/CNPJ automaticamente ao selecionar cliente na edição inline
+function autocompleteCpfEdit(id, nomeCliente) {
+  var cli = CLIENTES_MAP_NOME[nomeCliente];
+  var campoCpf = document.getElementById('el-cpf-' + id);
+  if (campoCpf && cli) {
+    var cpfVal = cli.cpf || cli.cnpj || '';
+    if (cpfVal) campoCpf.value = cpfVal;
   }
 }
 function filtrarTiposNoSelect(grupoSelectId, tipoSelectId, valorAtual) {
