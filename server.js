@@ -3983,6 +3983,62 @@ async function excluirRef(tipo,nome){
     const NATUREZAS = naturezasCad.map(r => r.nome);
     const GRUPOS = gruposCad;
     const TIPOS = tiposDespesaCad;
+    // Mapa de nomes legados de grupos → código atual
+    const GRUPOS_LEGADO_MAP = {
+      'Serviços Terceirizados':          'SERVICOS_PROJETO',
+      'Custos do Projeto / Operação':    'SERVICOS_PROJETO',
+      'Custo de Projeto':                 'SERVICOS_PROJETO',
+      'Faturamento de Projetos':          'RECEITAS_PROJETOS',
+      'Receita de Contrato':              'RECEITAS_PROJETOS',
+      'Receitas':                         'RECEITAS_PROJETOS',
+      'Despesas Financeiras':             'FINANCEIRO',
+      'Tributos Financeiros':             'FINANCEIRO',
+      'Despesas Administrativas':         'INFRAESTRUTURA_ESCRITORIO',
+      'Estrutura Administrativa':         'INFRAESTRUTURA_ESCRITORIO',
+      'Estrutura / Telefonia':            'INFRAESTRUTURA_ESCRITORIO',
+      'Material de Escritório':           'INFRAESTRUTURA_ESCRITORIO',
+      'Pessoal e Benefícios':             'PESSOAL',
+      'Tributos e Encargos':              'CONTABILIDADE_FISCAL',
+      'Tributos sobre Faturamento':       'CONTABILIDADE_FISCAL',
+      'Certificados e Regularização':    'CONTABILIDADE_FISCAL',
+      'Sistemas e Tecnologia':            'TECNOLOGIA_INFO',
+      'Tecnologia e TI':                  'TECNOLOGIA_INFO',
+      'Assinaturas e Ferramentas':        'TECNOLOGIA_INFO',
+      'Viagens e Deslocamentos':          'VIAGENS_DESLOCAMENTOS',
+      'Instrumentos e Testes':            'INSTRUMENTOS_TESTES',
+      'Marketing e Publicidade':          'MARKETING_COMUNICACAO',
+      'Materiais / Brindes':              'MARKETING_COMUNICACAO',
+      'Insumos e Materiais':              'EVENTOS_LOGISTICA',
+      'Alimentação em Projeto/Operação':  'EVENTOS_LOGISTICA',
+      'Alimentação Administrativa':       'INFRAESTRUTURA_ESCRITORIO',
+      'Serviços Profissionais / Jurídico': 'JURIDICO',
+      'Serviços Profissionais / Contábil': 'CONTABILIDADE_FISCAL',
+      'Movimentações Financeiras / Mútuos':'TRANSFERENCIAS_INTERNAS',
+      'Movimentação entre Contas':        'TRANSFERENCIAS_INTERNAS',
+      'Rendimentos':                      'RECEITAS_FINANCEIRAS',
+      'Outras Receitas':                  'RECEITAS_FINANCEIRAS',
+      'Saúde / Farmácia':                 'SAUDE_BEM_ESTAR',
+      'Capacitação e Desenvolvimento':    'CAPACITACAO_INTERNA',
+      'Entidades de Classe':              'OUTROS',
+      'Garantias e Cauções':              'OUTROS',
+      'Ajustes de Cartão':               'OUTROS',
+      'Ajustes e Devoluções':            'OUTROS',
+      'Ajustes / Sócios':                'OUTROS',
+      'Devoluções / Adiantamentos':       'OUTROS',
+      'Estornos de Cartão':              'OUTROS',
+      'Estornos e Recuperações':         'OUTROS',
+      'Empréstimos e Financiamentos':     'FINANCEIRO',
+      'A Classificar':                    'OUTROS',
+    };
+    // Função helper: resolve o código do grupo a partir de código ou nome legado
+    function resolverGrupoCod(val) {
+      if (!val) return '';
+      const porCod = GRUPOS.find(g => g.codigo === val);
+      if (porCod) return porCod.codigo;
+      const porNome = GRUPOS.find(g => g.nome === val);
+      if (porNome) return porNome.codigo;
+      return GRUPOS_LEGADO_MAP[val] || '';
+    }
     // Status novos (ativos para novos lançamentos)
     const STATUS_NOVOS = [
       ['PENDENTE','Pendente — Lançamento criado, mas ainda não concluído'],
@@ -4100,9 +4156,9 @@ async function excluirRef(tipo,nome){
               <option value="D" ${dcStr==='D'?'selected':''}>D — Débito (saída)</option>
             </select></div>
             <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Grupo da Despesa</label>
-            <select id="el-grupo-${e.id}" style="font-size:.8rem;padding:.3rem .5rem;width:100%" onchange="filtrarTiposNoSelect('el-grupo-${e.id}','el-tipo-${e.id}','')">${(()=>{ const grupoCod = GRUPOS.find(g=>g.codigo===(e.grupoDespesa||''))||GRUPOS.find(g=>g.nome===(e.grupoDespesa||'')); const grupoVal = grupoCod ? grupoCod.codigo : ''; return '<option value="">-- Selecione o Grupo --</option>' + GRUPOS.map(g=>`<option value="${g.codigo}" ${g.codigo===grupoVal?'selected':''}>${g.nome}</option>`).join('') + (!grupoVal && e.grupoDespesa ? `<option value="${e.grupoDespesa}" selected style="color:#94a3b8">${e.grupoDespesa} (legado)</option>` : ''); })()}</select></div>
+            <select id="el-grupo-${e.id}" style="font-size:.8rem;padding:.3rem .5rem;width:100%" onchange="filtrarTiposNoSelect('el-grupo-${e.id}','el-tipo-${e.id}','')">${(()=>{ const grupoVal = resolverGrupoCod(e.grupoDespesa||''); return '<option value="">-- Selecione o Grupo --</option>' + GRUPOS.map(g=>`<option value="${g.codigo}" ${g.codigo===grupoVal?'selected':''}>${g.nome}</option>`).join('') + (!grupoVal && e.grupoDespesa ? `<option value="${e.grupoDespesa}" selected style="color:#94a3b8">${e.grupoDespesa} (legado)</option>` : ''); })()}</select></div>
             <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Tipo de Despesa</label>
-            <select id="el-tipo-${e.id}" style="font-size:.8rem;padding:.3rem .5rem;width:100%">${(()=>{ const grupoCod = GRUPOS.find(g=>g.codigo===(e.grupoDespesa||''))||GRUPOS.find(g=>g.nome===(e.grupoDespesa||'')); const tiposFiltrados = grupoCod ? TIPOS.filter(t=>t.grupo_cod===grupoCod.codigo) : TIPOS; const tipoSalvo = e.tipoDespesa||''; const tipoNaCadastro = tiposFiltrados.find(t=>t.codigo===tipoSalvo)||TIPOS.find(t=>t.codigo===tipoSalvo); return '<option value="">-- Selecione o Tipo --</option>' + tiposFiltrados.map(t=>`<option value="${t.codigo}" ${t.codigo===tipoSalvo?'selected':''}>${t.nome}</option>`).join('') + (tipoSalvo && !tipoNaCadastro ? `<option value="${tipoSalvo}" selected style="color:#94a3b8">${tipoSalvo} (legado)</option>` : '') + (tipoSalvo && tipoNaCadastro && !tiposFiltrados.find(t=>t.codigo===tipoSalvo) ? `<option value="${tipoSalvo}" selected>${tipoNaCadastro.nome}</option>` : ''); })()}</select></div>
+            <select id="el-tipo-${e.id}" style="font-size:.8rem;padding:.3rem .5rem;width:100%">${(()=>{ const grupoVal = resolverGrupoCod(e.grupoDespesa||''); const tiposFiltrados = grupoVal ? TIPOS.filter(t=>t.grupo_cod===grupoVal) : TIPOS; const tipoSalvo = e.tipoDespesa||''; const tipoNaCadastro = tiposFiltrados.find(t=>t.codigo===tipoSalvo)||TIPOS.find(t=>t.codigo===tipoSalvo); return '<option value="">-- Selecione o Tipo --</option>' + tiposFiltrados.map(t=>`<option value="${t.codigo}" ${t.codigo===tipoSalvo?'selected':''}>${t.nome}</option>`).join('') + (tipoSalvo && !tipoNaCadastro ? `<option value="${tipoSalvo}" selected style="color:#94a3b8">${tipoSalvo} (legado)</option>` : '') + (tipoSalvo && tipoNaCadastro && !tiposFiltrados.find(t=>t.codigo===tipoSalvo) ? `<option value="${tipoSalvo}" selected>${tipoNaCadastro.nome}</option>` : ''); })()}</select></div>
             <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Código (CC)</label>
             <input id="el-cc-${e.id}" list="dl-cc-lanc" value="${e.centroCusto||''}" style="font-size:.8rem;padding:.3rem .5rem;width:100%"/></div>
             <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Cliente / Fornecedor / Prestador</label>
