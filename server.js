@@ -1062,7 +1062,7 @@ function reviewCards(list, allEntries) {
       const statusAtual = e.status || 'PENDENTE';
       const statusOpts = [
         ...STATUS_NOVOS.map(([cod,label]) => `<option value='${cod}' ${statusAtual===cod?'selected':''}>${label}</option>`),
-        ...(STATUS_LEGADO.includes(statusAtual) ? [`<option value='${statusAtual}' selected disabled style='color:#94a3b8'>${statusAtual} (legado)</option>`] : [])
+        ...(STATUS_LEGADO.includes(statusAtual) ? [`<option value='${statusAtual}' selected>${statusAtual}</option>`] : [])
       ].join('');
 
       return `
@@ -3992,8 +3992,8 @@ async function excluirRef(tipo,nome){
       OK:'OK (Confirmado)', RG:'RG (Renegociado)', XF:'XF (Estornado)',
       AP:'AP (A Pagar)', DE:'DE (Devolvido)', MK:'MK (Marketing)',
       NR:'NR (Não Realizado)', BQ:'BQ (Bloqueado)', CR:'CR (Crédito)',
-      RD:'RD (Redigitado)', importado:'Importado', pendente:'Pendente (legado)',
-      ok:'OK (legado)', cancelado:'Cancelado (legado)', revisado:'Revisado (legado)'
+      RD:'RD (Redigitado)', importado:'Importado', pendente:'Pendente',
+      ok:'OK', cancelado:'Cancelado', revisado:'Revisado'
     };
     // statusOpts: apenas os novos (para formulário de novo lançamento)
     const statusOpts = STATUS_NOVOS.map(([cod,label]) => `<option value="${cod}">${label}</option>`).join('');
@@ -4096,12 +4096,12 @@ async function excluirRef(tipo,nome){
             <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Classificação</label>
             <select id="el-classif-${e.id}" style="font-size:.8rem;padding:.3rem .5rem;width:100%">
               <option value="">-- Selecione --</option>
-              ${['Despesa Direta','Despesa Indireta','Receita Direta','Receita Indireta','Movimentação Financeira','Transferência Interna'].map(c=>`<option value="${c}" ${(e.classificacao||'')==c?'selected':''}>${c}</option>`).join('')}
+              ${['Despesa Direta','Despesa Indireta','Receita Direta','Receita Indireta','Movimentação Financeira','Transferência Interna'].map(c=>`<option value="${c}" ${(e.classificacao||e.natureza||'')==c?'selected':''}>${c}</option>`).join('')}
             </select></div>
             <div><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Status</label>
             <select id="el-status-${e.id}" style="font-size:.8rem;padding:.3rem .5rem;width:100%">
               ${STATUS_NOVOS.map(([cod,label])=>`<option value="${cod}" ${(e.status||'')==cod?'selected':''}>${label}</option>`).join('')}
-              ${STATUS_LEGADO_LISTA.includes(e.status||'') ? `<optgroup label="─ Legado ─"><option value="${e.status}" selected style="color:#94a3b8">${STATUS_LABEL[e.status]||e.status} (legado)</option></optgroup>` : ''}
+              ${STATUS_LEGADO_LISTA.includes(e.status||'') ? `<optgroup label="─ Status anterior ─"><option value="${e.status}" selected>${STATUS_LABEL[e.status]||e.status}</option></optgroup>` : ''}
             </select></div>
             <div style="grid-column:span 2"><label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Documento / Referência (NF, Recibo, Contrato)</label>
             <input id="el-doc-${e.id}" value="${(e.documento||e.descricao||'').replace(/"/g,'&quot;')}" style="font-size:.8rem;padding:.3rem .5rem;width:100%"/></div>
