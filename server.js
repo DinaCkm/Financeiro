@@ -4667,11 +4667,11 @@ async function toggleConciliacao(id, estadoAtual) {
       const td = document.querySelector('#row-' + id + ' td:nth-last-child(2)');
       if (td) {
         if (data.conciliacao_status === 'manual') {
-          td.innerHTML = '<button onclick="event.stopPropagation();toggleConciliacao(\'' + id + '\',\'manual\')\" title="Conciliado manualmente \u2014 clique para desfazer" style="background:none;border:none;cursor:pointer;font-size:1.3rem" aria-label="Conciliado manualmente">&#128994;</button>';
+          td.innerHTML = "<button onclick='event.stopPropagation();toggleConciliacao(\"" + id + "\",\"manual\")' title='Conciliado manualmente \u2014 clique para desfazer' style='background:none;border:none;cursor:pointer;font-size:1.3rem' aria-label='Conciliado manualmente'>&#128994;</button>";
         } else if (data.conciliacao_status === 'extrato') {
-          td.innerHTML = '<button onclick="event.stopPropagation();toggleConciliacao(\'' + id + '\',\'extrato\')\" title="Conciliado via extrato banc\u00e1rio \u2014 clique para desfazer" style="background:none;border:none;cursor:pointer;font-size:1.3rem" aria-label="Conciliado via extrato">&#9989;</button>';
+          td.innerHTML = "<button onclick='event.stopPropagation();toggleConciliacao(\"" + id + "\",\"extrato\")' title='Conciliado via extrato banc\u00e1rio \u2014 clique para desfazer' style='background:none;border:none;cursor:pointer;font-size:1.3rem' aria-label='Conciliado via extrato'>&#9989;</button>";
         } else {
-          td.innerHTML = '<button onclick="event.stopPropagation();toggleConciliacao(\'' + id + '\',\'marcar\')\" title="Clique para marcar como conciliado manualmente" style="background:none;border:none;cursor:pointer;font-size:1.3rem;opacity:.25" aria-label="Marcar como conciliado">&#9711;</button>';
+          td.innerHTML = "<button onclick='event.stopPropagation();toggleConciliacao(\"" + id + "\",\"marcar\")' title='Clique para marcar como conciliado manualmente' style='background:none;border:none;cursor:pointer;font-size:1.3rem;opacity:.25' aria-label='Marcar como conciliado'>&#9711;</button>";
         }
       }
     } else {
@@ -8611,7 +8611,7 @@ async function ocultarConciliacao(id, btn) {
       +'  msg.innerHTML="<span style=\\"color:#1d4ed8\\">Salvando correção...</span>";'
       +'  try{'
       +'    var url=lancId?"/api/entries/"+lancId:"/api/entries";'
-      +'    var method=lancId?"PUT":"POST";'
+      +'    var method=lancId?"PATCH":"POST";'
       +'    var r=await fetch(url,{method:method,headers:{"Content-Type":"application/json"},'
       +'      body:JSON.stringify({data:data,dataISO:data,dc:dc,valor:dc==="D"?-Math.abs(valor):Math.abs(valor),'
       +'        centroCusto:cc,cliente:cli,favorecido:fav,projeto:proj,natureza:nat,categoria:cat,descritivo:desc,observacoes:obs,status:"confirmado"})});'
