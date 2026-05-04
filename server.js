@@ -2926,6 +2926,41 @@ Responda em português, de forma objetiva e direta, citando os dados específico
       } catch(e) { console.error('[conciliacao-patch]', e.message); }
     }
     if (!entry && !pgConc) return json(res, 404, { error: 'Lançamento não encontrado' });
+
+    // Sincronizar com o item do extrato bancário:
+    // Se o lançamento foi marcado como 'extrato' ou 'manual', atualizar o item correspondente no extrato para OK_CONCILIADO
+    // Se foi desmarcado, reverter o item do extrato para CONCILIADO (aguardando OK)
+    if (pgConc) {
+      try {
+        // Buscar em qual extrato este lançamento está vinculado
+        const rExt = await pgConc.query(
+          `SELECT id, itens FROM conciliacao_extratos WHERE itens IS NOT NULL`
+        );
+        for (const row of rExt.rows) {
+          let itens = typeof row.itens === 'string' ? JSON.parse(row.itens) : row.itens;
+          if (!Array.isArray(itens)) continue;
+          let changed = false;
+          for (const item of itens) {
+            if (item.lancamento_id === id) {
+              if (novoStatus === 'extrato' || novoStatus === 'manual') {
+                item.status = 'OK_CONCILIADO';
+              } else if (!novoStatus) {
+                // Desmarcado: voltar para CONCILIADO se estava OK_CONCILIADO
+                if (item.status === 'OK_CONCILIADO') item.status = 'CONCILIADO';
+              }
+              changed = true;
+            }
+          }
+          if (changed) {
+            await pgConc.query(
+              `UPDATE conciliacao_extratos SET itens = $1::jsonb WHERE id = $2`,
+              [JSON.stringify(itens), row.id]
+            );
+          }
+        }
+      } catch(eSinc) { console.error('[conciliacao-sinc-extrato]', eSinc.message); }
+    }
+
     return json(res, 200, { ok: true, conciliacao_status: novoStatus });
   }
 
