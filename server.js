@@ -8273,6 +8273,16 @@ async function ocultarConciliacao(id, btn) {
         lancamentosDB = (db.entries || []).filter(e => !e.isTransferenciaInterna);
       }
 
+      // Montar índice de lançamentos já conciliados (conciliacao_status = 'extrato' ou 'manual' ou 'OK_CONCILIADO')
+      // Chave: id do lançamento → true se já conciliado
+      const lancJaConciliado = new Set();
+      for (const l of lancamentosDB) {
+        const st = l.conciliacao_status || '';
+        if (st === 'extrato' || st === 'manual' || st === 'OK_CONCILIADO') {
+          lancJaConciliado.add(l.id);
+        }
+      }
+
       // Indexar lançamentos por valor arredondado + D/C (sem data)
       // Critério flexível: o gerente decide se o candidato encontrado é o correto
       const lancIdx = new Map();
@@ -8311,8 +8321,12 @@ async function ocultarConciliacao(id, btn) {
           const best = sorted[0];
           lancId = best.id;
           const bestAnoMes = (best.dataISO||'').substring(0,7);
+          // Se o lançamento já foi conciliado anteriormente → marcar como OK_CONCILIADO direto
+          if (lancJaConciliado.has(best.id)) {
+            status = 'OK_CONCILIADO';
+            conciliados++;
           // CONCILIADO automático apenas se: mesma data exata E mesmo mês/ano
-          if (best.dataISO === trn.dataISO && bestAnoMes === trnAnoMes) {
+          } else if (best.dataISO === trn.dataISO && bestAnoMes === trnAnoMes) {
             status = 'CONCILIADO';
             conciliados++;
           } else {
