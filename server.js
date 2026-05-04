@@ -8422,7 +8422,7 @@ async function ocultarConciliacao(id, btn) {
 
     let extrato = null;
     let bancoNome = '-';
-    let ccs = [], projetos = [], clientes = [], categorias = [], gruposConcil = [], tiposDespConcil = [], bancosConcil = [], statusConcil = [];
+    let ccs = [], projetos = [], clientes = [], categorias = [], gruposConcil = [], tiposDespConcil = [], bancosConcil = [], statusConcil = [], naturezasConcil = [];
     let lancamentosMap = {}; // lancamento_id -> dados do lançamento
     try {
       if (pg) {
@@ -8443,6 +8443,7 @@ async function ocultarConciliacao(id, btn) {
         try { tiposDespConcil = (await pg.query('SELECT td.codigo, td.nome, gd.codigo as grupo_cod FROM tipos_despesa td LEFT JOIN grupos_despesa gd ON gd.id=td.grupo_id WHERE td.ativo=true ORDER BY gd.nome NULLS LAST, td.nome')).rows; } catch(et) {}
         try { bancosConcil = (await pg.query('SELECT codigo, nome FROM bancos WHERE ativo=true ORDER BY nome')).rows; } catch(eb) {}
         try { statusConcil = (await pg.query('SELECT nome FROM tipos_lancamento WHERE ativo=true ORDER BY nome')).rows.map(r=>r.nome); } catch(es) {}
+        try { naturezasConcil = (await pg.query('SELECT nome FROM naturezas_gerenciais WHERE ativo=true ORDER BY nome')).rows.map(r=>r.nome); } catch(en) {}
         // Buscar dados dos lançamentos vinculados (divergentes e conciliados)
         if (extrato) {
           const itensAll = extrato.itens || [];
@@ -8487,8 +8488,20 @@ async function ocultarConciliacao(id, btn) {
     const grupoOptsC = gruposConcil.map(g=>'<option value="'+esc(g.codigo)+'">'+esc(g.nome)+'</option>').join('');
     const tipoOptsC  = tiposDespConcil.map(t=>'<option value="'+esc(t.codigo)+'" data-grupo="'+esc(t.grupo_cod||'')+'">'+esc(t.nome)+'</option>').join('');
     const contaOptsC = bancosConcil.length>0 ? bancosConcil.map(b=>'<option value="'+esc(b.nome)+'">'+esc(b.nome)+'</option>').join('') : '';
-    const statusOptsC = ['PG (Pago)','RE (Receber)','AG (Agendado)','CA (Cancelado)','PE (Pendente)'].map(s=>'<option value="'+s+'">'+s+'</option>').join('');
-    const classifOpts = ['Despesa Direta','Despesa Indireta','Receita Direta','Receita Indireta','Movimentação Financeira','Transferência Interna'].map(c=>'<option value="'+c+'">'+c+'</option>').join('');
+    // Status: mesmos do formulário de lançamentos (novos + legados)
+    const STATUS_NOVOS_C = [['PENDENTE','Pendente — Lançamento criado, mas ainda não concluído'],['PAGO','Pago — Despesa já paga'],['RECEBIDO','Recebido — Receita já recebida'],['CANCELADO','Cancelado — Cancelado antes de se efetivar'],['ESTORNADO','Estornado — Revertido contabilmente/financeiramente'],['DEVOLVIDO','Devolvido — Valor devolvido ao cliente ou do fornecedor'],['RENEGOCIADO','Renegociado — Título ou obrigação renegociada'],['NAO_REALIZADO','Não realizado — Previsto, mas não aconteceu'],['CONFIRMADO','Confirmado — Validado, mas ainda não liquidado']];
+    const STATUS_LEGADO_C = {PG:'PG (Pago)',AG:'AG (Aguardando)',RE:'RE (Recebido)',RT:'RT (Retido)',TF:'TF (Transferência)',NT:'NT (Não Tributado)',ZZ:'ZZ (Cancelado)',OK:'OK (Confirmado)',RG:'RG (Renegociado)',XF:'XF (Estornado)',AP:'AP (A Pagar)',DE:'DE (Devolvido)',MK:'MK (Marketing)',NR:'NR (Não Realizado)',BQ:'BQ (Bloqueado)',CR:'CR (Crédito)',RD:'RD (Redigitado)'};
+    const STATUS_LEGADO_LISTA_C = Object.keys(STATUS_LEGADO_C);
+    const buildStatusOpts = (val) => STATUS_NOVOS_C.map(([cod,label])=>'<option value="'+cod+'"'+(val===cod?' selected':'')+'>'+label+'</option>').join('') + (STATUS_LEGADO_LISTA_C.includes(val)?'<optgroup label="─ Status anterior ─"><option value="'+val+'" selected>'+(STATUS_LEGADO_C[val]||val)+'</option></optgroup>':'');
+    // Classificação: mesmas naturezas gerenciais do formulário de lançamentos
+    const NATUREZAS_C = naturezasConcil.length>0 ? naturezasConcil : ['Receita Operacional','Custo Direto','Custo Indireto','Receita Financeira','Movimentação Financeira Não Operacional','Transferência Interna','Pendente de Classificação'];
+    const buildClassifOpts = (val) => NATUREZAS_C.map(n=>'<option value="'+n+'"'+(val===n?' selected':'')+'>'+n+'</option>').join('') + (val && !NATUREZAS_C.includes(val)?'<option value="'+val+'" selected style="color:#94a3b8">'+val+' (legado)</option>':'');
+    const buildCcOpts = (val) => '<option value="">-- Selecione o CC --</option>'+ccs.map(c=>'<option value="'+esc(c)+'"'+(val===c?' selected':'')+'>'+esc(c)+'</option>').join('')+(val&&!ccs.includes(val)?'<option value="'+esc(val)+'" selected style="color:#94a3b8">'+esc(val)+' (legado)</option>':'');
+    const buildCliOpts = (val) => '<option value="">-- Selecione o Cliente/Fornecedor --</option>'+clientes.map(c=>'<option value="'+esc(c)+'"'+(val===c?' selected':'')+'>'+esc(c)+'</option>').join('')+(val&&!clientes.includes(val)?'<option value="'+esc(val)+'" selected style="color:#94a3b8">'+esc(val)+' (legado)</option>':'');
+    const buildProjOpts = (val) => '<option value="">-- Selecione o Projeto --</option>'+projetos.map(p=>'<option value="'+esc(p)+'"'+(val===p?' selected':'')+'>'+esc(p)+'</option>').join('')+(val&&!projetos.includes(val)?'<option value="'+esc(val)+'" selected style="color:#94a3b8">'+esc(val)+' (legado)</option>':'');
+    const buildGrupoOpts = (val) => '<option value="">-- Selecione o Grupo --</option>'+gruposConcil.map(g=>'<option value="'+esc(g.codigo)+'"'+(val===g.codigo?' selected':'')+'>'+esc(g.nome)+'</option>').join('');
+    const buildTipoOpts = (val) => '<option value="">-- Selecione o Tipo --</option>'+tiposDespConcil.map(t=>'<option value="'+esc(t.codigo)+'"'+(val===t.codigo?' selected':'')+'>'+esc(t.nome)+'</option>').join('');
+    const buildContaOpts = (val) => '<option value="">-- Selecione --</option>'+bancosConcil.map(b=>'<option value="'+esc(b.nome)+'"'+(val===b.nome?' selected':'')+'>'+esc(b.nome)+'</option>').join('');
 
     const inputStyle = 'display:block;width:100%;padding:.3rem .45rem;border:1px solid #d1d5db;border-radius:.3rem;margin-top:.15rem;font-size:.8rem';
     const labelStyle = 'font-size:.75rem;font-weight:600;color:#374151';
@@ -8588,16 +8601,16 @@ async function ocultarConciliacao(id, btn) {
         +'<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:.75rem">'
         +'<label style="'+labelStyle+'">Data *<input id="dv-data-'+i+'" type="date" value="'+esc(lanc.dataISO||lanc.data||it.dataISO||'')+'" style="'+inputStyle+'"></label>'
         +'<label style="'+labelStyle+'">D/C *<select id="dv-dc-'+i+'" style="'+inputStyle+'"><option value="D"'+((lanc.dc||it.dc)==='D'?' selected':'')+'>D — Débito (saída)</option><option value="C"'+((lanc.dc||it.dc)==='C'?' selected':'')+'>C — Crédito (entrada)</option></select></label>'
-        +'<label style="'+labelStyle+'">Classificação *<select id="dv-classif-'+i+'" style="'+inputStyle+'"><option value="">-- Selecione --</option>'+selOpt(classifOpts,lanc.classificacao||lanc.natureza||'')+'</select></label>'
+        +'<label style="'+labelStyle+'">Classificação *<select id="dv-classif-'+i+'" style="'+inputStyle+'"><option value="">-- Selecione --</option>'+buildClassifOpts(lanc.classificacao||lanc.natureza||lanc.naturezaGerencial||'')+'</select></label>'
         +'<label style="'+labelStyle+'">CPF / CNPJ<input id="dv-cpf-'+i+'" type="text" placeholder="Digite CPF ou CNPJ (somente números)" value="'+esc(lanc.cpfCnpj||'')+'" style="'+inputStyle+'"></label>'
-        +'<label style="'+labelStyle+'">Cliente / Fornecedor / Prestador *<select id="dv-cli-'+i+'" style="'+inputStyle+'"><option value="">-- Selecione o Cliente/Fornecedor --</option>'+selOpt(cliOpts,lanc.cliente||lanc.favorecido||'')+'</select></label>'
-        +'<label style="'+labelStyle+'">Projeto<select id="dv-proj-'+i+'" style="'+inputStyle+'"><option value="">-- Selecione o Projeto --</option>'+selOpt(projOpts,lanc.projeto||'')+'</select></label>'
-        +'<label style="'+labelStyle+'">Grupo da Despesa<select id="dv-grupo-'+i+'" style="'+inputStyle+'"><option value="">Todos</option>'+selOpt(grupoOptsC,lanc.grupoDespesa||'')+'</select></label>'
-        +'<label style="'+labelStyle+'">Tipo de Despesa<select id="dv-tipo-'+i+'" style="'+inputStyle+'"><option value="">Todos</option>'+selOpt(tipoOptsC,lanc.tipoDespesa||'')+'</select></label>'
-        +'<label style="'+labelStyle+'">Código (CC) *<input id="dv-cc-'+i+'" type="text" placeholder="Ex: ESCRITORIO" value="'+esc(lanc.centroCusto||'')+'" list="dv-dl-cc-'+i+'" style="'+inputStyle+'"><datalist id="dv-dl-cc-'+i+'">'+ccOpts+'</datalist></label>'
+        +'<label style="'+labelStyle+'">Cliente / Fornecedor / Prestador *<select id="dv-cli-'+i+'" style="'+inputStyle+'">'+buildCliOpts(lanc.cliente||lanc.favorecido||lanc.parceiro||'')+'</select></label>'
+        +'<label style="'+labelStyle+'">Projeto<select id="dv-proj-'+i+'" style="'+inputStyle+'">'+buildProjOpts(lanc.projeto||'')+'</select></label>'
+        +'<label style="'+labelStyle+'">Grupo da Despesa<select id="dv-grupo-'+i+'" style="'+inputStyle+'">'+buildGrupoOpts(lanc.grupoDespesa||'')+'</select></label>'
+        +'<label style="'+labelStyle+'">Tipo de Despesa<select id="dv-tipo-'+i+'" style="'+inputStyle+'">'+buildTipoOpts(lanc.tipoDespesa||'')+'</select></label>'
+        +'<label style="'+labelStyle+'">Código (CC) *<select id="dv-cc-'+i+'" style="'+inputStyle+'">'+buildCcOpts(lanc.centroCusto||'')+'</select></label>'
         +'<label style="'+labelStyle+'">Conta / Banco<input id="dv-conta-'+i+'" type="text" placeholder="Ex: Itaú PJ" value="'+esc(lanc.conta||lanc.banco||'')+'" list="dv-dl-conta-'+i+'" style="'+inputStyle+'"><datalist id="dv-dl-conta-'+i+'">'+contaOptsC+'</datalist></label>'
         +'<label style="'+labelStyle+'">Valor (R$) *<input id="dv-valor-'+i+'" type="number" step="0.01" value="'+Math.abs(lanc.valor||it.valor||0)+'" style="'+inputStyle+'"></label>'
-        +'<label style="'+labelStyle+'">Status<select id="dv-status-'+i+'" style="'+inputStyle+'"><option value="">-- Selecione --</option>'+selOpt(statusOptsC,lanc.status||'')+'</select></label>'
+        +'<label style="'+labelStyle+'">Status<select id="dv-status-'+i+'" style="'+inputStyle+'">'+buildStatusOpts(lanc.status||'')+'</select></label>'
         +'<div style="grid-column:1/-1"><label style="'+labelStyle+'">Documento / Referência (NF, Recibo, Contrato)<input id="dv-doc-'+i+'" type="text" placeholder="Ex: NF 11921943 - Contrato 42156427" value="'+esc(lanc.documento||lanc.doc||lanc.descricao||'')+'" style="'+inputStyle+'"></label></div>'
         +'<div style="grid-column:1/-1"><label style="'+labelStyle+'">Descritivo (finalidade do gasto)<input id="dv-desc-'+i+'" type="text" placeholder="Ex: Serviço de hospedagem para manutenção da presença digital" value="'+esc(lanc.descritivo||'')+'" style="'+inputStyle+'"></label></div>'
         +'</div></div>'
