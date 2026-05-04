@@ -8207,13 +8207,18 @@ async function ocultarConciliacao(id, btn) {
       const itens = [];
       for (const trn of trns) {
         const k = Math.round(Math.abs(trn.valor) * 100) + '|' + trn.dc;
-        const matches = lancIdx.get(k) || [];
+        const allMatches = lancIdx.get(k) || [];
+        // Extrair ano-mês do item do extrato
+        const trnAnoMes = trn.dataISO ? trn.dataISO.substring(0, 7) : null; // 'YYYY-MM'
+        // Priorizar lançamentos do mesmo mês/ano; só usar de outros meses se não houver nenhum do mesmo mês
+        const matchesMesmo = trnAnoMes ? allMatches.filter(l => (l.dataISO||'').substring(0,7) === trnAnoMes) : [];
+        const matches = matchesMesmo.length > 0 ? matchesMesmo : allMatches;
         let status = 'NAO_LANCADO';
         let lancId  = null;
         let candidatos = [];
         if (matches.length > 0) {
           // Há candidatos com mesmo valor e D/C — gerente vai confirmar
-          // Priorizar o mais próximo pela data
+          // Priorizar o mais próximo pela data (dentro do mesmo mês preferencialmente)
           const sorted = matches.slice().sort((a,b) => {
             const da = Math.abs(new Date(a.dataISO||0) - new Date(trn.dataISO));
             const db2 = Math.abs(new Date(b.dataISO||0) - new Date(trn.dataISO));
@@ -8221,17 +8226,21 @@ async function ocultarConciliacao(id, btn) {
           });
           const best = sorted[0];
           lancId = best.id;
-          // Se a data também bate exatamente → CONCILIADO automático
-          if (best.dataISO === trn.dataISO) {
+          const bestAnoMes = (best.dataISO||'').substring(0,7);
+          // CONCILIADO automático apenas se: mesma data exata E mesmo mês/ano
+          if (best.dataISO === trn.dataISO && bestAnoMes === trnAnoMes) {
             status = 'CONCILIADO';
             conciliados++;
           } else {
-            // Data difere → marcar como DIVERGENTE para o gerente confirmar
+            // Data ou mês difere → marcar como DIVERGENTE para o gerente confirmar
             status = 'DIVERGENTE';
             divergentes++;
           }
-          // Guardar todos os candidatos para exibir ao gerente
-          candidatos = sorted.slice(0, 5).map(l => ({ id: l.id, dataISO: l.dataISO, dc: l.dc, valor: l.valor, centroCusto: l.centroCusto, cliente: l.cliente, projeto: l.projeto, descritivo: l.descritivo || l.descricao, numLanc: l.numLanc }));
+          // Guardar candidatos do mesmo mês primeiro, depois outros meses (até 5 no total)
+          const candMesmo = sorted.filter(l => (l.dataISO||'').substring(0,7) === trnAnoMes);
+          const candOutros = sorted.filter(l => (l.dataISO||'').substring(0,7) !== trnAnoMes);
+          const candAll = [...candMesmo, ...candOutros].slice(0, 5);
+          candidatos = candAll.map(l => ({ id: l.id, dataISO: l.dataISO, dc: l.dc, valor: l.valor, centroCusto: l.centroCusto, cliente: l.cliente, projeto: l.projeto, descritivo: l.descritivo || l.descricao, numLanc: l.numLanc }));
         } else {
           // ===== BUSCA POR RATEIO: soma de lançamentos que totalizam o valor do extrato =====
           // Filtrar lançamentos com mesmo D/C e data próxima (±5 dias)
