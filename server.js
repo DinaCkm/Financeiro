@@ -8678,11 +8678,12 @@ async function ocultarConciliacao(id, btn) {
     // ---- Seção 3: CONCILIADOS / CONFIRMADOS ----
     const rowsConc = conciliados.map((it,i) => {
       const cor = it.dc==='C' ? '#059669' : '#dc2626';
+      const jaConfirmado = it.status==='OK_CONCILIADO' || it.status==='LANCAMENTO_CONFIRMADO';
       const statusLabel = it.status==='LANCAMENTO_CONFIRMADO'
         ? '<span style="color:#059669;font-weight:700">✅ Lançamento Confirmado</span>'
         : it.status==='OK_CONCILIADO'
         ? '<span style="color:#059669;font-weight:700">✔️ OK — Conciliado</span>'
-        : '<span style="color:#059669;font-weight:700">✅ Conciliado</span>';
+        : '<span style="color:#d97706;font-weight:700">🟡 Aguardando seu OK</span>';
       const lancConc = lancamentosMap[it.lancamento_id] || {};
       const numLancConc = lancConc._numLanc || null;
       const linkLancConc = it.lancamento_id
@@ -8690,13 +8691,16 @@ async function ocultarConciliacao(id, btn) {
             ? '<a href="/lancamentos?num='+numLancConc+'" style="color:#3b82f6;font-size:.78rem;font-weight:600">🔗 Ver #'+String(numLancConc).padStart(6,'0')+'</a>'
             : '<a href="/lancamentos?q='+encodeURIComponent(it.memo||'')+'" style="color:#3b82f6;font-size:.78rem">🔗 Ver lançamento</a>')
         : '';
+      const btnConfirmar = !jaConfirmado
+        ? '<button id="cc-btn-'+i+'" onclick="confirmarConciliadoOk('+i+',\''+esc(it.fitid||'')+'\')" style="background:#059669;color:#fff;border:none;padding:.3rem .75rem;border-radius:.4rem;cursor:pointer;font-size:.78rem;font-weight:600;margin-left:.5rem">✔️ Confirmar OK</button>'
+        : '';
       return '<tr id="cc-row-'+i+'" style="border-bottom:1px solid #dcfce7">'
         +'<td style="padding:.4rem .6rem;font-size:.82rem;white-space:nowrap">'+fmtData(it.dataISO)+'</td>'
         +'<td style="padding:.4rem .6rem;font-size:.82rem;font-weight:700;color:'+cor+'">'+it.dc+'</td>'
         +'<td style="padding:.4rem .6rem;font-size:.82rem;max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="'+esc(it.memo)+'">'+esc(it.memo||'-')+'</td>'
         +'<td style="padding:.4rem .6rem;font-size:.82rem;text-align:right;font-weight:700;color:'+cor+'">'+fmtVal(it.valor)+'</td>'
-        +'<td style="padding:.4rem .6rem">'+statusLabel+'</td>'
-        +'<td style="padding:.4rem .6rem">'+linkLancConc+'</td>'
+        +'<td style="padding:.4rem .6rem" id="cc-status-'+i+'">'+statusLabel+'</td>'
+        +'<td style="padding:.4rem .6rem;display:flex;align-items:center;gap:.4rem">'+linkLancConc+btnConfirmar+'</td>'
         +'</tr>';
     }).join('');
 
@@ -8885,6 +8889,14 @@ async function ocultarConciliacao(id, btn) {
       +'  cells[4].innerHTML="<span style=\\"color:#059669;font-weight:700\\">✔️ OK — Conciliado</span>";'
       +'  cells[5].innerHTML="";'
       +'  document.getElementById("dv-painel-"+i).style.display="none";'
+      +'}'
+      +'async function confirmarConciliadoOk(i,fitid){'
+      +'  var btn=document.getElementById("cc-btn-"+i);'
+      +'  if(btn){btn.disabled=true;btn.textContent="Salvando...";btn.style.opacity=".6";}'
+      +'  if(EXTRATO_ID&&fitid){await fetch("/api/conciliacao/item-status",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({extratoId:EXTRATO_ID,fitid:fitid,novoStatus:"OK_CONCILIADO"})});}'  
+      +'  var statusCell=document.getElementById("cc-status-"+i);'
+      +'  if(statusCell){statusCell.innerHTML="<span style=\'color:#059669;font-weight:700\'>✔️ OK — Conciliado</span>";}'
+      +'  if(btn){btn.remove();}'
       +'}'
       +'async function marcarEmAnaliseDiv(i,fitid){'
       +'  if(EXTRATO_ID&&fitid){await fetch("/api/conciliacao/item-status",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({extratoId:EXTRATO_ID,fitid:fitid,novoStatus:"EM_ANALISE"})});}'
