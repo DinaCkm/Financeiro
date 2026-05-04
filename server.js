@@ -8431,12 +8431,40 @@ async function ocultarConciliacao(id, btn) {
           extrato = r.rows[0];
           bancoNome = extrato.banco_nome || '-';
         }
-        const rCC = await pg.query("SELECT DISTINCT data->>'centroCusto' as cc FROM entries WHERE data->>'centroCusto' IS NOT NULL AND data->>'centroCusto' != '' ORDER BY 1");
-        ccs = rCC.rows.map(r=>r.cc).filter(Boolean);
-        const rProj = await pg.query("SELECT DISTINCT data->>'projeto' as p FROM entries WHERE data->>'projeto' IS NOT NULL AND data->>'projeto' != '' ORDER BY 1");
-        projetos = rProj.rows.map(r=>r.p).filter(Boolean);
-        const rCli = await pg.query("SELECT DISTINCT data->>'cliente' as c FROM entries WHERE data->>'cliente' IS NOT NULL AND data->>'cliente' != '' ORDER BY 1 LIMIT 300");
-        clientes = rCli.rows.map(r=>r.c).filter(Boolean);
+        try {
+          const rCC = await pg.query('SELECT codigo, nome FROM centros_de_custo WHERE ativo=true ORDER BY tipo, nome');
+          ccs = rCC.rows.map(r=>r.codigo).filter(Boolean);
+          if (ccs.length === 0) {
+            const rCCFb = await pg.query("SELECT DISTINCT data->>'centroCusto' as cc FROM entries WHERE data->>'centroCusto' IS NOT NULL AND data->>'centroCusto' != '' ORDER BY 1");
+            ccs = rCCFb.rows.map(r=>r.cc).filter(Boolean);
+          }
+        } catch(ecc) {
+          const rCCFb = await pg.query("SELECT DISTINCT data->>'centroCusto' as cc FROM entries WHERE data->>'centroCusto' IS NOT NULL AND data->>'centroCusto' != '' ORDER BY 1");
+          ccs = rCCFb.rows.map(r=>r.cc).filter(Boolean);
+        }
+        try {
+          const rProj = await pg.query('SELECT codigo, nome FROM projetos WHERE ativo=true ORDER BY codigo');
+          projetos = rProj.rows.map(r=>r.nome || r.codigo).filter(Boolean);
+          if (projetos.length === 0) {
+            // fallback: buscar dos lançamentos se tabela vazia
+            const rProjFb = await pg.query("SELECT DISTINCT data->>'projeto' as p FROM entries WHERE data->>'projeto' IS NOT NULL AND data->>'projeto' != '' ORDER BY 1");
+            projetos = rProjFb.rows.map(r=>r.p).filter(Boolean);
+          }
+        } catch(ep) {
+          const rProjFb = await pg.query("SELECT DISTINCT data->>'projeto' as p FROM entries WHERE data->>'projeto' IS NOT NULL AND data->>'projeto' != '' ORDER BY 1");
+          projetos = rProjFb.rows.map(r=>r.p).filter(Boolean);
+        }
+        try {
+          const rCli = await pg.query('SELECT nome FROM clientes WHERE ativo=true ORDER BY nome');
+          clientes = rCli.rows.map(r=>r.nome).filter(Boolean);
+          if (clientes.length === 0) {
+            const rCliFb = await pg.query("SELECT DISTINCT data->>'cliente' as c FROM entries WHERE data->>'cliente' IS NOT NULL AND data->>'cliente' != '' ORDER BY 1 LIMIT 300");
+            clientes = rCliFb.rows.map(r=>r.c).filter(Boolean);
+          }
+        } catch(ecli) {
+          const rCliFb = await pg.query("SELECT DISTINCT data->>'cliente' as c FROM entries WHERE data->>'cliente' IS NOT NULL AND data->>'cliente' != '' ORDER BY 1 LIMIT 300");
+          clientes = rCliFb.rows.map(r=>r.c).filter(Boolean);
+        }
         const rCat = await pg.query("SELECT DISTINCT data->>'categoria' as cat FROM entries WHERE data->>'categoria' IS NOT NULL AND data->>'categoria' != '' ORDER BY 1");
         categorias = rCat.rows.map(r=>r.cat).filter(Boolean);
         try { gruposConcil = (await pg.query('SELECT codigo, nome FROM grupos_despesa WHERE ativo=true ORDER BY nome')).rows; } catch(eg) {}
