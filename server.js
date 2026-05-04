@@ -2809,6 +2809,51 @@ Responda em português, de forma objetiva e direta, citando os dados específico
   }
 
   // ---- GET /api/entries/:id/conciliacao — buscar status atual diretamente do PostgreSQL ----
+  // ---- GET /api/entries/busca?q=TERMO — buscar lançamentos por número ou descrição para troca manual na conciliação ----
+  if (req.method === 'GET' && url.pathname === '/api/entries/busca') {
+    const user = requireAuth(req, res, db); if (!user) return;
+    const q = (url.searchParams.get('q') || '').trim();
+    if (!q) return json(res, 200, { results: [] });
+    const pgBusca = storage.getPool ? storage.getPool() : null;
+    let results = [];
+    if (pgBusca) {
+      try {
+        // Busca por número exato ou por texto na descrição/cliente/CC
+        const numQ = parseInt(q.replace(/\D/g,''), 10);
+        let rows;
+        if (!isNaN(numQ) && numQ > 0) {
+          // Busca por número do lançamento
+          const r = await pgBusca.query(
+            `SELECT data FROM entries WHERE (data->>'numLanc')::int = $1 OR data->>'numLanc' ILIKE $2 LIMIT 10`,
+            [numQ, '%' + q + '%']
+          );
+          rows = r.rows;
+        } else {
+          // Busca por texto
+          const r = await pgBusca.query(
+            `SELECT data FROM entries WHERE data->>'descritivo' ILIKE $1 OR data->>'cliente' ILIKE $1 OR data->>'centroCusto' ILIKE $1 OR data->>'documento' ILIKE $1 LIMIT 10`,
+            ['%' + q + '%']
+          );
+          rows = r.rows;
+        }
+        results = rows.map(r => {
+          const d = typeof r.data === 'string' ? JSON.parse(r.data) : r.data;
+          return { id: d.id, numLanc: d.numLanc, dataISO: d.dataISO||d.data, dc: d.dc, valor: d.valor, centroCusto: d.centroCusto, cliente: d.cliente, projeto: d.projeto, descritivo: d.descritivo||d.descricao, status: d.status };
+        });
+      } catch(e) { results = []; }
+    }
+    if (results.length === 0) {
+      // Fallback para db local
+      const qLow = q.toLowerCase();
+      const numQ2 = parseInt(q.replace(/\D/g,''), 10);
+      results = (db.entries || []).filter(e => {
+        if (!isNaN(numQ2) && numQ2 > 0) return parseInt(e.numLanc||0,10) === numQ2;
+        return (e.descritivo||'').toLowerCase().includes(qLow) || (e.cliente||'').toLowerCase().includes(qLow) || (e.centroCusto||'').toLowerCase().includes(qLow);
+      }).slice(0,10).map(e => ({ id: e.id, numLanc: e.numLanc, dataISO: e.dataISO||e.data, dc: e.dc, valor: e.valor, centroCusto: e.centroCusto, cliente: e.cliente, projeto: e.projeto, descritivo: e.descritivo||e.descricao, status: e.status }));
+    }
+    return json(res, 200, { results });
+  }
+
   if (req.method === 'GET' && /^\/api\/entries\/[^/]+\/conciliacao$/.test(url.pathname)) {
     const user = requireAuth(req, res, db); if (!user) return;
     const id = url.pathname.split('/')[3];
@@ -8203,25 +8248,29 @@ async function ocultarConciliacao(id, btn) {
         lancIdx.get(k).push(l);
       }
 
+      const JANELA_MATCH_MS = 30 * 24 * 60 * 60 * 1000; // ±30 dias — janela máxima para matching
       let conciliados = 0, divergentes = 0, naoLancados = 0;
       const itens = [];
       for (const trn of trns) {
         const k = Math.round(Math.abs(trn.valor) * 100) + '|' + trn.dc;
         const allMatches = lancIdx.get(k) || [];
-        // Extrair ano-mês do item do extrato
+        const trnDataMs = new Date(trn.dataISO).getTime();
         const trnAnoMes = trn.dataISO ? trn.dataISO.substring(0, 7) : null; // 'YYYY-MM'
-        // Priorizar lançamentos do mesmo mês/ano; só usar de outros meses se não houver nenhum do mesmo mês
-        const matchesMesmo = trnAnoMes ? allMatches.filter(l => (l.dataISO||'').substring(0,7) === trnAnoMes) : [];
-        const matches = matchesMesmo.length > 0 ? matchesMesmo : allMatches;
+        // Filtrar APENAS lançamentos dentro da janela de ±30 dias — sem fallback para outros períodos
+        const matchesJanela = allMatches.filter(l => {
+          const lMs = new Date(l.dataISO || '').getTime();
+          if (isNaN(lMs)) return false;
+          return Math.abs(lMs - trnDataMs) <= JANELA_MATCH_MS;
+        });
         let status = 'NAO_LANCADO';
         let lancId  = null;
         let candidatos = [];
-        if (matches.length > 0) {
-          // Há candidatos com mesmo valor e D/C — gerente vai confirmar
-          // Priorizar o mais próximo pela data (dentro do mesmo mês preferencialmente)
-          const sorted = matches.slice().sort((a,b) => {
-            const da = Math.abs(new Date(a.dataISO||0) - new Date(trn.dataISO));
-            const db2 = Math.abs(new Date(b.dataISO||0) - new Date(trn.dataISO));
+        if (matchesJanela.length > 0) {
+          // Há candidatos com mesmo valor e D/C dentro da janela de ±30 dias
+          // Priorizar o mais próximo pela data
+          const sorted = matchesJanela.slice().sort((a,b) => {
+            const da = Math.abs(new Date(a.dataISO||0) - trnDataMs);
+            const db2 = Math.abs(new Date(b.dataISO||0) - trnDataMs);
             return da - db2;
           });
           const best = sorted[0];
@@ -8232,15 +8281,12 @@ async function ocultarConciliacao(id, btn) {
             status = 'CONCILIADO';
             conciliados++;
           } else {
-            // Data ou mês difere → marcar como DIVERGENTE para o gerente confirmar
+            // Data difere (mas dentro de ±30 dias) → DIVERGENTE para o gerente confirmar
             status = 'DIVERGENTE';
             divergentes++;
           }
-          // Guardar candidatos do mesmo mês primeiro, depois outros meses (até 5 no total)
-          const candMesmo = sorted.filter(l => (l.dataISO||'').substring(0,7) === trnAnoMes);
-          const candOutros = sorted.filter(l => (l.dataISO||'').substring(0,7) !== trnAnoMes);
-          const candAll = [...candMesmo, ...candOutros].slice(0, 5);
-          candidatos = candAll.map(l => ({ id: l.id, dataISO: l.dataISO, dc: l.dc, valor: l.valor, centroCusto: l.centroCusto, cliente: l.cliente, projeto: l.projeto, descritivo: l.descritivo || l.descricao, numLanc: l.numLanc }));
+          // Mostrar até 5 candidatos ordenados por proximidade de data
+          candidatos = sorted.slice(0, 5).map(l => ({ id: l.id, dataISO: l.dataISO, dc: l.dc, valor: l.valor, centroCusto: l.centroCusto, cliente: l.cliente, projeto: l.projeto, descritivo: l.descritivo || l.descricao, numLanc: l.numLanc }));
         } else {
           // ===== BUSCA POR RATEIO: soma de lançamentos que totalizam o valor do extrato =====
           // Filtrar lançamentos com mesmo D/C e data próxima (±5 dias)
@@ -8651,10 +8697,20 @@ async function ocultarConciliacao(id, btn) {
         +'<div style="grid-column:1/-1"><label style="'+labelStyle+'">Documento / Referência (NF, Recibo, Contrato)<input id="dv-doc-'+i+'" type="text" placeholder="Ex: NF 11921943 - Contrato 42156427" value="'+esc(lanc.documento||lanc.doc||lanc.descricao||'')+'" style="'+inputStyle+'"></label></div>'
         +'<div style="grid-column:1/-1"><label style="'+labelStyle+'">Descritivo (finalidade do gasto)<input id="dv-desc-'+i+'" type="text" placeholder="Ex: Serviço de hospedagem para manutenção da presença digital" value="'+esc(lanc.descritivo||'')+'" style="'+inputStyle+'"></label></div>'
         +'</div></div>'
+        +'<div id="dv-busca-lanc-'+i+'" style="display:none;background:#f0f9ff;border:1px solid #7dd3fc;border-radius:.5rem;padding:.75rem;margin-bottom:.75rem">'
+        +'<div style="font-weight:700;color:#0369a1;margin-bottom:.5rem;font-size:.82rem">🔍 Buscar Lançamento Correto</div>'
+        +'<div style="display:flex;gap:.5rem;align-items:center;flex-wrap:wrap">'
+        +'<input id="dv-busca-num-'+i+'" type="text" placeholder="Digite o número do lançamento (ex: 11064) ou parte da descrição" style="flex:1;min-width:200px;padding:.35rem .6rem;border:1px solid #bae6fd;border-radius:.35rem;font-size:.82rem" onkeydown="if(event.key===\'Enter\')buscarLancamentoManual('+i+')">'
+        +'<button onclick="buscarLancamentoManual('+i+')" style="background:#0369a1;color:#fff;border:none;padding:.35rem .85rem;border-radius:.35rem;cursor:pointer;font-size:.82rem">Buscar</button>'
+        +'<button onclick="document.getElementById(\'dv-busca-lanc-'+i+'\').style.display=\'none\'" style="background:#e2e8f0;color:#374151;border:none;padding:.35rem .6rem;border-radius:.35rem;cursor:pointer;font-size:.82rem">Cancelar</button>'
+        +'</div>'
+        +'<div id="dv-busca-res-'+i+'" style="margin-top:.5rem"></div>'
+        +'</div>'
         +'<div style="display:flex;gap:.5rem;flex-wrap:wrap">'
         +'<button onclick="salvarCorrecaoDiv('+i+',\''+esc(it.fitid||'')+'\',\''+esc(String(it.lancamento_id||''))+'\')" style="background:#059669;color:#fff;border:none;padding:.4rem 1rem;border-radius:.4rem;cursor:pointer;font-weight:600;font-size:.82rem">✅ Salvar Correção e Confirmar</button>'
         +'<button onclick="confirmarOkConciliado('+i+',\''+esc(it.fitid||'')+'\')" style="background:#1e40af;color:#fff;border:none;padding:.4rem 1rem;border-radius:.4rem;cursor:pointer;font-weight:600;font-size:.82rem">✔️ OK — Está Correto (Conciliado)</button>'
         +'<button onclick="marcarEmAnaliseDiv('+i+',\''+esc(it.fitid||'')+'\')" style="background:#6366f1;color:#fff;border:none;padding:.4rem .85rem;border-radius:.4rem;cursor:pointer;font-size:.82rem">🔍 Marcar Em Análise</button>'
+        +'<button onclick="document.getElementById(\'dv-busca-lanc-'+i+'\').style.display=\'block\';document.getElementById(\'dv-busca-num-'+i+'\').focus()" style="background:#f59e0b;color:#fff;border:none;padding:.4rem .85rem;border-radius:.4rem;cursor:pointer;font-size:.82rem">🔄 Trocar Lançamento</button>'
         +'<button onclick="fecharPainelDiv('+i+')" style="background:#e2e8f0;color:#374151;border:none;padding:.4rem .75rem;border-radius:.4rem;cursor:pointer;font-size:.82rem">Fechar</button>'
         +'</div>'
         +'<div id="dv-msg-'+i+'" style="margin-top:.5rem;font-size:.8rem"></div>'
@@ -8906,6 +8962,42 @@ async function ocultarConciliacao(id, btn) {
       +'  var statusCell=document.getElementById("cc-status-"+i);'
       +'  if(statusCell){statusCell.innerHTML="<span style=\'color:#059669;font-weight:700\'>✔️ OK — Conciliado</span>";}'
       +'  if(btn){btn.remove();}'
+      +'}'
+      +'async function buscarLancamentoManual(i){'
+      +'  var q=document.getElementById("dv-busca-num-"+i).value.trim();'
+      +'  if(!q)return;'
+      +'  var res=document.getElementById("dv-busca-res-"+i);'
+      +'  res.innerHTML="<span style=\'color:#64748b;font-size:.78rem\'>Buscando...</span>";'
+      +'  try{'
+      +'    var r=await fetch("/api/entries/busca?q="+encodeURIComponent(q));'
+      +'    var d=await r.json();'
+      +'    if(!d.results||d.results.length===0){res.innerHTML="<span style=\'color:#dc2626;font-size:.78rem\'>Nenhum lançamento encontrado.</span>";return;}'
+      +'    var html="<div style=\'margin-top:.35rem;display:flex;flex-direction:column;gap:.3rem\'>";'
+      +'    d.results.forEach(function(l){'
+      +'      var num=l.numLanc?"#"+String(l.numLanc).padStart(6,"0"):"-";'
+      +'      var val=l.valor?"R$ "+Math.abs(parseFloat(l.valor)).toLocaleString("pt-BR",{minimumFractionDigits:2}):"-";'
+      +'      var info=num+" | "+( l.dataISO||"?")+ " | "+val+" | "+(l.cliente||"-")+" | "+(l.centroCusto||"-");'
+      +'      html+="<div style=\'display:flex;align-items:center;gap:.5rem;background:#fff;border:1px solid #bae6fd;border-radius:.3rem;padding:.3rem .5rem;font-size:.78rem\'>";'
+      +'      html+="<span style=\'flex:1\'>"+info+"</span>";'
+      +'      html+="<button onclick=\'vincularLancamentoManual("+i+",\\\'"+(l.id||"")+"\\\',\\\'"+(l.numLanc||"")+"\\\')\' style=\'background:#0369a1;color:#fff;border:none;padding:.2rem .6rem;border-radius:.25rem;cursor:pointer;font-size:.75rem;white-space:nowrap\'>Usar este</button>";'
+      +'      html+="</div>";'
+      +'    });'
+      +'    html+="</div>";'
+      +'    res.innerHTML=html;'
+      +'  }catch(e){res.innerHTML="<span style=\'color:#dc2626;font-size:.78rem\'>Erro: "+e.message+"</span>";}'
+      +'}'
+      +'async function vincularLancamentoManual(i,lancId,numLanc){'
+      +'  if(!EXTRATO_ID||!lancId)return;'
+      +'  var fitid=document.getElementById("dv-row-"+i)?document.getElementById("dv-row-"+i).dataset.fitid:"";'
+      +'  // Atualizar lancamento_id no extrato via item-status'
+      +'  await fetch("/api/conciliacao/item-status",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({extratoId:EXTRATO_ID,fitid:fitid,novoStatus:"DIVERGENTE",lancamentoId:lancId})});'
+      +'  // Atualizar visual: mostrar novo número do lançamento'
+      +'  var cells=document.getElementById("dv-row-"+i).cells;'
+      +'  if(cells[5]){cells[5].innerHTML="<a href=\'/lancamentos?num="+numLanc+"\' style=\'color:#3b82f6;font-size:.78rem;font-weight:600\'>🔗 Ver #"+String(numLanc).padStart(6,"0")+"</a>";}'
+      +'  // Fechar painel de busca e recarregar formulário com dados do novo lançamento'
+      +'  document.getElementById("dv-busca-lanc-"+i).style.display="none";'
+      +'  var msg=document.getElementById("dv-msg-"+i);'
+      +'  if(msg){msg.innerHTML="<span style=\'color:#059669;font-size:.8rem\'>✅ Lançamento vinculado! Preencha os dados abaixo e salve.</span>";}'
       +'}'
       +'async function marcarEmAnaliseDiv(i,fitid){'
       +'  if(EXTRATO_ID&&fitid){await fetch("/api/conciliacao/item-status",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({extratoId:EXTRATO_ID,fitid:fitid,novoStatus:"EM_ANALISE"})});}'
