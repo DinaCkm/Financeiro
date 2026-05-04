@@ -2808,36 +2808,56 @@ Responda em português, de forma objetiva e direta, citando os dados específico
     return json(res, 200, entry);
   }
 
-  // ---- PATCH /api/entries/:id/conciliacao — marcar/desmarcar conciliação manual ----
+  // ---- GET /api/entries/:id/conciliacao — buscar status atual diretamente do PostgreSQL ----
+  if (req.method === 'GET' && /^\/api\/entries\/[^/]+\/conciliacao$/.test(url.pathname)) {
+    const user = requireAuth(req, res, db); if (!user) return;
+    const id = url.pathname.split('/')[3];
+    const pgGet = storage.getPool ? storage.getPool() : null;
+    let status = null;
+    if (pgGet) {
+      try {
+        const r = await pgGet.query(`SELECT data->>'conciliacao_status' AS s FROM entries WHERE data->>'id' = $1 LIMIT 1`, [id]);
+        if (r.rows.length > 0) status = r.rows[0].s || null;
+      } catch(e) { /* fallback para db local */ }
+    }
+    if (!status) {
+      const eLocal = db.entries.find(e => e.id === id);
+      status = eLocal ? (eLocal.conciliacao_status || null) : null;
+    }
+    return json(res, 200, { conciliacao_status: status });
+  }
+
+  // ---- PATCH /api/entries/:id/conciliacao — marcar/desmarcar conciliação (manual ou extrato) ----
   if (req.method === 'PATCH' && /^\/api\/entries\/[^/]+\/conciliacao$/.test(url.pathname)) {
     const user = requireAuth(req, res, db); if (!user) return;
     const id = url.pathname.split('/')[3];
     const body = JSON.parse(await readBody(req) || '{}');
-    const acao = body.acao; // 'marcar' | 'desmarcar'
+    // acao: 'marcar_manual' | 'marcar_extrato' | 'desmarcar_manual' | 'desmarcar_extrato'
+    const acao = body.acao;
     const pgConc = storage.getPool ? storage.getPool() : null;
 
-    // Verificar status atual no PostgreSQL para não sobrescrever 'extrato' com 'manual'
-    let statusAtualPg = null;
-    if (pgConc) {
-      try {
-        const rCheck = await pgConc.query(`SELECT data->>'conciliacao_status' AS status FROM entries WHERE data->>'id' = $1 LIMIT 1`, [id]);
-        if (rCheck.rows.length > 0) statusAtualPg = rCheck.rows[0].status || null;
-      } catch(eCheck) { console.error('[conciliacao-check]', eCheck.message); }
-    }
-    // Verificar também no db local
-    const entry = db.entries.find(e => e.id === id);
-    const statusAtual = statusAtualPg || (entry ? entry.conciliacao_status : null) || '';
+    let novoStatus = null;
+    let conciliadoEm = null;
+    let conciliadoPor = null;
 
-    // Se ação é 'marcar' mas já está como 'extrato', não sobrescrever — retornar status atual
-    if (acao === 'marcar' && statusAtual === 'extrato') {
-      return json(res, 200, { ok: true, conciliacao_status: 'extrato' });
+    if (acao === 'marcar_manual') {
+      novoStatus = 'manual';
+      conciliadoEm = new Date().toISOString();
+      conciliadoPor = user.email || 'sistema';
+    } else if (acao === 'marcar_extrato') {
+      novoStatus = 'extrato';
+      conciliadoEm = new Date().toISOString();
+      conciliadoPor = user.email || 'sistema';
+    } else if (acao === 'desmarcar_manual' || acao === 'desmarcar_extrato' || acao === 'desmarcar') {
+      novoStatus = null;
+    } else {
+      // compatibilidade com acao antiga 'marcar'/'desmarcar'
+      novoStatus = acao === 'marcar' ? 'manual' : null;
+      if (novoStatus) { conciliadoEm = new Date().toISOString(); conciliadoPor = user.email || 'sistema'; }
     }
-
-    const novoStatus = acao === 'marcar' ? 'manual' : null;
-    const conciliadoEm = acao === 'marcar' ? new Date().toISOString() : null;
-    const conciliadoPor = acao === 'marcar' ? (user.email || 'sistema') : null;
 
     // Atualizar no db local se existir
+    const entry = db.entries.find(e => e.id === id);
     if (entry) {
       entry.conciliacao_status = novoStatus;
       entry.conciliado_em = conciliadoEm;
@@ -2847,10 +2867,10 @@ Responda em português, de forma objetiva e direta, citando os dados específico
     // Persistir no PostgreSQL
     if (pgConc) {
       try {
-        if (acao === 'marcar') {
+        if (novoStatus) {
           await pgConc.query(
             `UPDATE entries SET data = data || $1::jsonb WHERE data->>'id' = $2`,
-            [JSON.stringify({ conciliacao_status: 'manual', conciliado_em: conciliadoEm, conciliado_por: conciliadoPor }), id]
+            [JSON.stringify({ conciliacao_status: novoStatus, conciliado_em: conciliadoEm, conciliado_por: conciliadoPor }), id]
           );
         } else {
           await pgConc.query(
@@ -2860,7 +2880,6 @@ Responda em português, de forma objetiva e direta, citando os dados específico
         }
       } catch(e) { console.error('[conciliacao-patch]', e.message); }
     }
-    // Se não encontrou nem no db local nem tem pg, retornar erro
     if (!entry && !pgConc) return json(res, 404, { error: 'Lançamento não encontrado' });
     return json(res, 200, { ok: true, conciliacao_status: novoStatus });
   }
@@ -4313,7 +4332,8 @@ async function excluirRef(tipo,nome){
           <div style="display:flex;gap:.5rem;margin-top:1rem;align-items:center;flex-wrap:wrap">
             <button onclick="salvarLancEdit('${e.id}')" style="background:#059669;font-size:.8rem;padding:.4rem .9rem">✓ Salvar</button>
             <button onclick="toggleEditLanc('${e.id}')" style="background:#e2e8f0;color:#475569;font-size:.8rem;padding:.4rem .9rem;box-shadow:none">Cancelar</button>
-            <button id="btn-conc-${e.id}" data-status="${e.conciliacao_status || ''}" onclick="toggleConciliacaoForm('${e.id}')" style="background:${e.conciliacao_status === 'extrato' ? '#dcfce7' : e.conciliacao_status === 'manual' ? '#fef9c3' : '#f1f5f9'};color:${e.conciliacao_status === 'extrato' ? '#15803d' : e.conciliacao_status === 'manual' ? '#a16207' : '#64748b'};font-size:.8rem;padding:.4rem .9rem;box-shadow:none;border:1px solid ${e.conciliacao_status === 'extrato' ? '#86efac' : e.conciliacao_status === 'manual' ? '#fde047' : '#cbd5e1'}" title="${e.conciliacao_status === 'extrato' ? 'Conciliado via extrato — clique para desfazer' : e.conciliacao_status === 'manual' ? 'Conciliado manualmente — clique para desfazer' : 'Marcar como conciliado'}">${e.conciliacao_status === 'extrato' ? '✅ Conciliado (Extrato)' : e.conciliacao_status === 'manual' ? '🟡 Conciliado (Manual)' : '⭕ Marcar Conciliado'}</button>
+            <button id="btn-conc-extrato-${e.id}" onclick="conciliarForm('${e.id}','extrato')" style="font-size:.8rem;padding:.4rem .9rem;box-shadow:none;border:2px solid #86efac;background:#f0fdf4;color:#15803d;opacity:.5" title="Confirmar conciliação via extrato bancário">✅ Conc. Bancária</button>
+            <button id="btn-conc-manual-${e.id}" onclick="conciliarForm('${e.id}','manual')" style="font-size:.8rem;padding:.4rem .9rem;box-shadow:none;border:2px solid #fde047;background:#fefce8;color:#a16207;opacity:.5" title="Marcar conciliação manual (sem extrato)">🟡 Conc. Manual</button>
             <button onclick="if(confirm('Excluir lançamento ${numStr ? numStr.replace(/<[^>]+>/g,'') : '#?'}? A exclusão ficará registrada no histórico.')) excluirLanc('${e.id}')" style="background:#fee2e2;color:#991b1b;font-size:.78rem;padding:.4rem .9rem;box-shadow:none;border:1px solid #fca5a5;margin-left:auto">🗑 Excluir</button>
           </div>
           </div>
@@ -4745,15 +4765,46 @@ async function toggleConciliacao(id, estadoAtual) {
   }
 }
 
-async function toggleConciliacaoForm(id) {
-  const btn = document.getElementById('btn-conc-' + id);
-  // Detectar estado pelo atributo data-status (mais confiável que textContent)
-  const statusAtual = btn ? (btn.dataset.status || '') : '';
-  const isConc = statusAtual === 'manual' || statusAtual === 'extrato';
-  if (isConc) {
-    if (!confirm('Deseja remover a conciliação deste lançamento?')) return;
+// Atualiza visualmente os dois botões de conciliação com base no status real
+function atualizarBotoesConc(id, status) {
+  const btnExt = document.getElementById('btn-conc-extrato-' + id);
+  const btnMan = document.getElementById('btn-conc-manual-' + id);
+  if (!btnExt || !btnMan) return;
+  // Resetar ambos para aparência inativa (opaco)
+  btnExt.style.opacity = '0.45'; btnExt.style.fontWeight = 'normal'; btnExt.style.border = '2px solid #86efac';
+  btnMan.style.opacity = '0.45'; btnMan.style.fontWeight = 'normal'; btnMan.style.border = '2px solid #fde047';
+  // Ativar o que corresponde ao status atual
+  if (status === 'extrato') {
+    btnExt.style.opacity = '1'; btnExt.style.fontWeight = 'bold'; btnExt.style.border = '3px solid #16a34a';
+    btnExt.title = 'Conciliado via extrato banc\u00e1rio \u2014 clique para REMOVER';
+    btnMan.title = 'Marcar como concilia\u00e7\u00e3o manual (ir\u00e1 substituir extrato)';
+  } else if (status === 'manual') {
+    btnMan.style.opacity = '1'; btnMan.style.fontWeight = 'bold'; btnMan.style.border = '3px solid #ca8a04';
+    btnMan.title = 'Conciliado manualmente \u2014 clique para REMOVER';
+    btnExt.title = 'Confirmar concilia\u00e7\u00e3o via extrato banc\u00e1rio';
+  } else {
+    btnExt.title = 'Confirmar concilia\u00e7\u00e3o via extrato banc\u00e1rio';
+    btnMan.title = 'Marcar como concilia\u00e7\u00e3o manual (sem extrato)';
   }
-  const acao = isConc ? 'desmarcar' : 'marcar';
+  // Guardar status atual nos botões para uso em conciliarForm
+  btnExt.dataset.statusAtual = status || '';
+  btnMan.dataset.statusAtual = status || '';
+}
+
+// Clique em um dos botões de conciliação do formulário
+async function conciliarForm(id, tipo) {
+  const btnExt = document.getElementById('btn-conc-extrato-' + id);
+  const btnMan = document.getElementById('btn-conc-manual-' + id);
+  const statusAtual = (btnExt || btnMan) ? ((btnExt || btnMan).dataset.statusAtual || '') : '';
+  let acao;
+  if (statusAtual === tipo) {
+    // Já está neste tipo — desmarcar
+    if (!confirm('Deseja remover a concilia\u00e7\u00e3o deste lan\u00e7amento?')) return;
+    acao = 'desmarcar';
+  } else {
+    // Marcar com o tipo clicado
+    acao = 'marcar_' + tipo; // 'marcar_extrato' ou 'marcar_manual'
+  }
   try {
     const resp = await fetch('/api/entries/' + id + '/conciliacao', {
       method: 'PATCH',
@@ -4762,38 +4813,22 @@ async function toggleConciliacaoForm(id) {
     });
     if (resp.ok) {
       const data = await resp.json();
-      const s = data.conciliacao_status;
-      // Atualizar botão no formulário
-      if (btn) {
-        btn.dataset.status = s || ''; // Atualizar data-status para próximos cliques
-        if (s === 'extrato') {
-          btn.textContent = '✅ Conciliado (Extrato)';
-          btn.style.background = '#dcfce7'; btn.style.color = '#15803d'; btn.style.border = '1px solid #86efac';
-          btn.title = 'Conciliado via extrato — clique para desfazer';
-        } else if (s === 'manual') {
-          btn.textContent = '🟡 Conciliado (Manual)';
-          btn.style.background = '#fef9c3'; btn.style.color = '#a16207'; btn.style.border = '1px solid #fde047';
-          btn.title = 'Conciliado manualmente — clique para desfazer';
-        } else {
-          btn.textContent = '⭕ Marcar Conciliado';
-          btn.style.background = '#f1f5f9'; btn.style.color = '#64748b'; btn.style.border = '1px solid #cbd5e1';
-          btn.title = 'Marcar como conciliado';
-        }
-      }
-      // Atualizar também a coluna CONC. na linha da tabela
+      const novoStatus = data.conciliacao_status || null;
+      atualizarBotoesConc(id, novoStatus);
+      // Atualizar também o ícone na coluna CONC. da tabela
       const q = String.fromCharCode(39);
       const td = document.querySelector('#row-' + id + ' td:nth-last-child(2)');
       if (td) {
-        if (s === 'manual') {
-          td.innerHTML = '<button onclick=' + q + 'event.stopPropagation();toggleConciliacao(' + q + id + q + ',' + q + 'manual' + q + ')' + q + ' style=' + q + 'background:none;border:none;cursor:pointer;font-size:1.4rem' + q + '>&#128993;</button>';
-        } else if (s === 'extrato') {
-          td.innerHTML = '<button onclick=' + q + 'event.stopPropagation();toggleConciliacao(' + q + id + q + ',' + q + 'extrato' + q + ')' + q + ' style=' + q + 'background:none;border:none;cursor:pointer;font-size:1.4rem' + q + '>&#9989;</button>';
+        if (novoStatus === 'manual') {
+          td.innerHTML = '<button onclick=' + q + 'event.stopPropagation();toggleConciliacao(' + q + id + q + ',' + q + 'manual' + q + ')' + q + ' style=' + q + 'background:none;border:none;cursor:pointer;font-size:1.4rem' + q + ' title=' + q + 'Conciliado manualmente' + q + '>&#128993;</button>';
+        } else if (novoStatus === 'extrato') {
+          td.innerHTML = '<button onclick=' + q + 'event.stopPropagation();toggleConciliacao(' + q + id + q + ',' + q + 'extrato' + q + ')' + q + ' style=' + q + 'background:none;border:none;cursor:pointer;font-size:1.4rem' + q + ' title=' + q + 'Conciliado via extrato' + q + '>&#9989;</button>';
         } else {
-          td.innerHTML = '<button onclick=' + q + 'event.stopPropagation();toggleConciliacao(' + q + id + q + ',' + q + 'marcar' + q + ')' + q + ' style=' + q + 'background:none;border:none;cursor:pointer;font-size:1.4rem;opacity:.3' + q + '>&#9711;</button>';
+          td.innerHTML = '<button onclick=' + q + 'event.stopPropagation();toggleConciliacao(' + q + id + q + ',' + q + 'marcar' + q + ')' + q + ' style=' + q + 'background:none;border:none;cursor:pointer;font-size:1.4rem;opacity:.3' + q + ' title=' + q + 'N\u00e3o conciliado' + q + '>&#9711;</button>';
         }
       }
-    } else { alert('Erro ao atualizar conciliação.'); }
-  } catch(e) { alert('Erro de conexão: ' + e.message); }
+    } else { alert('Erro ao atualizar concilia\u00e7\u00e3o.'); }
+  } catch(e) { alert('Erro de conex\u00e3o: ' + e.message); }
 }
 
 function toggleEditLanc(id, inconsistencias) {
@@ -4801,6 +4836,13 @@ function toggleEditLanc(id, inconsistencias) {
   if (!row) return;
   const isOpen = row.style.display !== 'none';
   row.style.display = isOpen ? 'none' : 'table-row';
+  // Ao abrir, buscar status real de conciliação direto do banco
+  if (!isOpen) {
+    fetch('/api/entries/' + id + '/conciliacao')
+      .then(r => r.json())
+      .then(d => atualizarBotoesConc(id, d.conciliacao_status || null))
+      .catch(() => {});
+  }
   if (!isOpen && inconsistencias && inconsistencias.length > 0) {
     // Destacar campos problemáticos em vermelho
     const mapaCampos = {
