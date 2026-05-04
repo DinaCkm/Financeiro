@@ -8528,7 +8528,7 @@ async function ocultarConciliacao(id, btn) {
     const buildCliOpts = (val) => '<option value="">-- Selecione o Cliente/Fornecedor --</option>'+clientes.map(c=>'<option value="'+esc(c)+'"'+(val===c?' selected':'')+'>'+esc(c)+'</option>').join('')+(val&&!clientes.includes(val)?'<option value="'+esc(val)+'" selected style="color:#94a3b8">'+esc(val)+' (legado)</option>':'');
     const buildProjOpts = (val) => '<option value="">-- Selecione o Projeto --</option>'+projetos.map(p=>'<option value="'+esc(p)+'"'+(val===p?' selected':'')+'>'+esc(p)+'</option>').join('')+(val&&!projetos.includes(val)?'<option value="'+esc(val)+'" selected style="color:#94a3b8">'+esc(val)+' (legado)</option>':'');
     const buildGrupoOpts = (val) => '<option value="">-- Selecione o Grupo --</option>'+gruposConcil.map(g=>'<option value="'+esc(g.codigo)+'"'+(val===g.codigo?' selected':'')+'>'+esc(g.nome)+'</option>').join('');
-    const buildTipoOpts = (val) => '<option value="">-- Selecione o Tipo --</option>'+tiposDespConcil.map(t=>'<option value="'+esc(t.codigo)+'"'+(val===t.codigo?' selected':'')+'>'+esc(t.nome)+'</option>').join('');
+    const buildTipoOpts = (val, grupoCod) => { const filtrados = grupoCod ? tiposDespConcil.filter(t=>t.grupo_cod===grupoCod) : tiposDespConcil; const temNoFiltrado = filtrados.find(t=>t.codigo===val); const temGeral = !temNoFiltrado && tiposDespConcil.find(t=>t.codigo===val); return '<option value="">-- Selecione o Tipo --</option>'+filtrados.map(t=>'<option value="'+esc(t.codigo)+'"'+(val===t.codigo?' selected':'')+'>'+esc(t.nome)+'</option>').join('')+(temGeral?'<option value="'+esc(temGeral.codigo)+'" selected style="color:#94a3b8">'+esc(temGeral.nome)+'</option>':'')+(val&&!temNoFiltrado&&!temGeral?'<option value="'+esc(val)+'" selected style="color:#94a3b8">'+esc(val)+' (legado)</option>':''); };
     const buildContaOpts = (val) => '<option value="">-- Selecione --</option>'+bancosConcil.map(b=>'<option value="'+esc(b.nome)+'"'+(val===b.nome?' selected':'')+'>'+esc(b.nome)+'</option>').join('');
 
     const inputStyle = 'display:block;width:100%;padding:.3rem .45rem;border:1px solid #d1d5db;border-radius:.3rem;margin-top:.15rem;font-size:.8rem';
@@ -8633,8 +8633,8 @@ async function ocultarConciliacao(id, btn) {
         +'<label style="'+labelStyle+'">CPF / CNPJ<input id="dv-cpf-'+i+'" type="text" placeholder="Digite CPF ou CNPJ (somente números)" value="'+esc(lanc.cpfCnpj||'')+'" style="'+inputStyle+'"></label>'
         +'<label style="'+labelStyle+'">Cliente / Fornecedor / Prestador *<select id="dv-cli-'+i+'" style="'+inputStyle+'">'+buildCliOpts(lanc.cliente||lanc.favorecido||lanc.parceiro||'')+'</select></label>'
         +'<label style="'+labelStyle+'">Projeto<select id="dv-proj-'+i+'" style="'+inputStyle+'">'+buildProjOpts(lanc.projeto||'')+'</select></label>'
-        +'<label style="'+labelStyle+'">Grupo da Despesa<select id="dv-grupo-'+i+'" style="'+inputStyle+'">'+buildGrupoOpts(lanc.grupoDespesa||'')+'</select></label>'
-        +'<label style="'+labelStyle+'">Tipo de Despesa<select id="dv-tipo-'+i+'" style="'+inputStyle+'">'+buildTipoOpts(lanc.tipoDespesa||'')+'</select></label>'
+        +'<label style="'+labelStyle+'">Grupo da Despesa<select id="dv-grupo-'+i+'" style="'+inputStyle+'" onchange="filtrarTiposConc(\'dv-grupo-'+i+'\',\'dv-tipo-'+i+'\',\'\');">'+buildGrupoOpts(lanc.grupoDespesa||'')+'</select></label>'
+        +'<label style="'+labelStyle+'">Tipo de Despesa<select id="dv-tipo-'+i+'" style="'+inputStyle+'">'+buildTipoOpts(lanc.tipoDespesa||'',lanc.grupoDespesa||'')+'</select></label>'
         +'<label style="'+labelStyle+'">Código (CC) *<select id="dv-cc-'+i+'" style="'+inputStyle+'">'+buildCcOpts(lanc.centroCusto||'')+'</select></label>'
         +'<label style="'+labelStyle+'">Conta / Banco<input id="dv-conta-'+i+'" type="text" placeholder="Ex: Itaú PJ" value="'+esc(lanc.conta||lanc.banco||'')+'" list="dv-dl-conta-'+i+'" style="'+inputStyle+'"><datalist id="dv-dl-conta-'+i+'">'+contaOptsC+'</datalist></label>'
         +'<label style="'+labelStyle+'">Valor (R$) *<input id="dv-valor-'+i+'" type="number" step="0.01" value="'+Math.abs(lanc.valor||it.valor||0)+'" style="'+inputStyle+'"></label>'
@@ -8786,6 +8786,17 @@ async function ocultarConciliacao(id, btn) {
       // JavaScript
       +'<script>'
       +'var EXTRATO_ID='+extratoId+';'
+      +'var TODOS_TIPOS_CONCIL='+JSON.stringify(tiposDespConcil.map(t=>({codigo:t.codigo,nome:t.nome,grupo_cod:t.grupo_cod||''})))+';'
+      +'function filtrarTiposConc(grupoId,tipoId,valorAtual){'
+      +'  var gSel=document.getElementById(grupoId);'
+      +'  var tSel=document.getElementById(tipoId);'
+      +'  if(!gSel||!tSel)return;'
+      +'  var grupoCod=gSel.value;'
+      +'  var filtrados=grupoCod?TODOS_TIPOS_CONCIL.filter(function(t){return t.grupo_cod===grupoCod;}):TODOS_TIPOS_CONCIL;'
+      +'  var opts=\'<option value="">-- Selecione o Tipo --</option>\';'
+      +'  filtrados.forEach(function(t){opts+=\'<option value="\'+t.codigo+\'"\'+( t.codigo===valorAtual?\' selected\':\'\')+\'>\'+t.nome+\'</option>\';});'
+      +'  tSel.innerHTML=opts;'
+      +'}'
       +'function abrirFormLanc(i){document.getElementById("nl-form-"+i).style.display="table-row";var b=document.getElementById("nl-row-"+i).querySelector("button");if(b)b.style.display="none";}'
       +'function fecharFormLanc(i){document.getElementById("nl-form-"+i).style.display="none";var b=document.getElementById("nl-row-"+i).querySelector("button");if(b)b.style.display="";}'
       +'async function salvarLanc(i,fitid){'
