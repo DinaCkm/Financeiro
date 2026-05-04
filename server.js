@@ -8351,6 +8351,7 @@ async function ocultarConciliacao(id, btn) {
       const body = await readBody(req);
       const { extratoId, fitid, novoStatus, lancamentoId } = JSON.parse(body);
       if (!extratoId || !fitid || !novoStatus) return json(res, 400, { ok: false, error: 'Dados insuficientes' });
+      const pg = storage.getPool ? storage.getPool() : null;
       if (pg) {
         const r = await pg.query('SELECT itens FROM conciliacao_extratos WHERE id=$1', [extratoId]);
         if (r.rows.length > 0) {
