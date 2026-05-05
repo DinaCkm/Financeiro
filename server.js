@@ -8826,6 +8826,9 @@ async function ocultarConciliacao(id, btn) {
         return { ...trn, status, lancamento_id: lancId, candidatos };
       });
 
+      // Garantir que a coluna total_transferencias existe (migração segura)
+      try { await pgR.query('ALTER TABLE conciliacao_extratos ADD COLUMN IF NOT EXISTS total_transferencias INTEGER DEFAULT 0'); } catch(em) {}
+
       // Salvar os novos itens
       await pgR.query(
         'UPDATE conciliacao_extratos SET itens=$1, total_conciliados=$2, total_divergentes=$3, total_nao_lancados=$4, total_transferencias=$5 WHERE id=$6',
