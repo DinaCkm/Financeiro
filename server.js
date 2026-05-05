@@ -8337,13 +8337,30 @@ async function ocultarConciliacao(id, btn) {
       // ===== PADRÕES DE TEXTO QUE INDICAM TRANSFERÊNCIA ENTRE CONTAS PRÓPRIAS =====
       const isTransfTexto = (memo) => {
         const m = (memo || '').toUpperCase();
-        return [
+        // Padrões explícitos de transferência entre contas
+        const padroes = [
           'TEF ENTRE', 'TRANSF CC', 'TRANSFERENCIA ENTRE', 'TRANSFERÊNCIA ENTRE',
           'PAGAMENTOS TRANSF CC', 'TED ENVIADA', 'TED RECEBIDA',
           'TRANSF PARA CONTA', 'TRANSF DE CONTA', 'TRANSFERENCIA PROPRIA',
           'TRANSFERÊNCIA PRÓPRIA', 'TRANSF PROPRIA', 'ENTRE CONTAS',
-          'TRANSF INTERNA', 'TRANSFERENCIA INTERNA', 'TRANSFERÊNCIA INTERNA'
-        ].some(p => m.includes(p));
+          'TRANSF INTERNA', 'TRANSFERENCIA INTERNA', 'TRANSFERÊNCIA INTERNA',
+          // Padrões do Banco do Brasil
+          'TED - 341', 'TED- 341', 'TED -341',  // BB → Itaú (341)
+          'TED - 237', 'TED- 237',               // BB → Bradesco (237)
+          'TED - 033', 'TED- 033',               // BB → Santander (033)
+          'TED - 104', 'TED- 104',               // BB → CEF (104)
+          'TED - 001', 'TED- 001',               // BB → BB próprio
+          'TED - 260', 'TED- 260',               // BB → Nu Pagamentos
+          'TED - 077', 'TED- 077',               // BB → Inter
+          // Padrão genérico: TED seguido de espaço e dígitos (número de banco)
+          // Detectado via regex abaixo
+        ];
+        if (padroes.some(p => m.includes(p))) return true;
+        // Padrão genérico do BB: "TED - NNNN NNNN..." (TED com número de banco/agência)
+        if (/^TED\s*-\s*\d{3,4}\s+\d/.test(m)) return true;
+        // Padrão Itaú: "PIX - ENVIADO" ou "PIX-ENVIADO" para conta própria
+        if (/PIX\s*-?\s*ENVIADO.*(CKM|PROPRIA|PRÓPRIA|CONTA PROPRIA)/i.test(memo || '')) return true;
+        return false;
       };
 
       // ===== BUSCAR LANÇAMENTOS JÁ EXISTENTES CLASSIFICADOS COMO TRANSFERÊNCIA INTERNA =====
