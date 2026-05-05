@@ -8644,6 +8644,198 @@ async function ocultarConciliacao(id, btn) {
   }
 
   // ============================================================
+  // CONCILIAÇÃO — REPROCESSAR /api/conciliacao/reprocessar
+  // Refaz o matching de um extrato já salvo contra os lançamentos atuais
+  // ============================================================
+  if (req.method === 'POST' && url.pathname === '/api/conciliacao/reprocessar') {
+    const user = requireAuth(req, res, db); if (!user) return;
+    try {
+      const body = await readBody(req);
+      const { extratoId } = JSON.parse(body);
+      if (!extratoId) return json(res, 400, { ok: false, error: 'extratoId não informado' });
+      const pgR = storage.getPool ? storage.getPool() : null;
+      if (!pgR) return json(res, 400, { ok: false, error: 'Banco de dados não disponível' });
+
+      // Buscar o extrato salvo
+      const rExt = await pgR.query('SELECT * FROM conciliacao_extratos WHERE id=$1', [extratoId]);
+      if (!rExt.rows.length) return json(res, 404, { ok: false, error: 'Extrato não encontrado' });
+      const extrato = rExt.rows[0];
+      const itensOriginais = extrato.itens || [];
+
+      // Buscar lançamentos atuais (excluindo transferências internas)
+      const rConc = await pgR.query("SELECT id, data FROM entries WHERE data->>'isTransferenciaInterna' IS DISTINCT FROM 'true'");
+      const lancamentosDB = rConc.rows.map(row => ({ id: row.id, ...row.data, valor: parseFloat((row.data && row.data.valor) || 0) }));
+
+      // Montar índice de já conciliados
+      const lancJaConciliado = new Set();
+      for (const l of lancamentosDB) {
+        const st = l.conciliacao_status || '';
+        if (st === 'extrato' || st === 'manual' || st === 'OK_CONCILIADO') lancJaConciliado.add(l.id);
+      }
+
+      // Indexar por valor + D/C
+      const lancIdx = new Map();
+      for (const l of lancamentosDB) {
+        const lDC = l.dc || (parseFloat(l.valor||0) >= 0 ? 'C' : 'D');
+        const k = Math.round(Math.abs(parseFloat(l.valor || 0)) * 100) + '|' + lDC;
+        if (!lancIdx.has(k)) lancIdx.set(k, []);
+        lancIdx.get(k).push(l);
+      }
+
+      // Índice de transferências pendentes (D/C oposto)
+      const lancTransfPendentes = lancamentosDB.filter(l => {
+        const nat = (l.natureza || l.naturezaGerencial || l.classificacao || '').toLowerCase();
+        const tipo = (l.tipo || '').toLowerCase();
+        return nat.includes('transfer') || tipo.includes('transfer') || (l.isTransferenciaInterna === true) ||
+               nat.includes('movimentação financeira') || nat.includes('movimentacao financeira');
+      });
+      const transfIdx = new Map();
+      for (const l of lancTransfPendentes) {
+        const lDC = l.dc || (parseFloat(l.valor||0) >= 0 ? 'C' : 'D');
+        const dcOposto = lDC === 'D' ? 'C' : 'D';
+        const k = Math.round(Math.abs(parseFloat(l.valor || 0)) * 100) + '|' + dcOposto;
+        if (!transfIdx.has(k)) transfIdx.set(k, []);
+        transfIdx.get(k).push(l);
+      }
+
+      const isTransfTextoR = (memo) => {
+        const m = (memo || '').toUpperCase();
+        const padroes = [
+          'TEF ENTRE', 'TRANSF CC', 'TRANSFERENCIA ENTRE', 'TRANSFERÊNCIA ENTRE',
+          'PAGAMENTOS TRANSF CC', 'TED ENVIADA', 'TED RECEBIDA',
+          'TRANSF PARA CONTA', 'TRANSF DE CONTA', 'TRANSFERENCIA PROPRIA',
+          'TRANSFERÊNCIA PRÓPRIA', 'TRANSF PROPRIA', 'ENTRE CONTAS',
+          'TRANSF INTERNA', 'TRANSFERENCIA INTERNA', 'TRANSFERÊNCIA INTERNA',
+          'TED - 341', 'TED- 341', 'TED -341', 'TED - 237', 'TED- 237',
+          'TED - 033', 'TED- 033', 'TED - 104', 'TED- 104',
+          'TED - 001', 'TED- 001', 'TED - 260', 'TED- 260', 'TED - 077', 'TED- 077',
+        ];
+        if (padroes.some(p => m.includes(p))) return true;
+        if (/^TED\s*-\s*\d{3,4}\s+\d/.test(m)) return true;
+        return false;
+      };
+
+      const JANELA_MATCH_MS = 30 * 24 * 60 * 60 * 1000;
+      const JANELA_TRANSF_MS = 5 * 24 * 60 * 60 * 1000;
+
+      let conciliados = 0, divergentes = 0, naoLancados = 0, transferencias = 0;
+      const novosItens = itensOriginais.map(trn => {
+        // Preservar itens já confirmados manualmente pelo usuário
+        if (['LANCAMENTO_CONFIRMADO', 'OK_CONCILIADO'].includes(trn.status) && trn.lancamento_id) {
+          if (trn.status === 'OK_CONCILIADO' || trn.status === 'LANCAMENTO_CONFIRMADO') conciliados++;
+          return trn; // não reprocessar itens já confirmados
+        }
+
+        const k = Math.round(Math.abs(trn.valor) * 100) + '|' + trn.dc;
+        const allMatches = lancIdx.get(k) || [];
+        const trnDataMs = new Date(trn.dataISO).getTime();
+        const trnAnoMes = trn.dataISO ? trn.dataISO.substring(0, 7) : null;
+        const matchesJanela = allMatches.filter(l => {
+          const lMs = new Date(l.dataISO || '').getTime();
+          return !isNaN(lMs) && Math.abs(lMs - trnDataMs) <= JANELA_MATCH_MS;
+        });
+
+        let status = 'NAO_LANCADO';
+        let lancId = null;
+        let candidatos = [];
+
+        // 1) Detecção de transferência
+        const kTransf = Math.round(Math.abs(trn.valor) * 100) + '|' + trn.dc;
+        const candidatosTransf = (transfIdx.get(kTransf) || []).filter(l => {
+          const lMs = new Date(l.dataISO || '').getTime();
+          return !isNaN(lMs) && Math.abs(lMs - trnDataMs) <= JANELA_TRANSF_MS;
+        });
+        const ehTransfTexto = isTransfTextoR(trn.memo);
+
+        if (candidatosTransf.length > 0 && ehTransfTexto) {
+          const parLanc = candidatosTransf.sort((a,b) =>
+            Math.abs(new Date(a.dataISO||0) - trnDataMs) - Math.abs(new Date(b.dataISO||0) - trnDataMs)
+          )[0];
+          status = 'TRANSFERENCIA_VINCULADA';
+          lancId = parLanc.id;
+          candidatos = [{ id: parLanc.id, dataISO: parLanc.dataISO, dc: parLanc.dc, valor: parLanc.valor,
+            centroCusto: parLanc.centroCusto, cliente: parLanc.cliente, descritivo: parLanc.descritivo || parLanc.descricao,
+            numLanc: parLanc.numLanc, banco: parLanc.conta || parLanc.banco || '' }];
+          transferencias++;
+        } else if (ehTransfTexto) {
+          status = 'TRANSFERENCIA_SEM_PAR';
+          transferencias++;
+        } else if (matchesJanela.length > 0) {
+          // 2) Matching normal
+          const sorted = matchesJanela.slice().sort((a,b) => {
+            return Math.abs(new Date(a.dataISO||0) - trnDataMs) - Math.abs(new Date(b.dataISO||0) - trnDataMs);
+          });
+          const best = sorted[0];
+          lancId = best.id;
+          const bestAnoMes = (best.dataISO||'').substring(0,7);
+          if (lancJaConciliado.has(best.id)) {
+            status = 'OK_CONCILIADO'; conciliados++;
+          } else if (best.dataISO === trn.dataISO && bestAnoMes === trnAnoMes) {
+            status = 'CONCILIADO'; conciliados++;
+          } else {
+            status = 'DIVERGENTE'; divergentes++;
+          }
+          candidatos = sorted.slice(0, 5).map(l => ({ id: l.id, dataISO: l.dataISO, dc: l.dc, valor: l.valor, centroCusto: l.centroCusto, cliente: l.cliente, projeto: l.projeto, descritivo: l.descritivo || l.descricao, numLanc: l.numLanc }));
+        } else {
+          // 3) Rateio
+          const trnMes = trn.dataISO ? trn.dataISO.substring(0, 7) : '';
+          const candidatosRateio = lancamentosDB.filter(l => {
+            const lDC = l.dc || (parseFloat(l.valor||0) >= 0 ? 'C' : 'D');
+            if (lDC !== trn.dc) return false;
+            const lMes = (l.dataISO || '').substring(0, 7);
+            if (lMes !== trnMes) return false;
+            const lParte = (l.cliente || l.fornecedor || l.prestador || '').trim();
+            if (!lParte) return false;
+            return true;
+          });
+          const parteGrupos = {};
+          for (const l of candidatosRateio) {
+            const parte = (l.cliente || l.fornecedor || l.prestador || '').trim();
+            if (!parteGrupos[parte]) parteGrupos[parte] = [];
+            parteGrupos[parte].push(l);
+          }
+          const valorAlvo = Math.round(Math.abs(trn.valor) * 100);
+          let rateioEncontrado = null;
+          for (const [, grupo] of Object.entries(parteGrupos)) {
+            if (rateioEncontrado) break;
+            outer2r: for (let i = 0; i < grupo.length; i++) {
+              for (let j = i + 1; j < grupo.length; j++) {
+                const soma = Math.round(Math.abs(parseFloat(grupo[i].valor||0)) * 100) + Math.round(Math.abs(parseFloat(grupo[j].valor||0)) * 100);
+                if (soma === valorAlvo) { rateioEncontrado = [grupo[i], grupo[j]]; break outer2r; }
+              }
+            }
+            if (!rateioEncontrado && grupo.length <= 30) {
+              outer3r: for (let i = 0; i < grupo.length; i++) {
+                for (let j = i + 1; j < grupo.length; j++) {
+                  for (let k2 = j + 1; k2 < grupo.length; k2++) {
+                    const soma = Math.round(Math.abs(parseFloat(grupo[i].valor||0)) * 100) + Math.round(Math.abs(parseFloat(grupo[j].valor||0)) * 100) + Math.round(Math.abs(parseFloat(grupo[k2].valor||0)) * 100);
+                    if (soma === valorAlvo) { rateioEncontrado = [grupo[i], grupo[j], grupo[k2]]; break outer3r; }
+                  }
+                }
+              }
+            }
+          }
+          if (rateioEncontrado) {
+            status = 'RATEIO'; lancId = rateioEncontrado[0].id;
+            candidatos = rateioEncontrado.map(l => ({ id: l.id, dataISO: l.dataISO, dc: l.dc, valor: l.valor, centroCusto: l.centroCusto, cliente: l.cliente, projeto: l.projeto, descritivo: l.descritivo || l.descricao, numLanc: l.numLanc }));
+            conciliados++;
+          } else {
+            naoLancados++;
+          }
+        }
+        return { ...trn, status, lancamento_id: lancId, candidatos };
+      });
+
+      // Salvar os novos itens
+      await pgR.query(
+        'UPDATE conciliacao_extratos SET itens=$1, total_conciliados=$2, total_divergentes=$3, total_nao_lancados=$4, total_transferencias=$5 WHERE id=$6',
+        [JSON.stringify(novosItens), conciliados, divergentes, naoLancados, transferencias, extratoId]
+      );
+
+      return json(res, 200, { ok: true, total: novosItens.length, conciliados, divergentes, naoLancados, transferencias });
+    } catch(e) { console.error('[reprocessar]', e.message); return json(res, 500, { ok: false, error: e.message }); }
+  }
+  // ============================================================
   // CONCILIAÇÃO — DETALHE /conciliacao/detalhe?id=X
   // ============================================================
   if (req.method === 'GET' && url.pathname === '/conciliacao/detalhe') {
@@ -8728,11 +8920,12 @@ async function ocultarConciliacao(id, btn) {
 
     const itens = extrato.itens || [];
     // Status possíveis: NAO_LANCADO, PENDENTE_CRIACAO, LANCAMENTO_CONFIRMADO, DIVERGENTE, OK_CONCILIADO, EM_ANALISE, CONCILIADO
-    const naoLancados = itens.filter(i=>['NAO_LANCADO','PENDENTE_CRIACAO','TRANSFERENCIA_SEM_PAR'].includes(i.status));
+    const naoLancados = itens.filter(i=>['NAO_LANCADO','PENDENTE_CRIACAO'].includes(i.status));
     const divergentes = itens.filter(i=>['DIVERGENTE','EM_ANALISE'].includes(i.status));
     const rateios = itens.filter(i=>i.status==='RATEIO');
     const conciliados = itens.filter(i=>['CONCILIADO','OK_CONCILIADO','LANCAMENTO_CONFIRMADO'].includes(i.status));
     const transferenciasVinculadas = itens.filter(i=>i.status==='TRANSFERENCIA_VINCULADA');
+    const transferenciasSemPar = itens.filter(i=>i.status==='TRANSFERENCIA_SEM_PAR');
 
     const fmtVal = v => {
       const n = Number(v||0);
@@ -8968,6 +9161,9 @@ async function ocultarConciliacao(id, btn) {
       +'<span style="font-size:.85rem;color:#64748b">Upload: <strong>'+dataUpFmt+'</strong></span>'
       +'<span style="color:#94a3b8">|</span>'
       +'<span style="font-size:.85rem;color:#64748b">Saldo: <strong>'+saldoFmt+'</strong></span>'
+      +'<span style="color:#94a3b8">|</span>'
+      +'<button id="btn-reprocessar" onclick="reprocessarConciliacao()" style="background:#6366f1;color:#fff;border:none;border-radius:.4rem;padding:.3rem .9rem;font-size:.82rem;font-weight:700;cursor:pointer">🔄 Atualizar Concilia\u00e7\u00e3o</button>'
+      +'<span id="reprocessar-msg" style="font-size:.8rem;color:#059669;display:none">✅ Atualizado! Recarregando...</span>'
       +'</div>'
       // Cards resumo
       +'<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:.75rem;margin-bottom:1.5rem">'
@@ -9032,6 +9228,40 @@ async function ocultarConciliacao(id, btn) {
           +'<th style="padding:.4rem .6rem;font-size:.78rem;color:#166534">Status</th>'
           +'<th style="padding:.4rem .6rem;font-size:.78rem;color:#166534">Lançamento</th>'
           +'</tr></thead><tbody>'+rowsConc+'</tbody></table></div></section>'
+        : '')
+      + (transferenciasSemPar.length > 0
+        ? '<section style="margin-bottom:2rem">'
+          +'<div style="background:#fefce8;border:2px solid #eab308;border-radius:.6rem;padding:1rem 1.25rem;margin-bottom:.75rem">'
+          +'<h3 style="margin:0 0 .25rem;color:#854d0e;font-size:1rem">\uD83D\uDD04 TRANSFER\u00caNCIAS ENTRE CONTAS ('+transferenciasSemPar.length+') \u2014 AGUARDANDO LAN\u00c7AMENTO</h3>'
+          +'<p style="margin:0;font-size:.8rem;color:#713f12">Identificadas como TED/TEF entre seus pr\u00f3prios bancos. Clique em <strong>+ Registrar Transfer\u00eancia</strong> para criar o lan\u00e7amento como Transfer\u00eancia Interna. N\u00e3o afetam o saldo operacional.</p>'
+          +'</div>'
+          +'<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse">'
+          +'<thead><tr style="background:#fef9c3">'
+          +'<th style="padding:.4rem .6rem;text-align:left;font-size:.78rem;color:#854d0e">Data</th>'
+          +'<th style="padding:.4rem .6rem;text-align:left;font-size:.78rem;color:#854d0e">D/C</th>'
+          +'<th style="padding:.4rem .6rem;text-align:left;font-size:.78rem;color:#854d0e">Hist\u00f3rico do Extrato</th>'
+          +'<th style="padding:.4rem .6rem;text-align:right;font-size:.78rem;color:#854d0e">Valor</th>'
+          +'<th style="padding:.4rem .6rem;font-size:.78rem;color:#854d0e">A\u00e7\u00e3o</th>'
+          +'</tr></thead><tbody>'
+          + transferenciasSemPar.map((it, tspIdx) => {
+              const cor = it.dc==='C' ? '#059669' : '#dc2626';
+              const fitidEnc = encodeURIComponent(it.fitid||'');
+              const memoEnc = encodeURIComponent(it.memo||'');
+              const valorAbs = Math.abs(it.valor||0);
+              return '<tr id="tsp-row-'+tspIdx+'" style="border-bottom:1px solid #fef9c3">'
+                +'<td style="padding:.4rem .6rem;font-size:.82rem">'+esc(fmtData(it.dataISO||''))+'</td>'
+                +'<td style="padding:.4rem .6rem;font-weight:700;color:'+cor+'">'+esc(it.dc||'')+'</td>'
+                +'<td style="padding:.4rem .6rem;font-size:.82rem;max-width:320px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="'+esc(it.memo||'')+'">'+esc((it.memo||'').slice(0,70))+'</td>'
+                +'<td style="padding:.4rem .6rem;text-align:right;font-weight:700;color:'+cor+'">'+fmtVal(it.valor)+'</td>'
+                +'<td style="padding:.4rem .6rem">'
+                  +'<button onclick="registrarTransferencia('+tspIdx+','+extratoId+',decodeURIComponent(\''+fitidEnc+'\'),\''+esc(it.dataISO||'')+'\',\''+esc(it.dc||'')+'\','+valorAbs+',decodeURIComponent(\''+memoEnc+'\'))" '
+                  +'style="background:#eab308;color:#fff;border:none;border-radius:.4rem;padding:.3rem .8rem;font-size:.78rem;font-weight:700;cursor:pointer" '
+                  +'id="tsp-btn-'+tspIdx+'">+ Registrar Transfer\u00eancia</button>'
+                  +'<span id="tsp-ok-'+tspIdx+'" style="display:none;color:#059669;font-weight:700;font-size:.82rem">\u2705 Registrado</span>'
+                +'</td>'
+                +'</tr>';
+            }).join('')
+          +'</tbody></table></div></section>'
         : '')
       + (transferenciasVinculadas.length > 0
         ? '<section style="margin-bottom:2rem">'

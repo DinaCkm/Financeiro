@@ -208,3 +208,35 @@ async function marcarEmAnaliseDiv(i, fitid) {
   cells[4].innerHTML = '<span style="color:#6366f1;font-weight:700">🔍 Em Análise</span>';
   document.getElementById('dv-painel-' + i).style.display = 'none';
 }
+
+// === REPROCESSAR / ATUALIZAR CONCILIAÇÃO ===
+async function reprocessarConciliacao() {
+  var btn = document.getElementById('btn-reprocessar');
+  var msg = document.getElementById('reprocessar-msg');
+  if (!btn || !EXTRATO_ID) return;
+  btn.disabled = true;
+  btn.textContent = '⏳ Atualizando...';
+  btn.style.background = '#94a3b8';
+  try {
+    var r = await fetch('/api/conciliacao/reprocessar', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ extratoId: EXTRATO_ID })
+    });
+    var d = await r.json();
+    if (d.ok) {
+      if (msg) { msg.style.display = 'inline'; }
+      setTimeout(function() { window.location.reload(); }, 1200);
+    } else {
+      btn.disabled = false;
+      btn.textContent = '🔄 Atualizar Conciliação';
+      btn.style.background = '#6366f1';
+      alert('Erro ao atualizar: ' + (d.error || 'Erro desconhecido'));
+    }
+  } catch(e) {
+    btn.disabled = false;
+    btn.textContent = '🔄 Atualizar Conciliação';
+    btn.style.background = '#6366f1';
+    alert('Erro de conexão: ' + e.message);
+  }
+}
