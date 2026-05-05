@@ -8944,7 +8944,8 @@ async function ocultarConciliacao(id, btn) {
           +'</tr></thead><tbody>'+rowsConc+'</tbody></table></div></section>'
         : '')
       ;
-    const extraScript = '<script>\nvar EXTRATO_ID='+extratoId+';\nvar TODOS_TIPOS_CONCIL='+JSON.stringify(tiposDespConcil.map(t=>({codigo:t.codigo,nome:t.nome,grupo_cod:t.grupo_cod||''})))+';'
+    const tiposJson = JSON.stringify(tiposDespConcil.map(t=>({codigo:t.codigo,nome:t.nome,grupo_cod:t.grupo_cod||''})));
+    const extraScript = `<script>\nvar EXTRATO_ID=${extratoId};\nvar TODOS_TIPOS_CONCIL=${tiposJson};`
       +'function filtrarTiposConc(grupoId,tipoId,valorAtual){'
       +'  var gSel=document.getElementById(grupoId);'
       +'  var tSel=document.getElementById(tipoId);'
