@@ -8945,7 +8945,9 @@ async function ocultarConciliacao(id, btn) {
         : '')
       ;
     const tiposJson = JSON.stringify(tiposDespConcil.map(t=>({codigo:t.codigo,nome:t.nome,grupo_cod:t.grupo_cod||''})));
-    const extraScript = `<script>\nvar EXTRATO_ID=${extratoId};\nvar TODOS_TIPOS_CONCIL=${tiposJson};`
+    // Script inline: apenas as variáveis de dados. Funções estão em /public/conciliacao.js
+    const extraScript = `<script>var EXTRATO_ID=${extratoId};var TODOS_TIPOS_CONCIL=${tiposJson};<\/script><script src="/public/conciliacao.js"><\/script>`;
+    const _unused = ''  // linha placeholder
       +'function filtrarTiposConc(grupoId,tipoId,valorAtual){'
       +'  var gSel=document.getElementById(grupoId);'
       +'  var tSel=document.getElementById(tipoId);'
