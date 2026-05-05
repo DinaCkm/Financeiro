@@ -8332,7 +8332,40 @@ async function ocultarConciliacao(id, btn) {
       }
 
       const JANELA_MATCH_MS = 30 * 24 * 60 * 60 * 1000; // ±30 dias — janela máxima para matching
-      let conciliados = 0, divergentes = 0, naoLancados = 0;
+      const JANELA_TRANSF_MS = 5 * 24 * 60 * 60 * 1000;  // ±5 dias para matching de transferência
+
+      // ===== PADRÕES DE TEXTO QUE INDICAM TRANSFERÊNCIA ENTRE CONTAS PRÓPRIAS =====
+      const isTransfTexto = (memo) => {
+        const m = (memo || '').toUpperCase();
+        return [
+          'TEF ENTRE', 'TRANSF CC', 'TRANSFERENCIA ENTRE', 'TRANSFERÊNCIA ENTRE',
+          'PAGAMENTOS TRANSF CC', 'TED ENVIADA', 'TED RECEBIDA',
+          'TRANSF PARA CONTA', 'TRANSF DE CONTA', 'TRANSFERENCIA PROPRIA',
+          'TRANSFERÊNCIA PRÓPRIA', 'TRANSF PROPRIA', 'ENTRE CONTAS',
+          'TRANSF INTERNA', 'TRANSFERENCIA INTERNA', 'TRANSFERÊNCIA INTERNA'
+        ].some(p => m.includes(p));
+      };
+
+      // ===== BUSCAR LANÇAMENTOS JÁ EXISTENTES CLASSIFICADOS COMO TRANSFERÊNCIA INTERNA =====
+      // Estes são lançamentos do outro banco que já foram criados e aguardam o par
+      const lancTransfPendentes = lancamentosDB.filter(l => {
+        const nat = (l.natureza || l.naturezaGerencial || l.classificacao || '').toLowerCase();
+        const tipo = (l.tipo || '').toLowerCase();
+        return nat.includes('transfer') || tipo.includes('transfer') ||
+               (l.isTransferenciaInterna === true) ||
+               nat.includes('movimentação financeira') || nat.includes('movimentacao financeira');
+      });
+      // Indexar transferências pendentes por valor + D/C OPOSTO (para encontrar o par)
+      const transfIdx = new Map();
+      for (const l of lancTransfPendentes) {
+        const lDC = l.dc || (parseFloat(l.valor||0) >= 0 ? 'C' : 'D');
+        const dcOposto = lDC === 'D' ? 'C' : 'D';
+        const k = Math.round(Math.abs(parseFloat(l.valor || 0)) * 100) + '|' + dcOposto;
+        if (!transfIdx.has(k)) transfIdx.set(k, []);
+        transfIdx.get(k).push(l);
+      }
+
+      let conciliados = 0, divergentes = 0, naoLancados = 0, transferencias = 0;
       const itens = [];
       for (const trn of trns) {
         const k = Math.round(Math.abs(trn.valor) * 100) + '|' + trn.dc;
@@ -8348,7 +8381,33 @@ async function ocultarConciliacao(id, btn) {
         let status = 'NAO_LANCADO';
         let lancId  = null;
         let candidatos = [];
-        if (matchesJanela.length > 0) {
+
+        // ===== DETECÇÃO DE TRANSFERÊNCIA ENTRE CONTAS =====
+        // Prioridade máxima: se o texto do extrato indica transferência, verificar se já existe
+        // um lançamento do outro banco com valor igual, D/C oposto e data próxima (±5 dias)
+        const kTransf = Math.round(Math.abs(trn.valor) * 100) + '|' + trn.dc;
+        const candidatosTransf = (transfIdx.get(kTransf) || []).filter(l => {
+          const lMs = new Date(l.dataISO || '').getTime();
+          return !isNaN(lMs) && Math.abs(lMs - trnDataMs) <= JANELA_TRANSF_MS;
+        });
+        const ehTransfTexto = isTransfTexto(trn.memo);
+
+        if (candidatosTransf.length > 0 && ehTransfTexto) {
+          // Par encontrado: lançamento do outro banco já existe como transferência
+          const parLanc = candidatosTransf.sort((a,b) =>
+            Math.abs(new Date(a.dataISO||0) - trnDataMs) - Math.abs(new Date(b.dataISO||0) - trnDataMs)
+          )[0];
+          status = 'TRANSFERENCIA_VINCULADA';
+          lancId = parLanc.id;
+          candidatos = [{ id: parLanc.id, dataISO: parLanc.dataISO, dc: parLanc.dc, valor: parLanc.valor,
+            centroCusto: parLanc.centroCusto, cliente: parLanc.cliente, descritivo: parLanc.descritivo || parLanc.descricao,
+            numLanc: parLanc.numLanc, banco: parLanc.conta || parLanc.banco || '' }];
+          transferencias++;
+        } else if (ehTransfTexto) {
+          // Texto indica transferência mas não encontrou par ainda — marcar para criar lançamento
+          status = 'TRANSFERENCIA_SEM_PAR';
+          transferencias++;
+        } else if (matchesJanela.length > 0) {
           // Há candidatos com mesmo valor e D/C dentro da janela de ±30 dias
           // Priorizar o mais próximo pela data
           const sorted = matchesJanela.slice().sort((a,b) => {
@@ -8457,6 +8516,7 @@ async function ocultarConciliacao(id, btn) {
             `ALTER TABLE conciliacao_extratos ADD COLUMN IF NOT EXISTS usuario_id VARCHAR(100)`,
             `ALTER TABLE conciliacao_extratos ADD COLUMN IF NOT EXISTS itens JSONB DEFAULT '[]'`,
             `ALTER TABLE conciliacao_extratos ADD COLUMN IF NOT EXISTS banco_nome VARCHAR(100)`,
+            `ALTER TABLE conciliacao_extratos ADD COLUMN IF NOT EXISTS total_transferencias INTEGER DEFAULT 0`,
           ];
           for (const sql of migracoes) {
             try { await pgConc.query(sql); } catch(em) { /* coluna já existe */ }
@@ -8468,8 +8528,8 @@ async function ocultarConciliacao(id, btn) {
             bancoNomeIns = bRow.rows[0] ? bRow.rows[0].nome : '';
           } catch(eb) {}
           const rIns = await pgConc.query(
-            'INSERT INTO conciliacao_extratos (banco_id, banco_nome, data_extrato, data_inicio, data_fim, total_lancamentos, total_conciliados, total_divergentes, total_nao_lancados, saldo_extrato, formato, usuario_id, itens) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING id',
-            [bancoId, bancoNomeIns, dataFim || null, dataInicio || null, dataFim || null, trns.length, conciliados, divergentes, naoLancados, saldo, formato, user.id || user.email, JSON.stringify(itens)]
+            'INSERT INTO conciliacao_extratos (banco_id, banco_nome, data_extrato, data_inicio, data_fim, total_lancamentos, total_conciliados, total_divergentes, total_nao_lancados, total_transferencias, saldo_extrato, formato, usuario_id, itens) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING id',
+            [bancoId, bancoNomeIns, dataFim || null, dataInicio || null, dataFim || null, trns.length, conciliados, divergentes, naoLancados, transferencias, saldo, formato, user.id || user.email, JSON.stringify(itens)]
           );
           extratoId = rIns.rows[0].id;
           console.log('[conciliacao-save] Salvo com id=', extratoId);
@@ -8651,10 +8711,11 @@ async function ocultarConciliacao(id, btn) {
 
     const itens = extrato.itens || [];
     // Status possíveis: NAO_LANCADO, PENDENTE_CRIACAO, LANCAMENTO_CONFIRMADO, DIVERGENTE, OK_CONCILIADO, EM_ANALISE, CONCILIADO
-    const naoLancados = itens.filter(i=>['NAO_LANCADO','PENDENTE_CRIACAO'].includes(i.status));
+    const naoLancados = itens.filter(i=>['NAO_LANCADO','PENDENTE_CRIACAO','TRANSFERENCIA_SEM_PAR'].includes(i.status));
     const divergentes = itens.filter(i=>['DIVERGENTE','EM_ANALISE'].includes(i.status));
     const rateios = itens.filter(i=>i.status==='RATEIO');
     const conciliados = itens.filter(i=>['CONCILIADO','OK_CONCILIADO','LANCAMENTO_CONFIRMADO'].includes(i.status));
+    const transferenciasVinculadas = itens.filter(i=>i.status==='TRANSFERENCIA_VINCULADA');
 
     const fmtVal = v => {
       const n = Number(v||0);
@@ -8954,6 +9015,37 @@ async function ocultarConciliacao(id, btn) {
           +'<th style="padding:.4rem .6rem;font-size:.78rem;color:#166534">Status</th>'
           +'<th style="padding:.4rem .6rem;font-size:.78rem;color:#166534">Lançamento</th>'
           +'</tr></thead><tbody>'+rowsConc+'</tbody></table></div></section>'
+        : '')
+      + (transferenciasVinculadas.length > 0
+        ? '<section style="margin-bottom:2rem">'
+          +'<div style="background:#f0f9ff;border:2px solid #38bdf8;border-radius:.6rem;padding:1rem 1.25rem;margin-bottom:.75rem">'
+          +'<h3 style="margin:0 0 .25rem;color:#0369a1;font-size:1rem">🔄 TRANSFER\u00caNCIAS ENTRE CONTAS ('+transferenciasVinculadas.length+') \u2014 VINCULADAS AUTOMATICAMENTE</h3>'
+          +'<p style="margin:0;font-size:.8rem;color:#0c4a6e">Estes lan\u00e7amentos foram identificados como transfer\u00eancias entre suas pr\u00f3prias contas. O par correspondente j\u00e1 existe no sistema. N\u00e3o afetam o saldo operacional.</p>'
+          +'</div>'
+          +'<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse">'
+          +'<thead><tr style="background:#e0f2fe">'
+          +'<th style="padding:.4rem .6rem;text-align:left;font-size:.78rem;color:#0369a1">Data</th>'
+          +'<th style="padding:.4rem .6rem;text-align:left;font-size:.78rem;color:#0369a1">D/C</th>'
+          +'<th style="padding:.4rem .6rem;text-align:left;font-size:.78rem;color:#0369a1">Hist\u00f3rico do Extrato</th>'
+          +'<th style="padding:.4rem .6rem;text-align:right;font-size:.78rem;color:#0369a1">Valor</th>'
+          +'<th style="padding:.4rem .6rem;font-size:.78rem;color:#0369a1">Par Vinculado</th>'
+          +'<th style="padding:.4rem .6rem;font-size:.78rem;color:#0369a1">Status</th>'
+          +'</tr></thead><tbody>'
+          + transferenciasVinculadas.map((it) => {
+              const cor = it.dc==='C' ? '#059669' : '#dc2626';
+              const par = (it.candidatos||[])[0];
+              const parLink = par ? '<a href="/lancamentos?num='+(par.numLanc||'')+'" style="color:#0369a1;font-weight:600;font-size:.78rem">🔗 #'+String(par.numLanc||par.id||'').padStart ? String(par.numLanc||par.id||'').padStart(6,'0') : (par.numLanc||par.id||'') : '-';
+              const parInfo = par ? '<span style="font-size:.72rem;color:#64748b"> | '+esc(par.banco||par.centroCusto||'')+'</span>' : '';
+              return '<tr style="border-bottom:1px solid #e0f2fe">'
+                +'<td style="padding:.4rem .6rem;font-size:.82rem">'+esc(fmtData(it.dataISO||''))+'</td>'
+                +'<td style="padding:.4rem .6rem;font-weight:700;color:'+cor+'">'+esc(it.dc||'')+'</td>'
+                +'<td style="padding:.4rem .6rem;font-size:.82rem;max-width:320px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="'+esc(it.memo||'')+'">'+esc((it.memo||'').slice(0,60))+'</td>'
+                +'<td style="padding:.4rem .6rem;text-align:right;font-weight:700;color:'+cor+'">'+fmtVal(it.valor)+'</td>'
+                +'<td style="padding:.4rem .6rem;font-size:.78rem">'+(par ? '<a href="/lancamentos?num='+(par.numLanc||par.id||'')+'" style="color:#0369a1;font-weight:600">#'+String(par.numLanc||par.id||'').padStart(6,'0')+'</a>'+parInfo : '<span style="color:#94a3b8">—</span>')+'</td>'
+                +'<td style="padding:.4rem .6rem"><span style="background:#0369a1;color:#fff;border-radius:999px;padding:.15rem .6rem;font-size:.72rem;font-weight:700">🔄 Vinculada</span></td>'
+                +'</tr>';
+            }).join('')
+          +'</tbody></table></div></section>'
         : '')
       ;
     const tiposJson = JSON.stringify(tiposDespConcil.map(t=>({codigo:t.codigo,nome:t.nome,grupo_cod:t.grupo_cod||''})));
