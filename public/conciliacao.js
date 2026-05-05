@@ -35,6 +35,7 @@ async function salvarLanc(i, fitid) {
   var valor = parseFloat(document.getElementById('nf-valor-' + i).value);
   var cc = document.getElementById('nf-cc-' + i).value;
   var cli = document.getElementById('nf-cli-' + i).value;
+  var fav = document.getElementById('nf-fav-' + i) ? document.getElementById('nf-fav-' + i).value : '';
   var proj = document.getElementById('nf-proj-' + i).value;
   var nat = document.getElementById('nf-nat-' + i).value;
   var cat = document.getElementById('nf-cat-' + i).value;
@@ -49,8 +50,8 @@ async function salvarLanc(i, fitid) {
   msg.innerHTML = '<span style="color:#1d4ed8">Salvando...</span>';
   try {
     var r = await fetch('/api/entries', {method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({data:data, dataISO:data, dc:dc, valor:dc==='D'?-Math.abs(valor):Math.abs(valor),
-        centroCusto:cc, cliente:cli, projeto:proj, natureza:nat, categoria:cat, tipo:tipo,
+        body: JSON.stringify({data:data, dataISO:data, dc:dc, valor:dc==='D'?-Math.abs(valor):Math.abs(valor),
+        centroCusto:cc, cliente:cli, favorecido:fav||cli, projeto:proj, natureza:nat, categoria:cat, tipo:tipo,
         descritivo:desc, observacoes:obs, status:'confirmado'})});
     var d = await r.json();
     if (d.ok || d.id || d.numLanc) {
@@ -101,6 +102,7 @@ async function salvarCorrecaoDiv(i, fitid, lancId) {
   var valor = parseFloat(document.getElementById('dv-valor-' + i).value);
   var cc = document.getElementById('dv-cc-' + i).value;
   var cli = document.getElementById('dv-cli-' + i).value;
+  var fav = document.getElementById('dv-fav-' + i) ? document.getElementById('dv-fav-' + i).value : '';
   var proj = document.getElementById('dv-proj-' + i).value;
   var nat = document.getElementById('dv-nat-' + i) ? document.getElementById('dv-nat-' + i).value : '';
   var cat = document.getElementById('dv-cat-' + i) ? document.getElementById('dv-cat-' + i).value : '';
@@ -112,8 +114,8 @@ async function salvarCorrecaoDiv(i, fitid, lancId) {
   if(msg) msg.innerHTML = '<span style="color:#1d4ed8">Salvando...</span>';
   try {
     var r = await fetch('/api/entries/' + lancId, {method:'PUT', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({dc:dc, valor:dc==='D'?-Math.abs(valor):Math.abs(valor),
-        centroCusto:cc, cliente:cli, projeto:proj, natureza:nat, categoria:cat, tipo:tipo,
+        body: JSON.stringify({dc:dc, valor:dc==='D'?-Math.abs(valor):Math.abs(valor),
+        centroCusto:cc, cliente:cli, favorecido:fav||cli, projeto:proj, natureza:nat, categoria:cat, tipo:tipo,
         descritivo:desc, observacoes:obs})});
     var d = await r.json();
     if (d.ok || d.id) {

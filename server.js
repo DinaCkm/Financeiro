@@ -4472,6 +4472,15 @@ async function excluirRef(tipo,nome){
       <option value="">-- Selecione o Cliente/Fornecedor --</option>
       ${clientesCad.map(c=>`<option value="${c.nome}">${c.nome}</option>`).join('')}
     </select></div>
+    <div>
+      <label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase">Favorecido / Beneficiário
+        <span style="font-size:.68rem;font-weight:400;color:#94a3b8">(quem recebeu o pagamento)</span>
+      </label>
+      <select id="novo-favorecido" style="font-size:.8rem;padding:.3rem .5rem;width:100%">
+        <option value="">-- Mesmo que o Cliente/Fornecedor --</option>
+        ${clientesCad.map(c=>`<option value="${c.nome}">${c.nome}</option>`).join('')}
+      </select>
+    </div>
     <div id="bloco-novo-proj">
       <label style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase" id="label-novo-proj">Projeto
         <span id="novo-proj-obrig" style="color:#dc2626;display:none"> *</span>
@@ -5061,7 +5070,8 @@ async function criarLancamento() {
     grupoDespesa: document.getElementById('novo-grupo')?.value,
     tipoDespesa: document.getElementById('novo-tipo')?.value,
     centroCusto: document.getElementById('novo-cc')?.value,
-    favorecido: document.getElementById('novo-cliente')?.value,
+    cliente: document.getElementById('novo-cliente')?.value,
+    favorecido: document.getElementById('novo-favorecido')?.value || document.getElementById('novo-cliente')?.value,
     cpfCnpj: document.getElementById('novo-cpf')?.value,
     conta: document.getElementById('novo-conta')?.value,
     projeto: document.getElementById('novo-proj')?.value,
@@ -8709,7 +8719,7 @@ async function ocultarConciliacao(id, btn) {
         +'<label style="'+labelStyle+'">Valor (R$)<input id="nf-valor-'+i+'" type="number" step="0.01" value="'+Math.abs(it.valor||0)+'" style="'+inputStyle+'"></label>'
         +'<label style="'+labelStyle+'">Centro de Custo<select id="nf-cc-'+i+'" style="'+inputStyle+'"><option value="">-- Selecione --</option>'+ccOpts+'</select></label>'
         +'<label style="'+labelStyle+'">Cliente / Fornecedor<select id="nf-cli-'+i+'" style="'+inputStyle+'"><option value="">-- Selecione --</option>'+cliOpts+'</select></label>'
-        +'<label style="'+labelStyle+'">Favorecido / Beneficiário<input id="nf-fav-'+i+'" type="text" placeholder="Nome do favorecido" style="'+inputStyle+'"></label>'
+        +'<label style="'+labelStyle+'">Favorecido / Beneficiário <span style="font-size:.68rem;font-weight:400;color:#94a3b8">(quem recebeu)</span><select id="nf-fav-'+i+'" style="'+inputStyle+'"><option value="">-- Mesmo que o Cliente --</option>'+cliOpts+'</select></label>'
         +'<label style="'+labelStyle+'">Projeto<select id="nf-proj-'+i+'" style="'+inputStyle+'"><option value="">-- Selecione --</option>'+projOpts+'</select></label>'
         +'<label style="'+labelStyle+'">Natureza<select id="nf-nat-'+i+'" style="'+inputStyle+'"><option value="">-- Selecione --</option>'+natOpts+'</select></label>'
         +'<label style="'+labelStyle+'">Categoria<select id="nf-cat-'+i+'" style="'+inputStyle+'"><option value="">-- Selecione --</option>'+catOpts+'</select></label>'
@@ -8764,6 +8774,7 @@ async function ocultarConciliacao(id, btn) {
         +'<tr><td style="color:#64748b;padding:.15rem 0">Valor:</td><td style="font-weight:700">'+fmtVal(lanc.valor||0)+'</td></tr>'
         +'<tr><td style="color:#64748b;padding:.15rem 0">CC:</td><td>'+esc(lanc.centroCusto||'-')+'</td></tr>'
         +'<tr><td style="color:#64748b;padding:.15rem 0">Cliente:</td><td>'+esc(lanc.cliente||'-')+'</td></tr>'
+        +'<tr><td style="color:#64748b;padding:.15rem 0">Favorecido:</td><td style="font-weight:600;color:#0369a1">'+esc(lanc.favorecido&&lanc.favorecido!==(lanc.cliente||'')&&lanc.favorecido!==(lanc.parceiro||'')?lanc.favorecido:'— mesmo que cliente')+'</td></tr>'
         +'<tr><td style="color:#64748b;padding:.15rem 0">Projeto:</td><td>'+esc(lanc.projeto||'-')+'</td></tr>'
         +'<tr><td style="color:#64748b;padding:.15rem 0">Natureza:</td><td>'+esc(lanc.natureza||'-')+'</td></tr>'
         +'<tr><td style="color:#64748b;padding:.15rem 0">Categoria:</td><td>'+esc(lanc.categoria||'-')+'</td></tr>'
@@ -8778,6 +8789,7 @@ async function ocultarConciliacao(id, btn) {
         +'<label style="'+labelStyle+'">Classificação *<select id="dv-classif-'+i+'" style="'+inputStyle+'"><option value="">-- Selecione --</option>'+buildClassifOpts(lanc.classificacao||lanc.natureza||lanc.naturezaGerencial||'')+'</select></label>'
         +'<label style="'+labelStyle+'">CPF / CNPJ<input id="dv-cpf-'+i+'" type="text" placeholder="Digite CPF ou CNPJ (somente números)" value="'+esc(lanc.cpfCnpj||'')+'" style="'+inputStyle+'"></label>'
         +'<label style="'+labelStyle+'">Cliente / Fornecedor / Prestador *<select id="dv-cli-'+i+'" style="'+inputStyle+'">'+buildCliOpts(lanc.cliente||lanc.favorecido||lanc.parceiro||'')+'</select></label>'
+        +'<label style="'+labelStyle+'">Favorecido / Beneficiário <span style="font-size:.68rem;font-weight:400;color:#94a3b8">(quem recebeu)</span><select id="dv-fav-'+i+'" style="'+inputStyle+'">'+buildCliOpts(lanc.favorecido&&lanc.favorecido!==(lanc.cliente||lanc.parceiro||'')?lanc.favorecido:'')+'</select></label>'
         +'<label style="'+labelStyle+'">Projeto<select id="dv-proj-'+i+'" style="'+inputStyle+'">'+buildProjOpts(lanc.projeto||'')+'</select></label>'
         +'<label style="'+labelStyle+'">Grupo da Despesa<select id="dv-grupo-'+i+'" data-tipo-target="dv-tipo-'+i+'" style="'+inputStyle+'">'+buildGrupoOpts(lanc.grupoDespesa||'')+'</select></label>'
         +'<label style="'+labelStyle+'">Tipo de Despesa<select id="dv-tipo-'+i+'" style="'+inputStyle+'">'+buildTipoOpts(lanc.tipoDespesa||'',lanc.grupoDespesa||'')+'</select></label>'
