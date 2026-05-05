@@ -928,7 +928,7 @@ function serveStatic(req, res) {
   return true;
 }
 
-function page(title, body, user, activePage) {
+function page(title, body, user, activePage, extraScript) {
   const navLinks = user ? [
     ['/', 'Home', ''],
     ['/upload', 'Upload', ''],
@@ -956,7 +956,7 @@ function page(title, body, user, activePage) {
   </a>
   ${user ? `<nav>${nav}</nav>` : ''}
 </header>
-<main>${body}</main></body></html>`;
+<main>${body}</main>${extraScript||''}</body></html>`;
 }
 
 const TYPE_GUIDE = {
@@ -6828,7 +6828,7 @@ function renderHistoricoRel() {
         <td>${c.telefone||'-'}</td>
         <td><span class='status-dot ${c.ativo?'ativo':'inativo'}'></span>${c.ativo?'Ativo':'Inativo'}</td>
         <td style='display:flex;gap:.4rem'>
-          <button class='btn btn-sm btn-outline' onclick="editCliente('${c.id}','${enc(c.codigo)}','${enc(c.nome)}','${enc(c.nome_curto)}','${enc(c.cnpj)}','${enc(c.cpf)}','${c.tipo||'CLIENTE'}','${enc(c.email)}','${enc(c.telefone)}','${enc(c.observacoes)}',${c.ativo})">&#9998; Editar</button>
+          <button class='btn btn-sm btn-outline' onclick="editCliente('${c.id}','${enc(c.codigo)}','${enc(c.nome)}','${enc(c.nome_curto)}','${enc(c.cnpj)}','${enc(c.cpf)}','${c.tipo||'CLIENTE'}','${enc(c.email)}','${enc(c.telefone)}','${enc(c.observacoes)}',${c.ativo},${JSON.stringify(c.dadosBancarios||{})})">&#9998; Editar</button>
           ${c.ativo ? `<button class='btn btn-sm' style='background:#fee2e2;color:#991b1b;border:1px solid #fca5a5' onclick="toggleCliente('${c.id}',false,'${enc(c.nome)}')">Inativar</button>` : `<button class='btn btn-sm' style='background:#dcfce7;color:#166534;border:1px solid #86efac' onclick="toggleCliente('${c.id}',true,'${enc(c.nome)}')">Reativar</button>`}
         </td>
       </tr>`;
@@ -6947,6 +6947,17 @@ function renderHistoricoRel() {
       <label>Telefone <input id='cli-telefone' placeholder='(11) 99999-9999'></label>
       <label>Contato / Respons&#225;vel <input id='cli-contato' placeholder='Nome do contato principal'></label>
       <label>Status <select id='cli-ativo'><option value='true'>Ativo</option><option value='false'>Inativo</option></select></label>
+    </div>
+    <div style='margin-top:.75rem;padding:.75rem;background:#f0f9ff;border:1px solid #bae6fd;border-radius:.5rem'>
+      <div style='font-size:.78rem;font-weight:700;color:#0369a1;text-transform:uppercase;margin-bottom:.5rem'>&#127981; Dados Banc&#225;rios para Pagamento</div>
+      <div class='form-grid'>
+        <label>Banco <input id='cli-banco-nome' placeholder='Ex: Itaú, Nubank, Bradesco'></label>
+        <label>Ag&#234;ncia <input id='cli-agencia' placeholder='Ex: 0001'></label>
+        <label>Conta Corrente <input id='cli-conta' placeholder='Ex: 12345-6'></label>
+        <label>Tipo de Conta <select id='cli-tipo-conta'><option value=''>Selecione...</option><option value='corrente'>Conta Corrente</option><option value='poupanca'>Conta Poupan&#231;a</option><option value='pagamento'>Conta Pagamento</option></select></label>
+        <label>Chave PIX <input id='cli-pix' placeholder='CPF, CNPJ, e-mail, telefone ou chave aleat&#243;ria'></label>
+        <label>Favorecido (titular da conta) <input id='cli-favorecido-banco' placeholder='Nome do titular da conta'></label>
+      </div>
     </div>
     <label style='margin-top:.5rem'>Observa&#231;&#245;es <textarea id='cli-obs' rows='2' placeholder='Informa&#231;&#245;es adicionais...' style='width:100%;padding:.5rem;border:1px solid #e2e8f0;border-radius:.5rem;font-size:.9rem'></textarea></label>
     <div style='display:flex;gap:.75rem;flex-wrap:wrap;margin-top:.75rem'>
@@ -7190,13 +7201,14 @@ function atualizarLabelDoc() {
   document.getElementById('label-cpf').style.display = isPF ? '' : 'none';
 }
 function clearFormCli() {
-  ['cli-id','cli-codigo','cli-nome','cli-curto','cli-cnpj','cli-cpf','cli-email','cli-telefone','cli-contato','cli-obs'].forEach(id => { const el = document.getElementById(id); if(el) el.value=''; });
+  ['cli-id','cli-codigo','cli-nome','cli-curto','cli-cnpj','cli-cpf','cli-email','cli-telefone','cli-contato','cli-obs','cli-banco-nome','cli-agencia','cli-conta','cli-pix','cli-favorecido-banco'].forEach(id => { const el = document.getElementById(id); if(el) el.value=''; });
   document.getElementById('cli-tipo').value='CLIENTE';
   document.getElementById('cli-ativo').value='true';
+  document.getElementById('cli-tipo-conta').value='';
   document.getElementById('form-cli-title').textContent='\u2795 Novo Cadastro';
   atualizarLabelDoc();
 }
-function editCliente(id,codigo,nome,curto,cnpj,cpf,tipo,email,telefone,obs,ativo) {
+function editCliente(id,codigo,nome,curto,cnpj,cpf,tipo,email,telefone,obs,ativo,dadosBancarios) {
   document.getElementById('cli-id').value=id;
   document.getElementById('cli-codigo').value=codigo;
   document.getElementById('cli-nome').value=nome;
@@ -7208,6 +7220,14 @@ function editCliente(id,codigo,nome,curto,cnpj,cpf,tipo,email,telefone,obs,ativo
   document.getElementById('cli-telefone').value=telefone;
   document.getElementById('cli-obs').value=obs;
   document.getElementById('cli-ativo').value=String(ativo);
+  // Dados bancários
+  const db = dadosBancarios || {};
+  document.getElementById('cli-banco-nome').value=db.banco||'';
+  document.getElementById('cli-agencia').value=db.agencia||'';
+  document.getElementById('cli-conta').value=db.conta||'';
+  document.getElementById('cli-tipo-conta').value=db.tipoConta||'';
+  document.getElementById('cli-pix').value=db.chavePix||'';
+  document.getElementById('cli-favorecido-banco').value=db.favorecido||'';
   document.getElementById('form-cli-title').textContent='\u270F Editar: '+nome;
   atualizarLabelDoc();
   switchTab('clientes');
@@ -7233,7 +7253,15 @@ async function saveCliente() {
     telefone:document.getElementById('cli-telefone').value.trim()||null,
     contato:document.getElementById('cli-contato').value.trim()||null,
     observacoes:document.getElementById('cli-obs').value.trim()||null,
-    ativo:document.getElementById('cli-ativo').value==='true'
+    ativo:document.getElementById('cli-ativo').value==='true',
+    dadosBancarios:{
+      banco:document.getElementById('cli-banco-nome').value.trim()||null,
+      agencia:document.getElementById('cli-agencia').value.trim()||null,
+      conta:document.getElementById('cli-conta').value.trim()||null,
+      tipoConta:document.getElementById('cli-tipo-conta').value||null,
+      chavePix:document.getElementById('cli-pix').value.trim()||null,
+      favorecido:document.getElementById('cli-favorecido-banco').value.trim()||null
+    }
   };
   try{
     await apiCall(id?'PUT':'POST','/api/mestres/clientes'+(id?'/'+id:''),payload);
@@ -8338,41 +8366,55 @@ async function ocultarConciliacao(id, btn) {
           candidatos = sorted.slice(0, 5).map(l => ({ id: l.id, dataISO: l.dataISO, dc: l.dc, valor: l.valor, centroCusto: l.centroCusto, cliente: l.cliente, projeto: l.projeto, descritivo: l.descritivo || l.descricao, numLanc: l.numLanc }));
         } else {
           // ===== BUSCA POR RATEIO: soma de lançamentos que totalizam o valor do extrato =====
-          // Filtrar lançamentos com mesmo D/C e data próxima (±5 dias)
+          // Critérios: mesmo D/C, mesmo mês/ano, mesmo cliente/fornecedor/prestador
           const trnDataMs = new Date(trn.dataISO).getTime();
-          const CINCO_DIAS = 5 * 24 * 60 * 60 * 1000;
+          const trnMes = trn.dataISO ? trn.dataISO.substring(0, 7) : ''; // 'YYYY-MM'
           const candidatosRateio = lancamentosDB.filter(l => {
             const lDC = l.dc || (parseFloat(l.valor||0) >= 0 ? 'C' : 'D');
             if (lDC !== trn.dc) return false;
-            const lDataMs = new Date(l.dataISO || '').getTime();
-            if (isNaN(lDataMs)) return false;
-            return Math.abs(lDataMs - trnDataMs) <= CINCO_DIAS;
+            const lMes = (l.dataISO || '').substring(0, 7);
+            if (lMes !== trnMes) return false; // deve ser do mesmo mês
+            // deve ter cliente/fornecedor/prestador (não pode ser lançamento sem vínculo)
+            const lParte = (l.cliente || l.fornecedor || l.prestador || '').trim();
+            if (!lParte) return false;
+            return true;
           });
+          // Agrupar por cliente/fornecedor/prestador para garantir que o rateio seja do mesmo
+          const parteGrupos = {};
+          for (const l of candidatosRateio) {
+            const parte = (l.cliente || l.fornecedor || l.prestador || '').trim();
+            if (!parteGrupos[parte]) parteGrupos[parte] = [];
+            parteGrupos[parte].push(l);
+          }
           // Buscar combinações de 2 ou 3 lançamentos que somam o valor do extrato
           const valorAlvo = Math.round(Math.abs(trn.valor) * 100);
           let rateioEncontrado = null;
-          // Combinações de 2
-          outer2: for (let i = 0; i < candidatosRateio.length; i++) {
-            for (let j = i + 1; j < candidatosRateio.length; j++) {
-              const soma = Math.round(Math.abs(parseFloat(candidatosRateio[i].valor||0)) * 100)
-                         + Math.round(Math.abs(parseFloat(candidatosRateio[j].valor||0)) * 100);
-              if (soma === valorAlvo) {
-                rateioEncontrado = [candidatosRateio[i], candidatosRateio[j]];
-                break outer2;
+          // Buscar combinações DENTRO do mesmo grupo (mesmo cliente/fornecedor/prestador)
+          for (const [parte, grupo] of Object.entries(parteGrupos)) {
+            if (rateioEncontrado) break;
+            // Combinações de 2
+            outer2: for (let i = 0; i < grupo.length; i++) {
+              for (let j = i + 1; j < grupo.length; j++) {
+                const soma = Math.round(Math.abs(parseFloat(grupo[i].valor||0)) * 100)
+                           + Math.round(Math.abs(parseFloat(grupo[j].valor||0)) * 100);
+                if (soma === valorAlvo) {
+                  rateioEncontrado = [grupo[i], grupo[j]];
+                  break outer2;
+                }
               }
             }
-          }
-          // Combinações de 3 (só se não encontrou 2)
-          if (!rateioEncontrado && candidatosRateio.length <= 30) {
-            outer3: for (let i = 0; i < candidatosRateio.length; i++) {
-              for (let j = i + 1; j < candidatosRateio.length; j++) {
-                for (let k2 = j + 1; k2 < candidatosRateio.length; k2++) {
-                  const soma = Math.round(Math.abs(parseFloat(candidatosRateio[i].valor||0)) * 100)
-                             + Math.round(Math.abs(parseFloat(candidatosRateio[j].valor||0)) * 100)
-                             + Math.round(Math.abs(parseFloat(candidatosRateio[k2].valor||0)) * 100);
-                  if (soma === valorAlvo) {
-                    rateioEncontrado = [candidatosRateio[i], candidatosRateio[j], candidatosRateio[k2]];
-                    break outer3;
+            // Combinações de 3 (só se não encontrou 2)
+            if (!rateioEncontrado && grupo.length <= 30) {
+              outer3: for (let i = 0; i < grupo.length; i++) {
+                for (let j = i + 1; j < grupo.length; j++) {
+                  for (let k2 = j + 1; k2 < grupo.length; k2++) {
+                    const soma = Math.round(Math.abs(parseFloat(grupo[i].valor||0)) * 100)
+                               + Math.round(Math.abs(parseFloat(grupo[j].valor||0)) * 100)
+                               + Math.round(Math.abs(parseFloat(grupo[k2].valor||0)) * 100);
+                    if (soma === valorAlvo) {
+                      rateioEncontrado = [grupo[i], grupo[j], grupo[k2]];
+                      break outer3;
+                    }
                   }
                 }
               }
@@ -8901,10 +8943,8 @@ async function ocultarConciliacao(id, btn) {
           +'<th style="padding:.4rem .6rem;font-size:.78rem;color:#166534">Lançamento</th>'
           +'</tr></thead><tbody>'+rowsConc+'</tbody></table></div></section>'
         : '')
-      // JavaScript
-      +'<script>'
-      +'var EXTRATO_ID='+extratoId+';'
-      +'var TODOS_TIPOS_CONCIL='+JSON.stringify(tiposDespConcil.map(t=>({codigo:t.codigo,nome:t.nome,grupo_cod:t.grupo_cod||''})))+';'
+      ;
+    const extraScript = '<script>\nvar EXTRATO_ID='+extratoId+';\nvar TODOS_TIPOS_CONCIL='+JSON.stringify(tiposDespConcil.map(t=>({codigo:t.codigo,nome:t.nome,grupo_cod:t.grupo_cod||''})))+';'
       +'function filtrarTiposConc(grupoId,tipoId,valorAtual){'
       +'  var gSel=document.getElementById(grupoId);'
       +'  var tSel=document.getElementById(tipoId);'
@@ -9054,9 +9094,9 @@ async function ocultarConciliacao(id, btn) {
       +'  cells[4].innerHTML="<span style=\\"color:#6366f1;font-weight:700\\">🔍 Em Análise</span>";'
       +'  document.getElementById("dv-painel-"+i).style.display="none";'
       +'}'
-      +'<\/script>';
+      +'\n<\/script>';
 
-    const html = page('Detalhe Conciliação #'+extratoId, body, user, '/conciliacao');
+    const html = page('Detalhe Conciliação #'+extratoId, body, user, '/conciliacao', extraScript);
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
     res.end(html);
     return;
