@@ -2316,7 +2316,7 @@ const server = http.createServer(async (req, res) => {
           : '';
       return `
         <tr>
-          <td><strong>${escapeHtml(e.titulo)}</strong><div style='font-size:.75rem;color:#64748b'>V${Number(e.current_version || 1)}</div></td>
+          <td><a href='/entregas/${encodeURIComponent(e.id)}' style='color:inherit;text-decoration:none'><strong>${escapeHtml(e.titulo)}</strong><div style='font-size:.75rem;color:#64748b'>V${Number(e.current_version || 1)}</div></a></td>
           <td>${escapeHtml(e.cliente_nome_curto || e.cliente_nome || '-')}</td>
           <td>${escapeHtml(e.projeto_nome || '-')}</td>
           <td>${escapeHtml(e.contrato_numero || '-')}</td>
@@ -2699,6 +2699,323 @@ const server = http.createServer(async (req, res) => {
       fileHash,
       convidados: invitations.length
     });
+  }
+
+
+  const entregaDetailMatch = url.pathname.match(/^\/entregas\/([0-9a-f-]{36})$/i);
+  if (req.method === 'GET' && entregaDetailMatch) {
+    const entregaId = entregaDetailMatch[1];
+    const pg = storage.getPool ? storage.getPool() : null;
+    if (!pg) return json(res, 503, { error: 'Banco não disponível.' });
+
+    const entregaResult = await pg.query(
+      `SELECT e.*, c.nome as cliente_nome, c.nome_curto as cliente_nome_curto,
+              p.nome as projeto_nome, ct.numero as contrato_numero
+         FROM portal_entregas e
+         LEFT JOIN clientes c ON c.id=e.cliente_id
+         LEFT JOIN projetos p ON p.id=e.projeto_id
+         LEFT JOIN contratos ct ON ct.id=e.contrato_id
+        WHERE e.id=$1
+        LIMIT 1`,
+      [entregaId]
+    );
+    if (!entregaResult.rows.length) return json(res, 404, { error: 'Entrega não encontrada.' });
+    const entrega = entregaResult.rows[0];
+    if (!(await userCanAccessPortalDelivery(user, entrega))) {
+      return json(res, 403, { error: 'Você não possui acesso a esta entrega.' });
+    }
+
+    const versions = (await pg.query(
+      'SELECT id, version_number, file_name, file_size, file_hash, uploaded_at, status FROM portal_entrega_versions WHERE entrega_id=$1 ORDER BY version_number DESC',
+      [entregaId]
+    )).rows;
+    const currentVersion = versions.find(v => Number(v.version_number) === Number(entrega.current_version)) || versions[0] || null;
+    const convidados = currentVersion ? (await pg.query(
+      `SELECT g.*,
+              EXISTS(
+                SELECT 1 FROM portal_entrega_decisions d
+                 WHERE d.version_id=$2 AND d.convidado_id=g.id AND d.decision='validated'
+              ) as validated_current
+         FROM portal_entrega_convidados g
+        WHERE g.entrega_id=$1 AND (g.version_id=$2 OR (g.version_id IS NULL AND $2 IS NULL))
+        ORDER BY g.nome`,
+      [entregaId, currentVersion.id]
+    )).rows : [];
+    const messages = currentVersion ? (await pg.query(
+      'SELECT * FROM portal_entrega_messages WHERE version_id=$1 ORDER BY created_at ASC',
+      [currentVersion.id]
+    )).rows : [];
+    const validation = currentVersion ? (await pg.query(
+      'SELECT * FROM portal_entrega_validations WHERE version_id=$1 ORDER BY validated_at DESC LIMIT 1',
+      [currentVersion.id]
+    )).rows[0] || null : null;
+
+    const versionRows = versions.map(v => {
+      const label = v.status === 'validated' ? 'Validada'
+        : v.status === 'ajustes_solicitados' ? 'Ajustes solicitados'
+        : 'Aguardando cliente';
+      return `<tr>
+        <td>V${Number(v.version_number)}</td>
+        <td>${escapeHtml(v.file_name)}</td>
+        <td>${label}</td>
+        <td>${escapeHtml(new Date(v.uploaded_at).toLocaleString('pt-BR'))}</td>
+        <td style='font-size:.72rem;font-family:monospace'>${escapeHtml(String(v.file_hash || '').slice(0,18))}…</td>
+      </tr>`;
+    }).join('');
+
+    const guestRows = convidados.map(g => {
+      const state = g.validated_current ? 'De acordo'
+        : g.status === 'acessou' ? 'Acessou'
+        : 'Convite enviado';
+      return `<tr>
+        <td><strong>${escapeHtml(g.nome)}</strong></td>
+        <td>${escapeHtml(g.email)}</td>
+        <td>${state}</td>
+        <td>${g.last_access_at ? escapeHtml(new Date(g.last_access_at).toLocaleString('pt-BR')) : '-'}</td>
+      </tr>`;
+    }).join('');
+
+    const msgHtml = messages.map(m => `
+      <div style='padding:.75rem;border:1px solid #e2e8f0;border-radius:10px;margin:.5rem 0;background:${m.actor_type === 'cliente' ? '#f8fafc' : '#f0fdf4'}'>
+        <div style='font-size:.76rem;color:#64748b;margin-bottom:.25rem'><strong>${escapeHtml(m.actor_name)}</strong> · ${escapeHtml(new Date(m.created_at).toLocaleString('pt-BR'))}</div>
+        <div style='white-space:pre-wrap'>${escapeHtml(m.message)}</div>
+      </div>
+    `).join('');
+
+    const canNewVersion = entrega.status === 'ajustes_solicitados';
+    const body = `
+      <div style='display:flex;justify-content:space-between;gap:1rem;align-items:flex-start;flex-wrap:wrap'>
+        <div>
+          <a href='/entregas' style='font-size:.82rem'>← Voltar para Entregas</a>
+          <h2 class='page-title' style='margin-top:.5rem'>${escapeHtml(entrega.titulo)}</h2>
+          <p style='color:#64748b;max-width:900px'>${escapeHtml(entrega.descricao)}</p>
+        </div>
+        <div style='text-align:right'>
+          <div style='font-size:.82rem;color:#64748b'>Status</div>
+          <strong>${entrega.status === 'validado' ? 'Validado / Entregue' : entrega.status === 'ajustes_solicitados' ? 'Ajustes solicitados' : 'Aguardando cliente'}</strong>
+          ${validation ? `<div style='font-size:.78rem;color:#065f46;margin-top:.3rem'>Protocolo: ${escapeHtml(validation.protocol)}</div>` : ''}
+        </div>
+      </div>
+
+      <section>
+        <h2>Dados da entrega</h2>
+        <div class='form-grid'>
+          <div><strong>Cliente</strong><div>${escapeHtml(entrega.cliente_nome_curto || entrega.cliente_nome || '-')}</div></div>
+          <div><strong>Projeto</strong><div>${escapeHtml(entrega.projeto_nome || '-')}</div></div>
+          <div><strong>Contrato</strong><div>${escapeHtml(entrega.contrato_numero || '-')}</div></div>
+          <div><strong>Versão atual</strong><div>V${Number(entrega.current_version)}</div></div>
+        </div>
+      </section>
+
+      <section>
+        <h2>Pessoas responsáveis pela validação — versão atual</h2>
+        <div style='overflow-x:auto'><table><thead><tr><th>Nome</th><th>E-mail</th><th>Situação</th><th>Último acesso</th></tr></thead><tbody>
+          ${guestRows || "<tr><td colspan='4'>Nenhum convidado nesta versão.</td></tr>"}
+        </tbody></table></div>
+      </section>
+
+      <section id='conversa'>
+        <h2>Conversa da versão atual</h2>
+        <div style='max-height:420px;overflow:auto'>${msgHtml || "<p style='color:#64748b'>Nenhuma mensagem nesta versão.</p>"}</div>
+        ${currentVersion && entrega.status !== 'validado' ? `
+          <form method='post' action='/api/entregas/${entregaId}/mensagem' style='margin-top:.75rem'>
+            <label>Responder ao cliente<textarea name='message' rows='3' maxlength='5000' required></textarea></label>
+            <button type='submit'>Enviar mensagem</button>
+          </form>` : ''}
+      </section>
+
+      ${canNewVersion ? `
+      <section>
+        <h2>Enviar nova versão</h2>
+        <p style='color:#64748b;font-size:.85rem'>A versão anterior será preservada. Os validadores receberão novos links individuais para a nova versão.</p>
+        <label>Resumo do que foi alterado
+          <textarea id='nova-resumo' rows='3' placeholder='Ex: Ajustados os itens solicitados na página 8 e no quadro da página 12.'></textarea>
+        </label>
+        <label>Nova versão em PDF
+          <input id='nova-arquivo' type='file' accept='application/pdf,.pdf'>
+        </label>
+        <button id='btn-nova-versao' type='button' onclick='enviarNovaVersao()'>Enviar nova versão</button>
+        <div id='nova-msg' style='margin-top:.5rem;font-size:.85rem'></div>
+      </section>
+      <script>
+      async function enviarNovaVersao() {
+        const f = document.getElementById('nova-arquivo').files[0];
+        const resumo = document.getElementById('nova-resumo').value.trim();
+        const msg = document.getElementById('nova-msg');
+        if (!f) { msg.textContent='Selecione o novo PDF.'; msg.style.color='#991b1b'; return; }
+        if (f.size > 15*1024*1024) { msg.textContent='O PDF deve ter no máximo 15 MB nesta fase.'; msg.style.color='#991b1b'; return; }
+        const btn = document.getElementById('btn-nova-versao');
+        btn.disabled=true; btn.textContent='Enviando...';
+        try {
+          const ab = await f.arrayBuffer();
+          const bytes = new Uint8Array(ab);
+          let binary='';
+          for(let i=0;i<bytes.length;i+=0x8000) binary += String.fromCharCode(...bytes.subarray(i,i+0x8000));
+          const r = await fetch('/api/entregas/${entregaId}/versoes', {
+            method:'POST',
+            headers:{'content-type':'application/json'},
+            body:JSON.stringify({fileName:f.name,fileType:f.type||'application/pdf',fileBase64:btoa(binary),changeSummary:resumo})
+          });
+          const d=await r.json();
+          if(!r.ok||d.error) throw new Error(d.error||'Erro ao enviar nova versão.');
+          location.reload();
+        } catch(e) {
+          msg.textContent='Erro: '+e.message; msg.style.color='#991b1b';
+          btn.disabled=false; btn.textContent='Enviar nova versão';
+        }
+      }
+      </script>
+      ` : ''}
+      
+      <section>
+        <h2>Histórico de versões</h2>
+        <div style='overflow-x:auto'><table><thead><tr><th>Versão</th><th>Arquivo</th><th>Status</th><th>Enviado em</th><th>Hash</th></tr></thead><tbody>
+          ${versionRows || "<tr><td colspan='5'>Sem versões.</td></tr>"}
+        </tbody></table></div>
+      </section>
+    `;
+
+    const html = page('Entrega', body, user, '/entregas');
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+    res.end(html);
+    return;
+  }
+
+  const entregaMessageMatch = url.pathname.match(/^\/api\/entregas\/([0-9a-f-]{36})\/mensagem$/i);
+  if (req.method === 'POST' && entregaMessageMatch) {
+    const entregaId = entregaMessageMatch[1];
+    const pg = storage.getPool ? storage.getPool() : null;
+    if (!pg) return json(res, 503, { error: 'Banco não disponível.' });
+
+    const entregaResult = await pg.query('SELECT * FROM portal_entregas WHERE id=$1 LIMIT 1', [entregaId]);
+    if (!entregaResult.rows.length) return json(res, 404, { error: 'Entrega não encontrada.' });
+    const entrega = entregaResult.rows[0];
+    if (!(await userCanAccessPortalDelivery(user, entrega))) return json(res, 403, { error: 'Acesso não autorizado.' });
+
+    const form = new URLSearchParams(await readBody(req));
+    const message = String(form.get('message') || '').trim();
+    if (!message) {
+      res.writeHead(302, { Location: `/entregas/${entregaId}#conversa` });
+      res.end();
+      return;
+    }
+
+    const v = (await pg.query(
+      'SELECT id FROM portal_entrega_versions WHERE entrega_id=$1 AND version_number=$2 LIMIT 1',
+      [entregaId, Number(entrega.current_version)]
+    )).rows[0];
+    if (!v) return json(res, 404, { error: 'Versão atual não encontrada.' });
+
+    await pg.query(
+      `INSERT INTO portal_entrega_messages
+        (id, entrega_id, version_id, actor_type, actor_user_id, actor_name, actor_email, message, created_at)
+       VALUES ($1,$2,$3,'ckm',$4,$5,$6,$7,NOW())`,
+      [crypto.randomUUID(), entregaId, v.id, user.id, user.name || user.email || 'CKM', user.email || null, message]
+    );
+    res.writeHead(302, { Location: `/entregas/${entregaId}#conversa` });
+    res.end();
+    return;
+  }
+
+  const entregaVersionMatch = url.pathname.match(/^\/api\/entregas\/([0-9a-f-]{36})\/versoes$/i);
+  if (req.method === 'POST' && entregaVersionMatch) {
+    const entregaId = entregaVersionMatch[1];
+    const pg = storage.getPool ? storage.getPool() : null;
+    if (!pg) return json(res, 503, { error: 'Banco não disponível.' });
+
+    const entregaResult = await pg.query('SELECT * FROM portal_entregas WHERE id=$1 LIMIT 1', [entregaId]);
+    if (!entregaResult.rows.length) return json(res, 404, { error: 'Entrega não encontrada.' });
+    const entrega = entregaResult.rows[0];
+    if (!(await userCanAccessPortalDelivery(user, entrega))) return json(res, 403, { error: 'Acesso não autorizado.' });
+    if (entrega.status !== 'ajustes_solicitados') {
+      return json(res, 409, { error: 'Uma nova versão só pode ser enviada quando houver ajustes solicitados.' });
+    }
+
+    let body;
+    try { body = JSON.parse(await readBody(req) || '{}'); }
+    catch { return json(res, 400, { error: 'Dados inválidos.' }); }
+
+    const fileName = String(body.fileName || '').trim();
+    const changeSummary = String(body.changeSummary || '').trim();
+    if (!fileName || !body.fileBase64 || !fileName.toLowerCase().endsWith('.pdf')) {
+      return json(res, 400, { error: 'Selecione um arquivo PDF válido.' });
+    }
+
+    const fileBuffer = Buffer.from(String(body.fileBase64), 'base64');
+    if (!fileBuffer.length || fileBuffer.length > 15 * 1024 * 1024 || fileBuffer.subarray(0,4).toString() !== '%PDF') {
+      return json(res, 400, { error: 'PDF inválido ou acima de 15 MB.' });
+    }
+
+    const currentVersion = Number(entrega.current_version || 1);
+    const nextVersion = currentVersion + 1;
+    const versionId = crypto.randomUUID();
+    const hash = crypto.createHash('sha256').update(fileBuffer).digest('hex');
+
+    const previousGuests = (await pg.query(
+      `SELECT nome, email, can_comment, can_request_changes, can_validate
+         FROM portal_entrega_convidados
+        WHERE entrega_id=$1
+          AND version_id=(SELECT id FROM portal_entrega_versions WHERE entrega_id=$1 AND version_number=$2 LIMIT 1)
+        ORDER BY invited_at`,
+      [entregaId, currentVersion]
+    )).rows;
+    if (!previousGuests.length) return json(res, 409, { error: 'Não foi possível localizar os validadores da versão anterior.' });
+
+    const invitations = [];
+    const client = await pg.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query(
+        `INSERT INTO portal_entrega_versions
+          (id, entrega_id, version_number, file_name, mime_type, file_size, file_hash, file_data, uploaded_by, uploaded_at, status)
+         VALUES ($1,$2,$3,$4,'application/pdf',$5,$6,$7,$8,NOW(),'aguardando_cliente')`,
+        [versionId, entregaId, nextVersion, fileName, fileBuffer.length, hash, fileBuffer, user.id]
+      );
+      await client.query(
+        `UPDATE portal_entregas
+            SET current_version=$2, status='aguardando_cliente', sent_at=NOW()
+          WHERE id=$1`,
+        [entregaId, nextVersion]
+      );
+      for (const g of previousGuests) {
+        const { token, tokenHash } = createGuestToken();
+        const newGuestId = crypto.randomUUID();
+        await client.query(
+          `INSERT INTO portal_entrega_convidados
+            (id, entrega_id, version_id, nome, email, can_comment, can_request_changes, can_validate, token_hash, status, invited_at)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'convidado',NOW())`,
+          [newGuestId, entregaId, versionId, g.nome, g.email, !!g.can_comment, !!g.can_request_changes, !!g.can_validate, tokenHash]
+        );
+        invitations.push({ nome:g.nome, email:g.email, token });
+      }
+      if (changeSummary) {
+        await client.query(
+          `INSERT INTO portal_entrega_messages
+            (id, entrega_id, version_id, actor_type, actor_user_id, actor_name, actor_email, message, created_at)
+           VALUES ($1,$2,$3,'ckm',$4,$5,$6,$7,NOW())`,
+          [crypto.randomUUID(), entregaId, versionId, user.id, user.name || user.email || 'CKM', user.email || null, `Nova versão V${nextVersion}: ${changeSummary}`]
+        );
+      }
+      await client.query('COMMIT');
+    } catch (e) {
+      await client.query('ROLLBACK');
+      return json(res, 500, { error: 'Não foi possível criar a nova versão: ' + e.message });
+    } finally {
+      client.release();
+    }
+
+    const baseUrl = portalBaseUrl(req);
+    for (const inv of invitations) {
+      sendDeliveryInviteEmail({
+        to: inv.email,
+        name: inv.nome,
+        documentTitle: `${entrega.titulo} — V${nextVersion}`,
+        accessLink: `${baseUrl}/validar/${encodeURIComponent(inv.token)}`,
+        senderName: user.name || user.email || 'Equipe CKM Talents'
+      }).catch(e => console.warn('[entregas] Erro ao reenviar convite:', e && e.message ? e.message : e));
+    }
+
+    return json(res, 200, { ok:true, version:nextVersion, fileHash:hash, convidados:invitations.length });
   }
 
   if (req.method === 'GET' && url.pathname === '/acessos') {
