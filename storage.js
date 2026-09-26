@@ -117,6 +117,53 @@ function createPostgresStorage(databaseUrl) {
         tipo TEXT DEFAULT 'lancamento',
         created_at TIMESTAMPTZ DEFAULT now()
       );
+      CREATE TABLE IF NOT EXISTS portal_consultor_clientes (
+        consultant_user_id TEXT NOT NULL,
+        cliente_id INTEGER NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        PRIMARY KEY (consultant_user_id, cliente_id)
+      );
+      CREATE TABLE IF NOT EXISTS portal_entregas (
+        id TEXT PRIMARY KEY,
+        cliente_id INTEGER NOT NULL,
+        projeto_id INTEGER,
+        contrato_id INTEGER,
+        titulo TEXT NOT NULL,
+        descricao TEXT NOT NULL,
+        responsavel_user_id TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'aguardando_cliente',
+        current_version INTEGER NOT NULL DEFAULT 1,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        sent_at TIMESTAMPTZ
+      );
+      CREATE TABLE IF NOT EXISTS portal_entrega_versions (
+        id TEXT PRIMARY KEY,
+        entrega_id TEXT NOT NULL,
+        version_number INTEGER NOT NULL,
+        file_name TEXT NOT NULL,
+        mime_type TEXT NOT NULL,
+        file_size BIGINT NOT NULL,
+        file_hash TEXT NOT NULL,
+        file_data BYTEA NOT NULL,
+        uploaded_by TEXT NOT NULL,
+        uploaded_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        status TEXT NOT NULL DEFAULT 'aguardando_cliente',
+        UNIQUE (entrega_id, version_number)
+      );
+      CREATE TABLE IF NOT EXISTS portal_entrega_convidados (
+        id TEXT PRIMARY KEY,
+        entrega_id TEXT NOT NULL,
+        nome TEXT NOT NULL,
+        email TEXT NOT NULL,
+        can_comment BOOLEAN NOT NULL DEFAULT TRUE,
+        can_request_changes BOOLEAN NOT NULL DEFAULT TRUE,
+        can_validate BOOLEAN NOT NULL DEFAULT TRUE,
+        token_hash TEXT NOT NULL UNIQUE,
+        status TEXT NOT NULL DEFAULT 'convidado',
+        invited_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        first_access_at TIMESTAMPTZ,
+        last_access_at TIMESTAMPTZ
+      );
     `);
 
     // Migração aditiva e idempotente para instalações que já possuem a tabela users.
