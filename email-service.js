@@ -1,5 +1,9 @@
 const nodemailer = require('nodemailer');
 
+function isSmtpConfigured() {
+  return Boolean(process.env.SMTP_USER && process.env.SMTP_PASS);
+}
+
 function getTransporter() {
   const host = process.env.SMTP_HOST || 'smtp.gmail.com';
   const port = Number(process.env.SMTP_PORT || 587);
@@ -239,6 +243,7 @@ async function sendSmtpTestEmail({ to }) {
 }
 
 module.exports = {
+  isSmtpConfigured,
   sendPasswordResetEmail,
   sendConsultantInviteEmail,
   sendDeliveryInviteEmail,
