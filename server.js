@@ -1906,27 +1906,434 @@ const server = http.createServer(async (req, res) => {
 
 
   if (req.method === 'GET' && url.pathname === '/entregas') {
+    const pg = storage.getPool ? storage.getPool() : null;
+    let entregas = [];
+    let counts = { aguardando_cliente: 0, ajustes_solicitados: 0, validado: 0 };
+    if (pg) {
+      try {
+        const params = [];
+        let where = '';
+        if (isDeliveryConsultant(user)) {
+          params.push(user.id);
+          where = 'WHERE e.responsavel_user_id=$1';
+        }
+        entregas = (await pg.query(`
+          SELECT e.*, c.nome as cliente_nome, c.nome_curto as cliente_nome_curto,
+                 p.nome as projeto_nome, ct.numero as contrato_numero
+          FROM portal_entregas e
+          LEFT JOIN clientes c ON c.id=e.cliente_id
+          LEFT JOIN projetos p ON p.id=e.projeto_id
+          LEFT JOIN contratos ct ON ct.id=e.contrato_id
+          ${where}
+          ORDER BY e.created_at DESC
+          LIMIT 100
+        `, params)).rows;
+        for (const e of entregas) {
+          if (e.status === 'aguardando_cliente') counts.aguardando_cliente++;
+          else if (e.status === 'ajustes_solicitados') counts.ajustes_solicitados++;
+          else if (e.status === 'validado') counts.validado++;
+        }
+      } catch (e) {
+        console.warn('[entregas] Erro ao carregar painel:', e.message);
+      }
+    }
+
+    const rows = entregas.map(e => {
+      const statusLabel = e.status === 'validado'
+        ? 'Validado'
+        : e.status === 'ajustes_solicitados'
+          ? 'Ajustes solicitados'
+          : 'Aguardando cliente';
+      const statusClass = e.status === 'validado'
+        ? 'badge-green'
+        : e.status === 'ajustes_solicitados'
+          ? 'badge-amber'
+          : '';
+      return `
+        <tr>
+          <td><strong>${escapeHtml(e.titulo)}</strong><div style='font-size:.75rem;color:#64748b'>V${Number(e.current_version || 1)}</div></td>
+          <td>${escapeHtml(e.cliente_nome_curto || e.cliente_nome || '-')}</td>
+          <td>${escapeHtml(e.projeto_nome || '-')}</td>
+          <td>${escapeHtml(e.contrato_numero || '-')}</td>
+          <td><span class='badge ${statusClass}'>${statusLabel}</span></td>
+          <td>${e.sent_at ? escapeHtml(new Date(e.sent_at).toLocaleString('pt-BR')) : '-'}</td>
+        </tr>
+      `;
+    }).join('');
+
     const html = page('Entregas e Validações', `
 <section>
-  <h2 class='page-title'>Entregas e Validações</h2>
-  <p style='color:var(--gray-600);font-size:.92rem;max-width:820px'>
-    Área destinada à gestão dos documentos enviados aos clientes para análise, solicitação de ajustes e validação.
-  </p>
+  <div style='display:flex;justify-content:space-between;align-items:flex-start;gap:1rem;flex-wrap:wrap'>
+    <div>
+      <h2 class='page-title'>Entregas e Validações</h2>
+      <p style='color:var(--gray-600);font-size:.92rem;max-width:820px'>
+        Gestão dos documentos enviados aos clientes para análise, solicitação de ajustes e validação.
+      </p>
+    </div>
+    <a href='/entregas/nova'><button>+ Nova Entrega</button></a>
+  </div>
   <div class='cards' style='margin-top:1.25rem'>
-    <div class='card'><strong>Aguardando cliente</strong><span>0</span></div>
-    <div class='card'><strong>Ajustes solicitados</strong><span>0</span></div>
-    <div class='card'><strong>Validados</strong><span>0</span></div>
+    <div class='card'><strong>Aguardando cliente</strong><span>${counts.aguardando_cliente}</span></div>
+    <div class='card'><strong>Ajustes solicitados</strong><span>${counts.ajustes_solicitados}</span></div>
+    <div class='card'><strong>Validados</strong><span>${counts.validado}</span></div>
   </div>
   <section style='margin-top:1rem'>
-    <h2>Módulo em preparação</h2>
-    <p style='color:var(--gray-600);font-size:.9rem'>
-      O acesso restrito já está ativo. A próxima etapa incluirá Nova Entrega, convidados, versões, conversa e validação.
-    </p>
+    <h2>Entregas</h2>
+    <div style='overflow-x:auto'>
+      <table>
+        <thead><tr><th>Documento</th><th>Cliente</th><th>Projeto</th><th>Contrato</th><th>Status</th><th>Enviado em</th></tr></thead>
+        <tbody>${rows || "<tr><td colspan='6'>Nenhuma entrega cadastrada.</td></tr>"}</tbody>
+      </table>
+    </div>
   </section>
 </section>`, user, '/entregas');
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
     res.end(html);
     return;
+  }
+
+  if (req.method === 'GET' && url.pathname === '/entregas/nova') {
+    const pg = storage.getPool ? storage.getPool() : null;
+    if (!pg) return json(res, 503, { error: 'Banco não disponível.' });
+
+    let clientes = [], projetos = [], contratos = [];
+    try {
+      const allowed = await getPortalAllowedClientIds(user);
+      if (allowed === null) {
+        clientes = (await pg.query('SELECT id, nome, nome_curto FROM clientes WHERE ativo=true ORDER BY nome')).rows;
+      } else if (allowed.length) {
+        clientes = (await pg.query(
+          'SELECT id, nome, nome_curto FROM clientes WHERE ativo=true AND id=ANY($1::int[]) ORDER BY nome',
+          [allowed]
+        )).rows;
+      }
+      projetos = (await pg.query('SELECT id, codigo, nome, cliente_id FROM projetos WHERE ativo=true ORDER BY codigo')).rows;
+      contratos = (await pg.query('SELECT id, numero, descricao, cliente_id, projeto_id, status FROM contratos ORDER BY numero')).rows;
+    } catch (e) {
+      return json(res, 500, { error: e.message });
+    }
+
+    const clientesJson = JSON.stringify(clientes).replace(/</g, '\\u003c');
+    const projetosJson = JSON.stringify(projetos).replace(/</g, '\\u003c');
+    const contratosJson = JSON.stringify(contratos).replace(/</g, '\\u003c');
+
+    const body = `
+      <div style='display:flex;justify-content:space-between;align-items:center;gap:1rem'>
+        <div>
+          <h2 class='page-title'>Nova Entrega</h2>
+          <p style='color:#64748b;font-size:.9rem'>Crie a entrega, anexe a primeira versão do documento e informe quem deverá analisar.</p>
+        </div>
+        <a href='/entregas' style='font-size:.85rem'>Voltar</a>
+      </div>
+
+      <section>
+        <div class='form-grid'>
+          <label>Cliente *
+            <select id='ent-cliente' required onchange='filtrarRelacionados()'>
+              <option value=''>-- Selecione --</option>
+              ${clientes.map(cl => `<option value='${cl.id}'>${escapeHtml(cl.nome_curto || cl.nome)}</option>`).join('')}
+            </select>
+          </label>
+          <label>Projeto (opcional)
+            <select id='ent-projeto' onchange='filtrarContratos()'>
+              <option value=''>-- Nenhum --</option>
+            </select>
+          </label>
+          <label>Contrato relacionado (opcional)
+            <select id='ent-contrato'>
+              <option value=''>-- Nenhum --</option>
+            </select>
+          </label>
+          <label>Responsável CKM
+            <input value='${escapeHtml(user.name || user.email || 'Usuário CKM')}' disabled>
+          </label>
+        </div>
+
+        <label style='margin-top:.75rem'>Nome do documento *
+          <input id='ent-titulo' maxlength='255' placeholder='Ex: Relatório Final do Projeto' required>
+        </label>
+        <label style='margin-top:.75rem'>Descrição da entrega *
+          <textarea id='ent-descricao' rows='4' placeholder='Explique o que está sendo entregue e o que o cliente deve analisar.' required></textarea>
+        </label>
+        <label style='margin-top:.75rem'>Arquivo da versão 1 (PDF) *
+          <input id='ent-arquivo' type='file' accept='application/pdf,.pdf' required>
+        </label>
+      </section>
+
+      <section>
+        <div style='display:flex;justify-content:space-between;align-items:center;gap:1rem'>
+          <div>
+            <h2 style='margin-bottom:.25rem'>Pessoas responsáveis pela validação</h2>
+            <p style='color:#64748b;font-size:.82rem'>Informe nome e e-mail. Cada pessoa receberá seu próprio link individual.</p>
+          </div>
+          <button type='button' class='btn-outline' onclick='adicionarValidador()'>+ Adicionar pessoa</button>
+        </div>
+        <div id='validadores'></div>
+      </section>
+
+      <div style='display:flex;justify-content:flex-end;gap:.75rem;margin-top:1.25rem'>
+        <a href='/entregas'><button type='button' class='btn-outline'>Cancelar</button></a>
+        <button id='btn-enviar' type='button' onclick='enviarEntrega()'>Enviar para validação</button>
+      </div>
+      <div id='ent-msg' style='margin-top:.75rem;font-size:.85rem'></div>
+
+      <script>
+      const CLIENTES = ${clientesJson};
+      const PROJETOS = ${projetosJson};
+      const CONTRATOS = ${contratosJson};
+
+      function filtrarRelacionados() {
+        const clienteId = Number(document.getElementById('ent-cliente').value || 0);
+        const projeto = document.getElementById('ent-projeto');
+        const lista = PROJETOS.filter(p => !p.cliente_id || Number(p.cliente_id) === clienteId);
+        projeto.innerHTML = '<option value="">-- Nenhum --</option>' +
+          lista.map(p => '<option value="'+p.id+'">'+(p.codigo ? p.codigo+' — ' : '')+p.nome+'</option>').join('');
+        filtrarContratos();
+      }
+
+      function filtrarContratos() {
+        const clienteId = Number(document.getElementById('ent-cliente').value || 0);
+        const projetoId = Number(document.getElementById('ent-projeto').value || 0);
+        const contrato = document.getElementById('ent-contrato');
+        const lista = CONTRATOS.filter(ct =>
+          Number(ct.cliente_id) === clienteId &&
+          (!projetoId || !ct.projeto_id || Number(ct.projeto_id) === projetoId)
+        );
+        contrato.innerHTML = '<option value="">-- Nenhum --</option>' +
+          lista.map(ct => '<option value="'+ct.id+'">'+(ct.numero || ('Contrato #'+ct.id))+(ct.descricao ? ' — '+ct.descricao : '')+'</option>').join('');
+      }
+
+      function adicionarValidador(nome='', email='') {
+        const wrap = document.getElementById('validadores');
+        const row = document.createElement('div');
+        row.className = 'validador-row';
+        row.style.cssText = 'display:grid;grid-template-columns:1fr 1fr auto;gap:.75rem;align-items:end;margin:.75rem 0;padding:.75rem;border:1px solid #e2e8f0;border-radius:10px;background:#f8fafc';
+        row.innerHTML =
+          '<label>Nome *<input class="val-nome" value="'+nome.replace(/"/g,'&quot;')+'" required></label>'+
+          '<label>E-mail *<input class="val-email" type="email" value="'+email.replace(/"/g,'&quot;')+'" required></label>'+
+          '<button type="button" class="btn-outline" onclick="this.closest(\'.validador-row\').remove()">Remover</button>';
+        wrap.appendChild(row);
+      }
+
+      async function enviarEntrega() {
+        const msg = document.getElementById('ent-msg');
+        const clienteId = Number(document.getElementById('ent-cliente').value || 0);
+        const titulo = document.getElementById('ent-titulo').value.trim();
+        const descricao = document.getElementById('ent-descricao').value.trim();
+        const file = document.getElementById('ent-arquivo').files[0];
+        const rows = [...document.querySelectorAll('.validador-row')];
+        const convidados = rows.map(r => ({
+          nome: r.querySelector('.val-nome').value.trim(),
+          email: r.querySelector('.val-email').value.trim()
+        })).filter(v => v.nome || v.email);
+
+        if (!clienteId || !titulo || !descricao || !file) {
+          msg.textContent = 'Preencha cliente, nome, descrição e selecione o PDF.';
+          msg.style.color = '#991b1b';
+          return;
+        }
+        if (file.type !== 'application/pdf' && !file.name.toLowerCase().endsWith('.pdf')) {
+          msg.textContent = 'A versão 1 deve ser um arquivo PDF.';
+          msg.style.color = '#991b1b';
+          return;
+        }
+        if (!convidados.length || convidados.some(v => !v.nome || !v.email)) {
+          msg.textContent = 'Informe pelo menos uma pessoa responsável pela validação, com nome e e-mail.';
+          msg.style.color = '#991b1b';
+          return;
+        }
+        if (file.size > 15 * 1024 * 1024) {
+          msg.textContent = 'O PDF deve ter no máximo 15 MB nesta fase.';
+          msg.style.color = '#991b1b';
+          return;
+        }
+
+        const btn = document.getElementById('btn-enviar');
+        btn.disabled = true;
+        btn.textContent = 'Enviando...';
+        msg.textContent = 'Salvando documento e preparando convites...';
+        msg.style.color = '#475569';
+
+        try {
+          const buffer = await file.arrayBuffer();
+          const bytes = new Uint8Array(buffer);
+          let binary = '';
+          const chunk = 0x8000;
+          for (let i=0;i<bytes.length;i+=chunk) {
+            binary += String.fromCharCode(...bytes.subarray(i, i+chunk));
+          }
+          const fileBase64 = btoa(binary);
+          const r = await fetch('/api/entregas', {
+            method: 'POST',
+            headers: {'content-type':'application/json'},
+            body: JSON.stringify({
+              clienteId,
+              projetoId: Number(document.getElementById('ent-projeto').value || 0) || null,
+              contratoId: Number(document.getElementById('ent-contrato').value || 0) || null,
+              titulo,
+              descricao,
+              fileName: file.name,
+              fileType: file.type || 'application/pdf',
+              fileBase64,
+              convidados
+            })
+          });
+          const data = await r.json();
+          if (!r.ok || data.error) throw new Error(data.error || 'Erro ao criar entrega.');
+          window.location.href = '/entregas?criada=1';
+        } catch (e) {
+          msg.textContent = 'Erro: ' + e.message;
+          msg.style.color = '#991b1b';
+          btn.disabled = false;
+          btn.textContent = 'Enviar para validação';
+        }
+      }
+
+      adicionarValidador();
+      </script>
+    `;
+
+    const html = page('Nova Entrega', body, user, '/entregas');
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+    res.end(html);
+    return;
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/entregas') {
+    const pg = storage.getPool ? storage.getPool() : null;
+    if (!pg) return json(res, 503, { error: 'Banco não disponível.' });
+
+    let body;
+    try {
+      body = JSON.parse(await readBody(req) || '{}');
+    } catch {
+      return json(res, 400, { error: 'Dados inválidos.' });
+    }
+
+    const clienteId = Number(body.clienteId || 0);
+    const projetoId = body.projetoId ? Number(body.projetoId) : null;
+    const contratoId = body.contratoId ? Number(body.contratoId) : null;
+    const titulo = String(body.titulo || '').trim();
+    const descricao = String(body.descricao || '').trim();
+    const fileName = String(body.fileName || '').trim();
+    const fileType = String(body.fileType || 'application/pdf').trim();
+    const convidados = Array.isArray(body.convidados) ? body.convidados : [];
+
+    if (!clienteId || !titulo || !descricao || !fileName || !body.fileBase64) {
+      return json(res, 400, { error: 'Cliente, nome, descrição e PDF são obrigatórios.' });
+    }
+    if (!(await userCanAccessPortalClient(user, clienteId))) {
+      return json(res, 403, { error: 'Você não possui acesso a este cliente.' });
+    }
+    if (!fileName.toLowerCase().endsWith('.pdf') && fileType !== 'application/pdf') {
+      return json(res, 400, { error: 'A entrega deve ser enviada em PDF.' });
+    }
+    if (!convidados.length) {
+      return json(res, 400, { error: 'Informe pelo menos uma pessoa para validação.' });
+    }
+
+    const validGuests = [];
+    for (const g of convidados) {
+      const nome = String(g.nome || '').trim();
+      const email = String(g.email || '').trim().toLowerCase();
+      if (!nome || !email || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
+        return json(res, 400, { error: 'Todos os validadores precisam ter nome e e-mail válido.' });
+      }
+      validGuests.push({ nome, email });
+    }
+
+    let fileBuffer;
+    try {
+      fileBuffer = Buffer.from(String(body.fileBase64), 'base64');
+    } catch {
+      return json(res, 400, { error: 'Arquivo inválido.' });
+    }
+    if (!fileBuffer.length || fileBuffer.length > 15 * 1024 * 1024) {
+      return json(res, 400, { error: 'O PDF deve ter entre 1 byte e 15 MB.' });
+    }
+    if (fileBuffer.subarray(0, 4).toString() !== '%PDF') {
+      return json(res, 400, { error: 'O arquivo enviado não parece ser um PDF válido.' });
+    }
+
+    if (projetoId) {
+      const p = await pg.query('SELECT id, cliente_id FROM projetos WHERE id=$1 AND ativo=true', [projetoId]);
+      if (!p.rows.length) return json(res, 400, { error: 'Projeto inválido.' });
+      if (p.rows[0].cliente_id && Number(p.rows[0].cliente_id) !== clienteId) {
+        return json(res, 400, { error: 'O projeto selecionado não pertence ao cliente escolhido.' });
+      }
+    }
+
+    if (contratoId) {
+      const ct = await pg.query('SELECT id, cliente_id, projeto_id FROM contratos WHERE id=$1', [contratoId]);
+      if (!ct.rows.length) return json(res, 400, { error: 'Contrato inválido.' });
+      if (Number(ct.rows[0].cliente_id) !== clienteId) {
+        return json(res, 400, { error: 'O contrato selecionado não pertence ao cliente escolhido.' });
+      }
+      if (projetoId && ct.rows[0].projeto_id && Number(ct.rows[0].projeto_id) !== projetoId) {
+        return json(res, 400, { error: 'O contrato selecionado não pertence ao projeto escolhido.' });
+      }
+    }
+
+    const entregaId = crypto.randomUUID();
+    const versionId = crypto.randomUUID();
+    const fileHash = crypto.createHash('sha256').update(fileBuffer).digest('hex');
+    const now = new Date().toISOString();
+    const invitations = [];
+    const client = await pg.connect();
+
+    try {
+      await client.query('BEGIN');
+      await client.query(
+        `INSERT INTO portal_entregas
+          (id, cliente_id, projeto_id, contrato_id, titulo, descricao, responsavel_user_id, status, current_version, created_at, sent_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,'aguardando_cliente',1,$8,$8)`,
+        [entregaId, clienteId, projetoId, contratoId, titulo, descricao, user.id, now]
+      );
+      await client.query(
+        `INSERT INTO portal_entrega_versions
+          (id, entrega_id, version_number, file_name, mime_type, file_size, file_hash, file_data, uploaded_by, uploaded_at, status)
+         VALUES ($1,$2,1,$3,$4,$5,$6,$7,$8,$9,'aguardando_cliente')`,
+        [versionId, entregaId, fileName, 'application/pdf', fileBuffer.length, fileHash, fileBuffer, user.id, now]
+      );
+
+      for (const guest of validGuests) {
+        const { token, tokenHash } = createGuestToken();
+        const convidadoId = crypto.randomUUID();
+        await client.query(
+          `INSERT INTO portal_entrega_convidados
+            (id, entrega_id, nome, email, can_comment, can_request_changes, can_validate, token_hash, status, invited_at)
+           VALUES ($1,$2,$3,$4,true,true,true,$5,'convidado',$6)`,
+          [convidadoId, entregaId, guest.nome, guest.email, tokenHash, now]
+        );
+        invitations.push({ ...guest, token, convidadoId });
+      }
+      await client.query('COMMIT');
+    } catch (e) {
+      await client.query('ROLLBACK');
+      return json(res, 500, { error: 'Não foi possível criar a entrega: ' + e.message });
+    } finally {
+      client.release();
+    }
+
+    const baseUrl = portalBaseUrl(req);
+    for (const inv of invitations) {
+      const accessLink = `${baseUrl}/validar/${encodeURIComponent(inv.token)}`;
+      sendDeliveryInviteEmail({
+        to: inv.email,
+        name: inv.nome,
+        documentTitle: titulo,
+        accessLink,
+        senderName: user.name || user.email || 'Equipe CKM Talents'
+      }).catch(e => console.warn('[entregas] Erro ao enviar convite:', e && e.message ? e.message : e));
+    }
+
+    return json(res, 200, {
+      ok: true,
+      entregaId,
+      version: 1,
+      fileHash,
+      convidados: invitations.length
+    });
   }
 
   if (req.method === 'GET' && url.pathname === '/acessos') {
