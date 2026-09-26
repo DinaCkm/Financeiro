@@ -6,6 +6,8 @@ const SALT_LENGTH = 16;
 const MIN_PASSWORD_LENGTH = 8;
 const MAX_FAILED_LOGIN_ATTEMPTS = 5;
 const LOGIN_BLOCK_DURATION_MINUTES = 15;
+const PASSWORD_RESET_TOKEN_BYTES = 32;
+const PASSWORD_RESET_TTL_MINUTES = 60;
 
 function normalizePassword(password) {
   return String(password ?? '').normalize('NFKC').trim();
@@ -76,15 +78,31 @@ function loginBlockUntilFromNow() {
   return new Date(Date.now() + LOGIN_BLOCK_DURATION_MINUTES * 60 * 1000).toISOString();
 }
 
+function generatePasswordResetToken() {
+  const token = crypto.randomBytes(PASSWORD_RESET_TOKEN_BYTES).toString('hex');
+  return {
+    token,
+    tokenHash: hashResetToken(token),
+    expiresAt: new Date(Date.now() + PASSWORD_RESET_TTL_MINUTES * 60 * 1000).toISOString(),
+  };
+}
+
+function hashResetToken(token) {
+  return crypto.createHash('sha256').update(String(token || '')).digest('hex');
+}
+
 module.exports = {
   PASSWORD_PREFIX,
   MIN_PASSWORD_LENGTH,
   MAX_FAILED_LOGIN_ATTEMPTS,
   LOGIN_BLOCK_DURATION_MINUTES,
+  PASSWORD_RESET_TTL_MINUTES,
   normalizePassword,
   validatePasswordStrength,
   isHashedPassword,
   hashPassword,
   verifyPassword,
   loginBlockUntilFromNow,
+  generatePasswordResetToken,
+  hashResetToken,
 };
