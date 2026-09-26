@@ -148,30 +148,14 @@ const MAPA_TIPOS_DESPESA_CKM = {
   '5.31': 'Pró-labore Sócios'
 };
 
-const PASSWORD_PREFIX = 'scrypt$';
-
-function isHashedPassword(stored) {
-  return typeof stored === 'string' && stored.startsWith(PASSWORD_PREFIX);
-}
-
-function hashPassword(password) {
-  const salt = crypto.randomBytes(16).toString('hex');
-  const key = crypto.scryptSync(String(password), salt, 64).toString('hex');
-  return `${PASSWORD_PREFIX}${salt}$${key}`;
-}
-
-function verifyPassword(inputPassword, storedPassword) {
-  if (!storedPassword) return false;
-  if (!isHashedPassword(storedPassword)) return String(storedPassword) === String(inputPassword);
-  const parts = String(storedPassword).split('$');
-  if (parts.length !== 3) return false;
-  const [, salt, expectedHex] = parts;
-  const actualHex = crypto.scryptSync(String(inputPassword), salt, 64).toString('hex');
-  const expected = Buffer.from(expectedHex, 'hex');
-  const actual = Buffer.from(actualHex, 'hex');
-  if (expected.length !== actual.length) return false;
-  return crypto.timingSafeEqual(expected, actual);
-}
+const {
+  MAX_FAILED_LOGIN_ATTEMPTS,
+  LOGIN_BLOCK_DURATION_MINUTES,
+  isHashedPassword,
+  hashPassword,
+  verifyPassword,
+  loginBlockUntilFromNow,
+} = require('./auth-security');
 
 const COLUMN_ALIASES = {
   data: ['data', 'dt', 'date', 'data_movimento', 'data movimento', 'vencimento',
@@ -1489,7 +1473,15 @@ const server = http.createServer(async (req, res) => {
   if (req.url.startsWith('/public/') && serveStatic(req, res)) return;
 
   if (req.method === 'GET' && url.pathname === '/login') {
-    const html = `<!doctype html><html lang='pt-BR'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>Login — CKM Financeiro</title><link rel='preconnect' href='https://fonts.googleapis.com'><link rel='stylesheet' href='https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap'><link rel='stylesheet' href='/public/style.css'></head><body class='login-page'><div class='login-card'><div class='brand'><h2>Painel CKM Financeiro</h2><p>Gestão Financeira Gerencial</p></div><form method='post' action='/login'><label>E-mail<input name='email' type='email' placeholder='seu@email.com' autocomplete='username'></label><label>Senha<input type='password' name='password' placeholder='••••••' autocomplete='current-password'></label><button type='submit' style='width:100%;justify-content:center;padding:.75rem'>Entrar</button></form><p class='login-hint'>owner@ckm.local &nbsp;&bull;&nbsp; 123456</p></div></body></html>`;
+    const erro = url.searchParams.get('erro');
+    const erroMsg = erro === 'bloqueado'
+      ? `Muitas tentativas incorretas. Tente novamente em ${LOGIN_BLOCK_DURATION_MINUTES} minutos.`
+      : erro === 'inativo'
+        ? 'Este acesso está inativo. Fale com o administrador.'
+        : erro === 'credenciais'
+          ? 'E-mail ou senha inválidos.'
+          : '';
+    const html = `<!doctype html><html lang='pt-BR'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>Login — CKM Financeiro</title><link rel='preconnect' href='https://fonts.googleapis.com'><link rel='stylesheet' href='https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap'><link rel='stylesheet' href='/public/style.css'></head><body class='login-page'><div class='login-card'><div class='brand'><h2>Painel CKM Financeiro</h2><p>Gestão Financeira Gerencial</p></div>${erroMsg ? `<div style='margin:0 0 1rem;padding:.7rem .8rem;border-radius:.5rem;background:#fef2f2;color:#991b1b;border:1px solid #fecaca;font-size:.85rem'>${erroMsg}</div>` : ''}<form method='post' action='/login'><label>E-mail<input name='email' type='email' placeholder='seu@email.com' autocomplete='username' required></label><label>Senha<input type='password' name='password' placeholder='••••••' autocomplete='current-password' required></label><button type='submit' style='width:100%;justify-content:center;padding:.75rem'>Entrar</button></form></div></body></html>`;
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
     res.end(html);
     return;
@@ -1497,22 +1489,59 @@ const server = http.createServer(async (req, res) => {
 
   if (req.method === 'POST' && url.pathname === '/login') {
     const form = new URLSearchParams(await readBody(req));
-    const user = db.users.find((u) => u.email === form.get('email'));
+    const email = String(form.get('email') || '').trim().toLowerCase();
     const rawPassword = form.get('password') || '';
-    if (!user || !verifyPassword(rawPassword, user.password)) {
-      res.writeHead(302, { Location: '/login' });
+    const user = db.users.find((u) => String(u.email || '').trim().toLowerCase() === email);
+
+    // Mensagem/fluxo genérico: não revela se o e-mail existe.
+    if (!user) {
+      res.writeHead(302, { Location: '/login?erro=credenciais' });
       res.end();
       return;
     }
-    // Migração transparente: usuário legado com senha em texto puro é convertido para hash no login bem-sucedido
+
+    if (user.status && user.status !== 'ativo') {
+      res.writeHead(302, { Location: '/login?erro=inativo' });
+      res.end();
+      return;
+    }
+
+    if (user.loginBlockedUntil) {
+      const blockedUntil = new Date(user.loginBlockedUntil);
+      if (!Number.isNaN(blockedUntil.getTime()) && blockedUntil.getTime() > Date.now()) {
+        res.writeHead(302, { Location: '/login?erro=bloqueado' });
+        res.end();
+        return;
+      }
+      user.failedLoginAttempts = 0;
+      user.loginBlockedUntil = null;
+    }
+
+    if (!verifyPassword(rawPassword, user.password)) {
+      user.failedLoginAttempts = Number(user.failedLoginAttempts || 0) + 1;
+      if (user.failedLoginAttempts >= MAX_FAILED_LOGIN_ATTEMPTS) {
+        user.loginBlockedUntil = loginBlockUntilFromNow();
+      }
+      saveDb(db);
+      res.writeHead(302, {
+        Location: user.loginBlockedUntil ? '/login?erro=bloqueado' : '/login?erro=credenciais'
+      });
+      res.end();
+      return;
+    }
+
+    // Migração transparente: usuário legado com senha em texto puro vira scrypt após login válido.
     if (!isHashedPassword(user.password)) {
       user.password = hashPassword(rawPassword);
-      saveDb(db);
     }
+    user.failedLoginAttempts = 0;
+    user.loginBlockedUntil = null;
+    user.lastLoginAt = new Date().toISOString();
+    saveDb(db);
+
     const sid = crypto.randomUUID();
     const sessExpiry = Date.now() + SESSION_TTL_SECONDS * 1000;
     sessions.set(sid, { userId: user.id, expiresAt: sessExpiry });
-    // Persistir sessão no PostgreSQL para sobreviver a reinicializações
     if (storage.sessionSet) {
       storage.sessionSet(sid, user.id, SESSION_TTL_SECONDS).catch(e => console.warn('[session] Erro ao salvar sessão:', e.message));
     }
