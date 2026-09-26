@@ -132,6 +132,7 @@ function createPostgresStorage(databaseUrl) {
         descricao TEXT NOT NULL,
         responsavel_user_id TEXT NOT NULL,
         status TEXT NOT NULL DEFAULT 'aguardando_cliente',
+        validation_mode TEXT NOT NULL DEFAULT 'all',
         current_version INTEGER NOT NULL DEFAULT 1,
         created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
         sent_at TIMESTAMPTZ
@@ -199,6 +200,8 @@ function createPostgresStorage(databaseUrl) {
         validated_at TIMESTAMPTZ NOT NULL DEFAULT now()
       );
     `);
+
+    await pool.query("ALTER TABLE portal_entregas ADD COLUMN IF NOT EXISTS validation_mode TEXT NOT NULL DEFAULT 'all'");
 
     // Migração aditiva e idempotente para instalações que já possuem a tabela users.
     await pool.query(`
