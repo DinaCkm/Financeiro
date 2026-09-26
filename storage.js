@@ -22,7 +22,17 @@ function createJsonStorage(dbPath) {
       }
       const db = JSON.parse(fs.readFileSync(dbPath, 'utf8'));
       if (!db.users.length) {
-        db.users.push({ id: 'owner-ckm', email: 'owner@ckm.local', password: hashPassword('123456'), role: 'owner' });
+        db.users.push({
+          id: 'owner-ckm',
+          email: 'owner@ckm.local',
+          password: hashPassword('123456'),
+          role: 'owner',
+          status: 'ativo',
+          failedLoginAttempts: 0,
+          loginBlockedUntil: null,
+          lastLoginAt: null,
+          mustChangePassword: false
+        });
         fs.writeFileSync(dbPath, JSON.stringify(db, null, 2));
       }
     },
@@ -46,6 +56,14 @@ function createPostgresStorage(databaseUrl) {
         email TEXT NOT NULL UNIQUE,
         password TEXT NOT NULL,
         role TEXT NOT NULL,
+        name TEXT,
+        status TEXT NOT NULL DEFAULT 'ativo',
+        failed_login_attempts INTEGER NOT NULL DEFAULT 0,
+        login_blocked_until TIMESTAMPTZ,
+        last_login_at TIMESTAMPTZ,
+        must_change_password BOOLEAN NOT NULL DEFAULT FALSE,
+        password_reset_token_hash TEXT,
+        password_reset_expires_at TIMESTAMPTZ,
         created_at TIMESTAMPTZ DEFAULT now()
       );
       CREATE TABLE IF NOT EXISTS uploads (
@@ -99,6 +117,18 @@ function createPostgresStorage(databaseUrl) {
         tipo TEXT DEFAULT 'lancamento',
         created_at TIMESTAMPTZ DEFAULT now()
       );
+    `);
+
+    // Migração aditiva e idempotente para instalações que já possuem a tabela users.
+    await pool.query(`
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS name TEXT;
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'ativo';
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS failed_login_attempts INTEGER NOT NULL DEFAULT 0;
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS login_blocked_until TIMESTAMPTZ;
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS last_login_at TIMESTAMPTZ;
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS must_change_password BOOLEAN NOT NULL DEFAULT FALSE;
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS password_reset_token_hash TEXT;
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS password_reset_expires_at TIMESTAMPTZ;
     `);
   }
 
@@ -202,7 +232,10 @@ function createPostgresStorage(databaseUrl) {
 
     async loadDb() {
       const [users, uploads, entries, issues, reviewRegistry, savedRules, manualAdjustments, metaRows] = await Promise.all([
-        pool.query('SELECT id, email, password, role FROM users ORDER BY created_at'),
+        pool.query(`SELECT id, email, password, role, name, status,
+          failed_login_attempts, login_blocked_until, last_login_at, must_change_password,
+          password_reset_token_hash, password_reset_expires_at
+          FROM users ORDER BY created_at`),
         pool.query('SELECT id, file_name, uploaded_at, row_count FROM uploads ORDER BY uploaded_at'),
         loadCollection('SELECT data FROM entries'),
         loadCollection('SELECT data FROM issues'),
@@ -219,7 +252,20 @@ function createPostgresStorage(databaseUrl) {
       }
 
       return {
-        users: users.rows.map((r) => ({ id: r.id, email: r.email, password: r.password, role: r.role })),
+        users: users.rows.map((r) => ({
+          id: r.id,
+          email: r.email,
+          password: r.password,
+          role: r.role,
+          name: r.name || null,
+          status: r.status || 'ativo',
+          failedLoginAttempts: Number(r.failed_login_attempts || 0),
+          loginBlockedUntil: r.login_blocked_until || null,
+          lastLoginAt: r.last_login_at || null,
+          mustChangePassword: !!r.must_change_password,
+          passwordResetTokenHash: r.password_reset_token_hash || null,
+          passwordResetExpiresAt: r.password_reset_expires_at || null
+        })),
         uploads: uploads.rows.map((r) => ({
           id: r.id, fileName: r.file_name, uploadedAt: r.uploaded_at, rowCount: r.row_count
         })),
@@ -236,6 +282,43 @@ function createPostgresStorage(databaseUrl) {
       const client = await pool.connect();
       try {
         await client.query('BEGIN');
+
+        // Usuários — upsert aditivo. Não remove usuários ausentes do snapshot em memória.
+        for (const user of (db.users || []).filter(Boolean)) {
+          await client.query(
+            `INSERT INTO users (
+              id, email, password, role, name, status, failed_login_attempts,
+              login_blocked_until, last_login_at, must_change_password,
+              password_reset_token_hash, password_reset_expires_at
+            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+            ON CONFLICT (id) DO UPDATE SET
+              email = EXCLUDED.email,
+              password = EXCLUDED.password,
+              role = EXCLUDED.role,
+              name = EXCLUDED.name,
+              status = EXCLUDED.status,
+              failed_login_attempts = EXCLUDED.failed_login_attempts,
+              login_blocked_until = EXCLUDED.login_blocked_until,
+              last_login_at = EXCLUDED.last_login_at,
+              must_change_password = EXCLUDED.must_change_password,
+              password_reset_token_hash = EXCLUDED.password_reset_token_hash,
+              password_reset_expires_at = EXCLUDED.password_reset_expires_at`,
+            [
+              user.id,
+              user.email,
+              user.password,
+              user.role || 'owner',
+              user.name || null,
+              user.status || 'ativo',
+              Number(user.failedLoginAttempts || 0),
+              user.loginBlockedUntil || null,
+              user.lastLoginAt || null,
+              !!user.mustChangePassword,
+              user.passwordResetTokenHash || null,
+              user.passwordResetExpiresAt || null
+            ]
+          );
+        }
 
         // Uploads
         const uploads = (db.uploads || []).filter(Boolean).map(u => ({
@@ -363,6 +446,9 @@ function createPostgresStorage(databaseUrl) {
     },
     async sessionDelete(sid) {
       await pool.query('DELETE FROM sessions WHERE id = $1', [sid]);
+    },
+    async sessionDeleteByUser(userId) {
+      await pool.query('DELETE FROM sessions WHERE user_id = $1', [userId]);
     }
   };
 }
