@@ -159,7 +159,7 @@ const {
   verifyPassword,
   loginBlockUntilFromNow,
 } = require('./auth-security');
-const { sendPasswordResetEmail, sendConsultantInviteEmail } = require('./email-service');
+const { sendPasswordResetEmail, sendConsultantInviteEmail, sendDeliveryInviteEmail } = require('./email-service');
 const {
   ROLE_CONSULTOR_ENTREGAS,
   isDeliveryConsultant,
@@ -336,6 +336,36 @@ function escapeHtml(value) {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;');
+}
+
+async function getPortalAllowedClientIds(user) {
+  if (!isDeliveryConsultant(user)) return null;
+  const pg = storage.getPool ? storage.getPool() : null;
+  if (!pg) return [];
+  const r = await pg.query(
+    'SELECT cliente_id FROM portal_consultor_clientes WHERE consultant_user_id=$1 ORDER BY cliente_id',
+    [user.id]
+  );
+  return r.rows.map(row => Number(row.cliente_id));
+}
+
+async function userCanAccessPortalClient(user, clienteId) {
+  if (!isDeliveryConsultant(user)) return true;
+  const allowed = await getPortalAllowedClientIds(user);
+  return allowed.includes(Number(clienteId));
+}
+
+function createGuestToken() {
+  const token = crypto.randomBytes(32).toString('hex');
+  const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
+  return { token, tokenHash };
+}
+
+function portalBaseUrl(req) {
+  const forwardedProto = String(req.headers['x-forwarded-proto'] || '').split(',')[0].trim();
+  const proto = forwardedProto || (isSecureRequest(req) ? 'https' : 'http');
+  const configuredBase = String(process.env.APP_BASE_URL || '').trim().replace(/\/+$/, '');
+  return configuredBase || `${proto}://${req.headers.host}`;
 }
 
 function normalizeName(name) {
