@@ -1936,22 +1936,63 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    const pg = storage.getPool ? storage.getPool() : null;
     const consultores = (db.users || []).filter(u => isDeliveryConsultant(u));
+    let clientes = [];
+    let vinculos = [];
+    if (pg) {
+      try {
+        clientes = (await pg.query('SELECT id, nome, nome_curto FROM clientes WHERE ativo=true ORDER BY nome')).rows;
+        vinculos = (await pg.query('SELECT consultant_user_id, cliente_id FROM portal_consultor_clientes')).rows;
+      } catch (e) {
+        console.warn('[acessos] Não foi possível carregar clientes autorizados:', e.message);
+      }
+    }
+
+    const byConsultant = new Map();
+    for (const v of vinculos) {
+      if (!byConsultant.has(v.consultant_user_id)) byConsultant.set(v.consultant_user_id, new Set());
+      byConsultant.get(v.consultant_user_id).add(Number(v.cliente_id));
+    }
+
     const criado = url.searchParams.get('criado');
+    const salvo = url.searchParams.get('salvo');
     const erro = url.searchParams.get('erro');
-    const rows = consultores.map(u => `
-      <tr>
-        <td><strong>${escapeHtml(u.name || '-')}</strong></td>
-        <td>${escapeHtml(u.email || '-')}</td>
-        <td>${u.status === 'ativo' ? '<span class="badge badge-green">Ativo</span>' : '<span class="badge badge-amber">Convite pendente</span>'}</td>
-        <td>${u.lastLoginAt ? escapeHtml(new Date(u.lastLoginAt).toLocaleString('pt-BR')) : '-'}</td>
-      </tr>
-    `).join('');
+    const cards = consultores.map(u => {
+      const selected = byConsultant.get(u.id) || new Set();
+      const checks = clientes.map(cl => `
+        <label style='display:flex;align-items:center;gap:.45rem;margin:.2rem 0;font-weight:400'>
+          <input type='checkbox' name='clienteId' value='${cl.id}' ${selected.has(Number(cl.id)) ? 'checked' : ''}>
+          <span>${escapeHtml(cl.nome_curto || cl.nome)}</span>
+        </label>
+      `).join('');
+      return `
+        <div style='border:1px solid #e2e8f0;border-radius:12px;padding:1rem;margin-bottom:1rem;background:#fff'>
+          <div style='display:flex;justify-content:space-between;gap:1rem;flex-wrap:wrap'>
+            <div>
+              <strong>${escapeHtml(u.name || '-')}</strong>
+              <div style='font-size:.82rem;color:#64748b'>${escapeHtml(u.email || '-')}</div>
+              <div style='margin-top:.3rem'>${u.status === 'ativo' ? '<span class="badge badge-green">Ativo</span>' : '<span class="badge badge-amber">Convite pendente</span>'}</div>
+            </div>
+            <div style='font-size:.82rem;color:#64748b'>Último acesso: ${u.lastLoginAt ? escapeHtml(new Date(u.lastLoginAt).toLocaleString('pt-BR')) : '-'}</div>
+          </div>
+          <form method='post' action='/acessos/consultor-clientes' style='margin-top:1rem'>
+            <input type='hidden' name='consultantId' value='${escapeHtml(u.id)}'>
+            <div style='font-size:.8rem;font-weight:700;color:#475569;margin-bottom:.35rem'>Clientes que este consultor pode gerenciar</div>
+            <div style='display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:.15rem .75rem'>
+              ${checks || "<span style='color:#64748b;font-size:.82rem'>Nenhum cliente ativo cadastrado.</span>"}
+            </div>
+            <button type='submit' style='margin-top:.75rem'>Salvar clientes autorizados</button>
+          </form>
+        </div>
+      `;
+    }).join('');
 
     const body = `
       <h2 class='page-title'>Acessos</h2>
-      <p style='color:var(--gray-600);font-size:.9rem'>Cadastre consultores independentes com acesso exclusivo ao módulo Entregas e Validações.</p>
+      <p style='color:var(--gray-600);font-size:.9rem'>Cadastre consultores independentes com acesso exclusivo ao módulo Entregas e Validações e defina quais clientes cada um pode gerenciar.</p>
       ${criado ? "<div style='margin:1rem 0;padding:.75rem;background:#ecfdf5;color:#065f46;border:1px solid #a7f3d0;border-radius:.5rem'>Consultor cadastrado. O convite para criação da senha será enviado se o SMTP estiver configurado.</div>" : ''}
+      ${salvo ? "<div style='margin:1rem 0;padding:.75rem;background:#ecfdf5;color:#065f46;border:1px solid #a7f3d0;border-radius:.5rem'>Clientes autorizados atualizados.</div>" : ''}
       ${erro === 'email' ? "<div style='margin:1rem 0;padding:.75rem;background:#fef2f2;color:#991b1b;border:1px solid #fecaca;border-radius:.5rem'>Este e-mail já está cadastrado.</div>" : ''}
       <section>
         <h2>Novo consultor de entregas</h2>
@@ -1963,17 +2004,49 @@ const server = http.createServer(async (req, res) => {
       </section>
       <section>
         <h2>Consultores cadastrados</h2>
-        <div style='overflow-x:auto'>
-          <table>
-            <thead><tr><th>Nome</th><th>E-mail</th><th>Status</th><th>Último acesso</th></tr></thead>
-            <tbody>${rows || "<tr><td colspan='4'>Nenhum consultor cadastrado.</td></tr>"}</tbody>
-          </table>
-        </div>
+        ${cards || "<p style='color:#64748b'>Nenhum consultor cadastrado.</p>"}
       </section>
     `;
     const html = page('Acessos', body, user, '/acessos');
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
     res.end(html);
+    return;
+  }
+
+  if (req.method === 'POST' && url.pathname === '/acessos/consultor-clientes') {
+    if (!isFinancialAdmin(user)) return json(res, 403, { error: 'Acesso não autorizado.' });
+    const pg = storage.getPool ? storage.getPool() : null;
+    if (!pg) return json(res, 503, { error: 'Banco não disponível.' });
+
+    const form = new URLSearchParams(await readBody(req));
+    const consultantId = String(form.get('consultantId') || '').trim();
+    const clienteIds = form.getAll('clienteId')
+      .map(v => Number(v))
+      .filter(v => Number.isInteger(v) && v > 0);
+
+    const consultant = (db.users || []).find(u => u.id === consultantId && isDeliveryConsultant(u));
+    if (!consultant) return json(res, 404, { error: 'Consultor não encontrado.' });
+
+    const client = await pg.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query('DELETE FROM portal_consultor_clientes WHERE consultant_user_id=$1', [consultantId]);
+      for (const clienteId of [...new Set(clienteIds)]) {
+        await client.query(
+          'INSERT INTO portal_consultor_clientes (consultant_user_id, cliente_id) VALUES ($1,$2) ON CONFLICT DO NOTHING',
+          [consultantId, clienteId]
+        );
+      }
+      await client.query('COMMIT');
+    } catch (e) {
+      await client.query('ROLLBACK');
+      return json(res, 500, { error: e.message });
+    } finally {
+      client.release();
+    }
+
+    res.writeHead(302, { Location: '/acessos?salvo=1' });
+    res.end();
     return;
   }
 
