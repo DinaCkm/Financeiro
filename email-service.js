@@ -122,7 +122,63 @@ async function sendConsultantInviteEmail({ to, name, activationLink }) {
   }
 }
 
+
+async function sendDeliveryInviteEmail({ to, name, documentTitle, accessLink, senderName }) {
+  const transporter = getTransporter();
+  if (!transporter) {
+    console.warn('[email] SMTP não configurado. Convite de entrega não enviado.');
+    return false;
+  }
+
+  const fromEmail = process.env.SMTP_FROM || process.env.SMTP_USER;
+  const fromName = process.env.SMTP_FROM_NAME || 'CKM Talents';
+  const greeting = name ? `Olá, ${String(name).trim()}.` : 'Olá.';
+  const sender = senderName ? String(senderName).trim() : 'Equipe CKM Talents';
+
+  const subject = `Documento para análise — ${documentTitle}`;
+  const text = [
+    greeting,
+    '',
+    `${sender} disponibilizou o documento "${documentTitle}" para sua análise.`,
+    'No portal você poderá ler o documento, conversar com a CKM, solicitar ajustes ou validar a entrega.',
+    '',
+    accessLink,
+    '',
+    'Este link é individual. Não encaminhe para outras pessoas.',
+  ].join('\n');
+
+  const html = `
+    <div style="font-family:Arial,sans-serif;max-width:640px;margin:0 auto;color:#1f2937">
+      <h2 style="margin-bottom:12px">Documento para análise</h2>
+      <p>${greeting}</p>
+      <p><strong>${sender}</strong> disponibilizou o documento <strong>${documentTitle}</strong> para sua análise.</p>
+      <p>No portal você poderá ler o documento, conversar com a CKM, solicitar ajustes ou validar a entrega.</p>
+      <p style="margin:28px 0">
+        <a href="${accessLink}" style="background:#111827;color:#fff;text-decoration:none;padding:12px 18px;border-radius:8px;display:inline-block">
+          Acessar documento
+        </a>
+      </p>
+      <p style="color:#6b7280;font-size:13px">Este link é individual e dá acesso somente a esta entrega. Não o encaminhe.</p>
+    </div>
+  `;
+
+  try {
+    await transporter.sendMail({
+      from: `"${fromName}" <${fromEmail}>`,
+      to,
+      subject,
+      text,
+      html,
+    });
+    return true;
+  } catch (error) {
+    console.warn('[email] Falha ao enviar convite da entrega:', error && error.message ? error.message : error);
+    return false;
+  }
+}
+
 module.exports = {
   sendPasswordResetEmail,
   sendConsultantInviteEmail,
+  sendDeliveryInviteEmail,
 };
