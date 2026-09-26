@@ -2758,13 +2758,21 @@ const server = http.createServer(async (req, res) => {
           [allowed]
         )).rows;
       }
-      projetos = (await pg.query('SELECT id, codigo, nome, cliente_id FROM projetos WHERE ativo=true ORDER BY codigo')).rows;
-      contratos = (await pg.query('SELECT id, numero, descricao, cliente_id, projeto_id, status FROM contratos ORDER BY numero')).rows;
       if (allowed === null) {
+        projetos = (await pg.query('SELECT id, codigo, nome, cliente_id FROM projetos WHERE ativo=true ORDER BY codigo')).rows;
+        contratos = (await pg.query('SELECT id, numero, descricao, cliente_id, projeto_id, status FROM contratos ORDER BY numero')).rows;
         contatos = (await pg.query(
           'SELECT id, cliente_id, nome, email FROM portal_contatos_validacao WHERE ativo=true ORDER BY nome'
         )).rows;
       } else if (allowed.length) {
+        projetos = (await pg.query(
+          'SELECT id, codigo, nome, cliente_id FROM projetos WHERE ativo=true AND cliente_id=ANY($1::int[]) ORDER BY codigo',
+          [allowed]
+        )).rows;
+        contratos = (await pg.query(
+          'SELECT id, numero, descricao, cliente_id, projeto_id, status FROM contratos WHERE cliente_id=ANY($1::int[]) ORDER BY numero',
+          [allowed]
+        )).rows;
         contatos = (await pg.query(
           'SELECT id, cliente_id, nome, email FROM portal_contatos_validacao WHERE ativo=true AND cliente_id=ANY($1::int[]) ORDER BY nome',
           [allowed]
