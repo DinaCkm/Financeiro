@@ -159,7 +159,7 @@ const {
   verifyPassword,
   loginBlockUntilFromNow,
 } = require('./auth-security');
-const { sendPasswordResetEmail, sendConsultantInviteEmail, sendDeliveryInviteEmail } = require('./email-service');
+const { sendPasswordResetEmail, sendConsultantInviteEmail, sendDeliveryInviteEmail, sendPortalNotificationEmail } = require('./email-service');
 const {
   ROLE_CONSULTOR_ENTREGAS,
   isDeliveryConsultant,
@@ -373,6 +373,23 @@ function portalBaseUrl(req) {
   const proto = forwardedProto || (isSecureRequest(req) ? 'https' : 'http');
   const configuredBase = String(process.env.APP_BASE_URL || '').trim().replace(/\/+$/, '');
   return configuredBase || `${proto}://${req.headers.host}`;
+}
+
+function findPortalResponsibleUser(db, responsibleUserId) {
+  return (db.users || []).find(u => String(u.id) === String(responsibleUserId)) || null;
+}
+
+function notifyPortalResponsible(db, req, delivery, subject, title, lines) {
+  const responsible = findPortalResponsibleUser(db, delivery.responsavel_user_id);
+  if (!responsible || !responsible.email) return;
+  sendPortalNotificationEmail({
+    to: responsible.email,
+    subject,
+    title,
+    lines,
+    actionLabel: 'Abrir entrega',
+    actionLink: `${portalBaseUrl(req)}/entregas/${encodeURIComponent(delivery.id)}`,
+  }).catch(e => console.warn('[email] Aviso ao responsável não enviado:', e && e.message ? e.message : e));
 }
 
 function normalizeName(name) {
