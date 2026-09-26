@@ -3222,6 +3222,7 @@ const server = http.createServer(async (req, res) => {
     `).join('');
 
     const canNewVersion = entrega.status === 'ajustes_solicitados';
+    const nextUiVersion = Number(entrega.current_version) + 1;
     const body = `
       <div style='display:flex;justify-content:space-between;gap:1rem;align-items:flex-start;flex-wrap:wrap'>
         <div>
@@ -3264,16 +3265,19 @@ const server = http.createServer(async (req, res) => {
       </section>
 
       ${canNewVersion ? `
-      <section>
-        <h2>Enviar nova versão</h2>
-        <p style='color:#64748b;font-size:.85rem'>A versão anterior será preservada. Os validadores receberão novos links individuais para a nova versão.</p>
+      <section style='border:2px solid #f59e0b;background:#fffbeb'>
+        <div style='font-size:.76rem;font-weight:700;letter-spacing:.08em;color:#92400e'>AÇÃO NECESSÁRIA</div>
+        <h2 style='margin-top:.35rem'>Enviar documento ajustado</h2>
+        <p>O cliente solicitou alterações na versão V${Number(entrega.current_version)}. Faça o upload do PDF corrigido abaixo.</p>
+        <p style='font-weight:700;color:#92400e'>Próxima versão: V${nextUiVersion}</p>
+        <p style='color:#475569;font-size:.85rem'>A versão anterior será preservada no histórico. O arquivo corrigido será registrado automaticamente como V${nextUiVersion}. Os validadores receberão novos links individuais.</p>
         <label>Resumo do que foi alterado
           <textarea id='nova-resumo' rows='3' placeholder='Ex: Ajustados os itens solicitados na página 8 e no quadro da página 12.'></textarea>
         </label>
-        <label>Nova versão em PDF
-          <input id='nova-arquivo' type='file' accept='application/pdf,.pdf'>
+        <label>Documento ajustado em PDF *
+          <input id='nova-arquivo' type='file' accept='application/pdf,.pdf' required>
         </label>
-        <button id='btn-nova-versao' type='button' onclick='enviarNovaVersao()'>Enviar nova versão</button>
+        <button id='btn-nova-versao' type='button' onclick='enviarNovaVersao()'>Enviar documento ajustado como V${nextUiVersion}</button>
         <div id='nova-msg' style='margin-top:.5rem;font-size:.85rem'></div>
       </section>
       <script>
@@ -3300,7 +3304,7 @@ const server = http.createServer(async (req, res) => {
           location.reload();
         } catch(e) {
           msg.textContent='Erro: '+e.message; msg.style.color='#991b1b';
-          btn.disabled=false; btn.textContent='Enviar nova versão';
+          btn.disabled=false; btn.textContent='Enviar documento ajustado como V${nextUiVersion}';
         }
       }
       </script>
