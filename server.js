@@ -166,6 +166,12 @@ const {
   isFinancialAdmin,
   authorizationForRequest,
 } = require('./access-control');
+const {
+  isR2Configured,
+  putPrivateObject,
+  getPrivateObjectBuffer,
+  deletePrivateObject,
+} = require('./portal-storage');
 
 const COLUMN_ALIASES = {
   data: ['data', 'dt', 'date', 'data_movimento', 'data movimento', 'vencimento',
@@ -1961,14 +1967,24 @@ const server = http.createServer(async (req, res) => {
     const version = versionResult.rows[0];
 
     if (req.method === 'GET' && action === 'pdf') {
+      let pdfBuffer;
+      try {
+        pdfBuffer = version.storage_key
+          ? await getPrivateObjectBuffer(version.storage_key)
+          : version.file_data;
+      } catch (e) {
+        console.warn('[entregas] Erro ao ler PDF protegido:', e.message);
+        return json(res, 503, { error: 'Documento temporariamente indisponível.' });
+      }
+      if (!pdfBuffer || !pdfBuffer.length) return json(res, 404, { error: 'Documento não encontrado.' });
       res.writeHead(200, {
         'Content-Type': 'application/pdf',
         'Content-Disposition': `inline; filename="${String(version.file_name || 'documento.pdf').replace(/"/g, '')}"`,
-        'Content-Length': Number(version.file_size || version.file_data.length || 0),
+        'Content-Length': Number(pdfBuffer.length),
         'Cache-Control': 'private, no-store',
         'X-Content-Type-Options': 'nosniff'
       });
-      res.end(version.file_data);
+      res.end(pdfBuffer);
       return;
     }
 
@@ -2734,11 +2750,24 @@ const server = http.createServer(async (req, res) => {
       }
     }
 
+    if (!isR2Configured()) {
+      return json(res, 503, { error: 'Armazenamento seguro de documentos ainda não está configurado.' });
+    }
+
     const entregaId = crypto.randomUUID();
     const versionId = crypto.randomUUID();
     const fileHash = crypto.createHash('sha256').update(fileBuffer).digest('hex');
+    const storageKey = `portal-entregas/${entregaId}/v1-${versionId}.pdf`;
     const now = new Date().toISOString();
     const invitations = [];
+
+    try {
+      await putPrivateObject(storageKey, fileBuffer, 'application/pdf');
+    } catch (e) {
+      console.warn('[entregas] Falha ao gravar V1 no R2:', e.message);
+      return json(res, 503, { error: 'Não foi possível armazenar o documento com segurança.' });
+    }
+
     const client = await pg.connect();
 
     try {
@@ -2751,9 +2780,9 @@ const server = http.createServer(async (req, res) => {
       );
       await client.query(
         `INSERT INTO portal_entrega_versions
-          (id, entrega_id, version_number, file_name, mime_type, file_size, file_hash, file_data, uploaded_by, uploaded_at, status)
-         VALUES ($1,$2,1,$3,$4,$5,$6,$7,$8,$9,'aguardando_cliente')`,
-        [versionId, entregaId, fileName, 'application/pdf', fileBuffer.length, fileHash, fileBuffer, user.id, now]
+          (id, entrega_id, version_number, file_name, mime_type, file_size, file_hash, storage_key, file_data, uploaded_by, uploaded_at, status)
+         VALUES ($1,$2,1,$3,$4,$5,$6,$7,$8,$9,$10,'aguardando_cliente')`,
+        [versionId, entregaId, fileName, 'application/pdf', fileBuffer.length, fileHash, storageKey, Buffer.alloc(0), user.id, now]
       );
 
       for (const guest of validGuests) {
@@ -2770,6 +2799,7 @@ const server = http.createServer(async (req, res) => {
       await client.query('COMMIT');
     } catch (e) {
       await client.query('ROLLBACK');
+      deletePrivateObject(storageKey).catch(() => {});
       return json(res, 500, { error: 'Não foi possível criar a entrega: ' + e.message });
     } finally {
       client.release();
@@ -3060,10 +3090,22 @@ const server = http.createServer(async (req, res) => {
       return json(res, 400, { error: 'PDF inválido ou acima de 15 MB.' });
     }
 
+    if (!isR2Configured()) {
+      return json(res, 503, { error: 'Armazenamento seguro de documentos ainda não está configurado.' });
+    }
+
     const currentVersion = Number(entrega.current_version || 1);
     const nextVersion = currentVersion + 1;
     const versionId = crypto.randomUUID();
     const hash = crypto.createHash('sha256').update(fileBuffer).digest('hex');
+    const storageKey = `portal-entregas/${entregaId}/v${nextVersion}-${versionId}.pdf`;
+
+    try {
+      await putPrivateObject(storageKey, fileBuffer, 'application/pdf');
+    } catch (e) {
+      console.warn('[entregas] Falha ao gravar nova versão no R2:', e.message);
+      return json(res, 503, { error: 'Não foi possível armazenar a nova versão com segurança.' });
+    }
 
     const previousGuests = (await pg.query(
       `SELECT nome, email, can_comment, can_request_changes, can_validate
@@ -3081,9 +3123,9 @@ const server = http.createServer(async (req, res) => {
       await client.query('BEGIN');
       await client.query(
         `INSERT INTO portal_entrega_versions
-          (id, entrega_id, version_number, file_name, mime_type, file_size, file_hash, file_data, uploaded_by, uploaded_at, status)
-         VALUES ($1,$2,$3,$4,'application/pdf',$5,$6,$7,$8,NOW(),'aguardando_cliente')`,
-        [versionId, entregaId, nextVersion, fileName, fileBuffer.length, hash, fileBuffer, user.id]
+          (id, entrega_id, version_number, file_name, mime_type, file_size, file_hash, storage_key, file_data, uploaded_by, uploaded_at, status)
+         VALUES ($1,$2,$3,$4,'application/pdf',$5,$6,$7,$8,$9,$10,NOW(),'aguardando_cliente')`,
+        [versionId, entregaId, nextVersion, fileName, fileBuffer.length, hash, storageKey, Buffer.alloc(0), user.id]
       );
       await client.query(
         `UPDATE portal_entregas
@@ -3113,6 +3155,7 @@ const server = http.createServer(async (req, res) => {
       await client.query('COMMIT');
     } catch (e) {
       await client.query('ROLLBACK');
+      deletePrivateObject(storageKey).catch(() => {});
       return json(res, 500, { error: 'Não foi possível criar a nova versão: ' + e.message });
     } finally {
       client.release();
