@@ -214,6 +214,20 @@ function createPostgresStorage(databaseUrl) {
         declaration_text TEXT NOT NULL,
         validated_at TIMESTAMPTZ NOT NULL DEFAULT now()
       );
+      CREATE TABLE IF NOT EXISTS portal_audit_events (
+        id TEXT PRIMARY KEY,
+        entrega_id TEXT,
+        version_id TEXT,
+        actor_type TEXT NOT NULL,
+        actor_id TEXT,
+        action TEXT NOT NULL,
+        ip_address TEXT,
+        user_agent TEXT,
+        details JSONB NOT NULL DEFAULT '{}'::jsonb,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
+      CREATE INDEX IF NOT EXISTS idx_portal_audit_delivery
+        ON portal_audit_events(entrega_id, created_at DESC);
     `);
 
     await pool.query("ALTER TABLE portal_entregas ADD COLUMN IF NOT EXISTS validation_mode TEXT NOT NULL DEFAULT 'all'");
