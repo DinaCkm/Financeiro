@@ -1955,6 +1955,11 @@ const server = http.createServer(async (req, res) => {
     }
 
     const guest = guestResult.rows[0];
+    if (guest.revoked_at || !guest.expires_at || new Date(guest.expires_at).getTime() <= Date.now()) {
+      res.writeHead(403, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'private, no-store' });
+      res.end('<!doctype html><html lang="pt-BR"><meta charset="utf-8"><title>Link indisponível</title><body style="font-family:Arial;padding:40px"><h2>Este link expirou ou foi revogado.</h2><p>Solicite um novo acesso à equipe CKM.</p></body></html>');
+      return;
+    }
     const versionResult = await pg.query(
       `SELECT * FROM portal_entrega_versions
         WHERE entrega_id=$1
@@ -3117,8 +3122,8 @@ const server = http.createServer(async (req, res) => {
         const convidadoId = crypto.randomUUID();
         await client.query(
           `INSERT INTO portal_entrega_convidados
-            (id, entrega_id, version_id, nome, email, can_comment, can_request_changes, can_validate, token_hash, status, invited_at)
-           VALUES ($1,$2,$3,$4,$5,true,true,true,$6,'convidado',$7)`,
+            (id, entrega_id, version_id, nome, email, can_comment, can_request_changes, can_validate, token_hash, status, invited_at, expires_at)
+           VALUES ($1,$2,$3,$4,$5,true,true,true,$6,'convidado',$7,$7 + INTERVAL '30 days')`,
           [convidadoId, entregaId, versionId, guest.nome, guest.email, tokenHash, now]
         );
         invitations.push({ ...guest, token, convidadoId });
@@ -3153,6 +3158,45 @@ const server = http.createServer(async (req, res) => {
     });
   }
 
+
+  const guestAccessMatch = url.pathname.match(/^\/entregas\/([0-9a-f-]{36})\/convidados\/([0-9a-f-]{36})\/(reemitir|revogar)$/i);
+  if (req.method === 'POST' && guestAccessMatch) {
+    const [, entregaId, convidadoId, action] = guestAccessMatch;
+    const pg = storage.getPool ? storage.getPool() : null;
+    if (!pg) return json(res, 503, { error: 'Banco não disponível.' });
+    const delivery = (await pg.query('SELECT * FROM portal_entregas WHERE id=$1 LIMIT 1', [entregaId])).rows[0];
+    if (!delivery) return json(res, 404, { error: 'Entrega não encontrada.' });
+    if (!(await userCanAccessPortalDelivery(user, delivery))) return json(res, 403, { error: 'Acesso não autorizado.' });
+    const guest = (await pg.query(
+      `SELECT g.*, v.version_number FROM portal_entrega_convidados g
+       JOIN portal_entrega_versions v ON v.id=g.version_id
+       WHERE g.id=$1 AND g.entrega_id=$2 LIMIT 1`,
+      [convidadoId, entregaId]
+    )).rows[0];
+    if (!guest || Number(guest.version_number) !== Number(delivery.current_version)) {
+      return json(res, 409, { error: 'Este validador não pertence à versão atual.' });
+    }
+    if (action === 'revogar') {
+      await pg.query('UPDATE portal_entrega_convidados SET revoked_at=NOW() WHERE id=$1', [guest.id]);
+    } else {
+      const { token, tokenHash } = createGuestToken();
+      await pg.query(
+        `UPDATE portal_entrega_convidados
+         SET token_hash=$2, revoked_at=NULL, expires_at=NOW()+INTERVAL '30 days', invited_at=NOW()
+         WHERE id=$1`,
+        [guest.id, tokenHash]
+      );
+      sendDeliveryInviteEmail({
+        to: guest.email, name: guest.nome,
+        documentTitle: `${delivery.titulo} — V${guest.version_number}`,
+        accessLink: `${portalBaseUrl(req)}/validar/${token}`,
+        senderName: user.name || user.email || 'Equipe CKM Talents'
+      }).catch(e => console.warn('[entregas] Falha ao reemitir link:', e.message));
+    }
+    res.writeHead(302, { Location: `/entregas/${entregaId}` });
+    res.end();
+    return;
+  }
 
   const entregaDetailMatch = url.pathname.match(/^\/entregas\/([0-9a-f-]{36})$/i);
   if (req.method === 'GET' && entregaDetailMatch) {
@@ -3224,6 +3268,9 @@ const server = http.createServer(async (req, res) => {
         <td>${escapeHtml(g.email)}</td>
         <td>${state}</td>
         <td>${g.last_access_at ? escapeHtml(new Date(g.last_access_at).toLocaleString('pt-BR')) : '-'}</td>
+        <td>${g.revoked_at ? 'Revogado' : g.expires_at && new Date(g.expires_at).getTime() <= Date.now() ? 'Expirado' : 'Ativo até ' + escapeHtml(new Date(g.expires_at).toLocaleDateString('pt-BR'))}</td>
+        <td><form method='post' action='/entregas/${entregaId}/convidados/${encodeURIComponent(g.id)}/reemitir' style='display:inline'><button type='submit' class='btn-outline'>Emitir novo link</button></form>
+        ${g.revoked_at ? '' : `<form method='post' action='/entregas/${entregaId}/convidados/${encodeURIComponent(g.id)}/revogar' style='display:inline'><button type='submit' class='btn-outline'>Revogar link</button></form>`}</td>
       </tr>`;
     }).join('');
 
@@ -3262,8 +3309,8 @@ const server = http.createServer(async (req, res) => {
 
       <section>
         <h2>Pessoas responsáveis pela validação — versão atual</h2>
-        <div style='overflow-x:auto'><table><thead><tr><th>Nome</th><th>E-mail</th><th>Situação</th><th>Último acesso</th></tr></thead><tbody>
-          ${guestRows || "<tr><td colspan='4'>Nenhum convidado nesta versão.</td></tr>"}
+        <div style='overflow-x:auto'><table><thead><tr><th>Nome</th><th>E-mail</th><th>Situação</th><th>Último acesso</th><th>Link</th><th>Ações</th></tr></thead><tbody>
+          ${guestRows || "<tr><td colspan='6'>Nenhum convidado nesta versão.</td></tr>"}
         </tbody></table></div>
       </section>
 
@@ -3469,8 +3516,8 @@ const server = http.createServer(async (req, res) => {
         const newGuestId = crypto.randomUUID();
         await client.query(
           `INSERT INTO portal_entrega_convidados
-            (id, entrega_id, version_id, nome, email, can_comment, can_request_changes, can_validate, token_hash, status, invited_at)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'convidado',NOW())`,
+            (id, entrega_id, version_id, nome, email, can_comment, can_request_changes, can_validate, token_hash, status, invited_at, expires_at)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'convidado',NOW(),NOW() + INTERVAL '30 days')`,
           [newGuestId, entregaId, versionId, g.nome, g.email, !!g.can_comment, !!g.can_request_changes, !!g.can_validate, tokenHash]
         );
         invitations.push({ nome:g.nome, email:g.email, token });
