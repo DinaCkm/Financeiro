@@ -177,8 +177,57 @@ async function sendDeliveryInviteEmail({ to, name, documentTitle, accessLink, se
   }
 }
 
+
+async function sendPortalNotificationEmail({ to, subject, title, lines = [], actionLabel, actionLink }) {
+  const transporter = getTransporter();
+  if (!transporter) {
+    console.warn('[email] SMTP não configurado. Aviso do portal não enviado.');
+    return false;
+  }
+
+  const fromEmail = process.env.SMTP_FROM || process.env.SMTP_USER;
+  const fromName = process.env.SMTP_FROM_NAME || 'CKM Talents';
+  const safeLines = (lines || []).map(v => String(v || '')).filter(Boolean);
+  const text = [
+    String(title || subject || 'Aviso do Portal de Entregas'),
+    '',
+    ...safeLines,
+    ...(actionLink ? ['', actionLink] : []),
+  ].join('\n');
+
+  const htmlLines = safeLines
+    .map(line => `<p style="margin:8px 0;line-height:1.5">${line}</p>`)
+    .join('');
+
+  const actionHtml = actionLink
+    ? `<p style="margin:24px 0"><a href="${actionLink}" style="background:#111827;color:#fff;text-decoration:none;padding:12px 18px;border-radius:8px;display:inline-block">${actionLabel || 'Acessar'}</a></p>`
+    : '';
+
+  try {
+    await transporter.sendMail({
+      from: `"${fromName}" <${fromEmail}>`,
+      to,
+      subject,
+      text,
+      html: `
+        <div style="font-family:Arial,sans-serif;max-width:640px;margin:0 auto;color:#1f2937">
+          <h2 style="margin-bottom:14px">${title || subject}</h2>
+          ${htmlLines}
+          ${actionHtml}
+          <p style="color:#6b7280;font-size:12px;margin-top:24px">Mensagem automática do Portal de Entregas e Validações da CKM Talents.</p>
+        </div>
+      `,
+    });
+    return true;
+  } catch (error) {
+    console.warn('[email] Falha ao enviar aviso do portal:', error && error.message ? error.message : error);
+    return false;
+  }
+}
+
 module.exports = {
   sendPasswordResetEmail,
   sendConsultantInviteEmail,
   sendDeliveryInviteEmail,
+  sendPortalNotificationEmail,
 };
