@@ -2152,21 +2152,26 @@ const server = http.createServer(async (req, res) => {
           const client = await pg.connect();
           try {
             await client.query('BEGIN');
-            await client.query(
-              `INSERT INTO portal_entrega_validations
-                (id, entrega_id, version_id, convidado_id, protocol, file_hash, validator_name, validator_email, validator_cpf, declaration_text, validated_at)
-               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,NOW())`,
-              [crypto.randomUUID(), guest.entrega_id, version.id, guest.id, protocol, version.file_hash, guest.nome, guest.email, null, declaration]
+            await client.query('SELECT id FROM portal_entrega_versions WHERE id=$1 FOR UPDATE', [version.id]);
+            const existingValidation = await client.query(
+              'SELECT id FROM portal_entrega_validations WHERE version_id=$1 LIMIT 1',
+              [version.id]
             );
-            await client.query("UPDATE portal_entrega_versions SET status='validated' WHERE id=$1", [version.id]);
-            await client.query("UPDATE portal_entregas SET status='validado' WHERE id=$1", [guest.entrega_id]);
+            if (!existingValidation.rows.length) {
+              await client.query(
+                `INSERT INTO portal_entrega_validations
+                  (id, entrega_id, version_id, convidado_id, protocol, file_hash, validator_name, validator_email, validator_cpf, declaration_text, validated_at)
+                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,NOW())`,
+                [crypto.randomUUID(), guest.entrega_id, version.id, guest.id, protocol, version.file_hash, guest.nome, guest.email, null, declaration]
+              );
+              await client.query("UPDATE portal_entrega_versions SET status='validated' WHERE id=$1", [version.id]);
+              await client.query("UPDATE portal_entregas SET status='validado' WHERE id=$1", [guest.entrega_id]);
+            }
             await client.query('COMMIT');
-            finalProtocol = protocol;
+            if (!existingValidation.rows.length) finalProtocol = protocol;
           } catch (e) {
             await client.query('ROLLBACK');
-            if (!String(e.message || '').includes('duplicate')) {
-              return json(res, 500, { error: 'Não foi possível concluir a validação.' });
-            }
+            return json(res, 500, { error: 'Não foi possível concluir a validação.' });
           } finally {
             client.release();
           }
