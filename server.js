@@ -3232,9 +3232,28 @@ const server = http.createServer(async (req, res) => {
             <div>
               <strong>${escapeHtml(u.name || '-')}</strong>
               <div style='font-size:.82rem;color:#64748b'>${escapeHtml(u.email || '-')}</div>
-              <div style='margin-top:.3rem'>${u.status === 'ativo' ? '<span class="badge badge-green">Ativo</span>' : '<span class="badge badge-amber">Convite pendente</span>'}</div>
+              <div style='margin-top:.3rem'>${
+                u.status === 'ativo'
+                  ? '<span class="badge badge-green">Ativo</span>'
+                  : u.status === 'inativo'
+                    ? '<span class="badge" style="background:#fee2e2;color:#991b1b">Inativo</span>'
+                    : '<span class="badge badge-amber">Convite pendente</span>'
+              }</div>
             </div>
             <div style='font-size:.82rem;color:#64748b'>Último acesso: ${u.lastLoginAt ? escapeHtml(new Date(u.lastLoginAt).toLocaleString('pt-BR')) : '-'}</div>
+          </div>
+          <div style='display:flex;gap:.5rem;flex-wrap:wrap;margin-top:.8rem'>
+            <form method='post' action='/acessos/consultor-status' style='margin:0'>
+              <input type='hidden' name='consultantId' value='${escapeHtml(u.id)}'>
+              <input type='hidden' name='status' value='${u.status === 'ativo' ? 'inativo' : 'ativo'}'>
+              <button type='submit' class='btn-outline'>${u.status === 'ativo' ? 'Inativar acesso' : 'Ativar acesso'}</button>
+            </form>
+            ${u.status === 'pendente' ? `
+              <form method='post' action='/acessos/consultor-reenviar-convite' style='margin:0'>
+                <input type='hidden' name='consultantId' value='${escapeHtml(u.id)}'>
+                <button type='submit' class='btn-outline' ${!isSmtpConfigured() ? "disabled title='SMTP ainda não configurado'" : ''}>Reenviar convite</button>
+              </form>
+            ` : ''}
           </div>
           <form method='post' action='/acessos/consultor-clientes' style='margin-top:1rem'>
             <input type='hidden' name='consultantId' value='${escapeHtml(u.id)}'>
@@ -3266,6 +3285,9 @@ const server = http.createServer(async (req, res) => {
       </section>
       ${criado ? "<div style='margin:1rem 0;padding:.75rem;background:#ecfdf5;color:#065f46;border:1px solid #a7f3d0;border-radius:.5rem'>Consultor cadastrado. O convite para criação da senha será enviado se o SMTP estiver configurado.</div>" : ''}
       ${salvo ? "<div style='margin:1rem 0;padding:.75rem;background:#ecfdf5;color:#065f46;border:1px solid #a7f3d0;border-radius:.5rem'>Clientes autorizados atualizados.</div>" : ''}
+      ${url.searchParams.get('statusSalvo') ? "<div style='margin:1rem 0;padding:.75rem;background:#ecfdf5;color:#065f46;border:1px solid #a7f3d0;border-radius:.5rem'>Situação do consultor atualizada.</div>" : ''}
+      ${url.searchParams.get('convite') === 'reenviado' ? "<div style='margin:1rem 0;padding:.75rem;background:#ecfdf5;color:#065f46;border:1px solid #a7f3d0;border-radius:.5rem'>Convite reenviado com novo link de ativação.</div>" : ''}
+      ${url.searchParams.get('convite') === 'smtp' ? "<div style='margin:1rem 0;padding:.75rem;background:#fff7ed;color:#9a3412;border:1px solid #fdba74;border-radius:.5rem'>Não foi possível reenviar: SMTP_USER e SMTP_PASS ainda estão pendentes.</div>" : ''}
       ${emailTeste === 'ok' ? "<div style='margin:1rem 0;padding:.75rem;background:#ecfdf5;color:#065f46;border:1px solid #a7f3d0;border-radius:.5rem'>E-mail de teste enviado com sucesso.</div>" : ''}
       ${emailTeste === 'erro' ? "<div style='margin:1rem 0;padding:.75rem;background:#fef2f2;color:#991b1b;border:1px solid #fecaca;border-radius:.5rem'>O e-mail não foi enviado. Verifique SMTP_USER e SMTP_PASS no Railway.</div>" : ''}
       ${erro === 'email' ? "<div style='margin:1rem 0;padding:.75rem;background:#fef2f2;color:#991b1b;border:1px solid #fecaca;border-radius:.5rem'>Este e-mail já está cadastrado.</div>" : ''}
@@ -3297,6 +3319,75 @@ const server = http.createServer(async (req, res) => {
     }
     const ok = await sendSmtpTestEmail({ to: email });
     res.writeHead(302, { Location: ok ? '/acessos?emailTeste=ok' : '/acessos?emailTeste=erro' });
+    res.end();
+    return;
+  }
+
+  if (req.method === 'POST' && url.pathname === '/acessos/consultor-status') {
+    if (!isFinancialAdmin(user)) return json(res, 403, { error: 'Acesso não autorizado.' });
+
+    const form = new URLSearchParams(await readBody(req));
+    const consultantId = String(form.get('consultantId') || '').trim();
+    const newStatus = String(form.get('status') || '').trim();
+    if (!['ativo', 'inativo'].includes(newStatus)) {
+      return json(res, 400, { error: 'Situação inválida.' });
+    }
+
+    const consultant = (db.users || []).find(u => u.id === consultantId && isDeliveryConsultant(u));
+    if (!consultant) return json(res, 404, { error: 'Consultor não encontrado.' });
+
+    consultant.status = newStatus;
+    consultant.failedLoginAttempts = 0;
+    consultant.loginBlockedUntil = null;
+    saveDb(db);
+
+    if (newStatus === 'inativo') {
+      for (const [sid, sessionData] of sessions.entries()) {
+        const sessionUserId = typeof sessionData === 'string' ? sessionData : sessionData.userId;
+        if (String(sessionUserId) === String(consultant.id)) sessions.delete(sid);
+      }
+      if (storage.sessionDeleteByUser) {
+        await storage.sessionDeleteByUser(consultant.id)
+          .catch(e => console.warn('[session] Erro ao invalidar sessões do consultor:', e.message));
+      }
+    }
+
+    res.writeHead(302, { Location: '/acessos?statusSalvo=1' });
+    res.end();
+    return;
+  }
+
+  if (req.method === 'POST' && url.pathname === '/acessos/consultor-reenviar-convite') {
+    if (!isFinancialAdmin(user)) return json(res, 403, { error: 'Acesso não autorizado.' });
+
+    if (!isSmtpConfigured()) {
+      res.writeHead(302, { Location: '/acessos?convite=smtp' });
+      res.end();
+      return;
+    }
+
+    const form = new URLSearchParams(await readBody(req));
+    const consultantId = String(form.get('consultantId') || '').trim();
+    const consultant = (db.users || []).find(u => u.id === consultantId && isDeliveryConsultant(u));
+    if (!consultant) return json(res, 404, { error: 'Consultor não encontrado.' });
+    if (consultant.status !== 'pendente') {
+      return json(res, 409, { error: 'O reenvio de convite é destinado apenas a acessos pendentes.' });
+    }
+
+    const { token, tokenHash, expiresAt } = generatePasswordResetToken();
+    consultant.passwordResetTokenHash = tokenHash;
+    consultant.passwordResetExpiresAt = expiresAt;
+    consultant.mustChangePassword = true;
+    saveDb(db);
+
+    const activationLink = `${portalBaseUrl(req)}/reset-password?token=${encodeURIComponent(token)}`;
+    const ok = await sendConsultantInviteEmail({
+      to: consultant.email,
+      name: consultant.name,
+      activationLink,
+    });
+
+    res.writeHead(302, { Location: ok ? '/acessos?convite=reenviado' : '/acessos?convite=smtp' });
     res.end();
     return;
   }
