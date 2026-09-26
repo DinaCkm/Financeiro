@@ -225,9 +225,23 @@ async function sendPortalNotificationEmail({ to, subject, title, lines = [], act
   }
 }
 
+
+async function sendSmtpTestEmail({ to }) {
+  return sendPortalNotificationEmail({
+    to,
+    subject: 'Teste de e-mail — Sistema Financeiro CKM',
+    title: 'Configuração de e-mail funcionando',
+    lines: [
+      'Este é um teste automático do Sistema Financeiro CKM.',
+      'Se você recebeu esta mensagem, a configuração SMTP está ativa e pronta para os avisos do Portal de Entregas e Validações.'
+    ]
+  });
+}
+
 module.exports = {
   sendPasswordResetEmail,
   sendConsultantInviteEmail,
   sendDeliveryInviteEmail,
   sendPortalNotificationEmail,
+  sendSmtpTestEmail,
 };
