@@ -1,5 +1,14 @@
 const nodemailer = require('nodemailer');
 
+function escapeHtml(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 function isSmtpConfigured() {
   return Boolean(process.env.SMTP_USER && process.env.SMTP_PASS);
 }
@@ -46,7 +55,7 @@ async function sendPasswordResetEmail({ to, resetLink }) {
       <h2 style="margin-bottom:12px">Redefinição de senha</h2>
       <p>Recebemos uma solicitação para redefinir sua senha no Sistema Financeiro CKM.</p>
       <p style="margin:28px 0">
-        <a href="${resetLink}" style="background:#111827;color:#fff;text-decoration:none;padding:12px 18px;border-radius:8px;display:inline-block">
+        <a href="${escapeHtml(resetLink)}" style="background:#111827;color:#fff;text-decoration:none;padding:12px 18px;border-radius:8px;display:inline-block">
           Criar nova senha
         </a>
       </p>
@@ -98,11 +107,11 @@ async function sendConsultantInviteEmail({ to, name, activationLink }) {
   const html = `
     <div style="font-family:Arial,sans-serif;max-width:620px;margin:0 auto;color:#1f2937">
       <h2 style="margin-bottom:12px">Portal de Entregas e Validações</h2>
-      <p>${greeting}</p>
+      <p>${escapeHtml(greeting)}</p>
       <p>Você recebeu acesso ao Portal de Entregas e Validações da CKM Talents.</p>
       <p>Seu perfil é restrito a esse módulo e não permite acesso às informações financeiras da CKM.</p>
       <p style="margin:28px 0">
-        <a href="${activationLink}" style="background:#111827;color:#fff;text-decoration:none;padding:12px 18px;border-radius:8px;display:inline-block">
+        <a href="${escapeHtml(activationLink)}" style="background:#111827;color:#fff;text-decoration:none;padding:12px 18px;border-radius:8px;display:inline-block">
           Cadastrar minha senha
         </a>
       </p>
@@ -148,21 +157,21 @@ async function sendDeliveryInviteEmail({ to, name, documentTitle, accessLink, se
     '',
     accessLink,
     '',
-    'Este link é individual. Não encaminhe para outras pessoas.',
+    'Este link é individual e expira em 30 dias. Não encaminhe para outras pessoas.',
   ].join('\n');
 
   const html = `
     <div style="font-family:Arial,sans-serif;max-width:640px;margin:0 auto;color:#1f2937">
       <h2 style="margin-bottom:12px">Documento para análise</h2>
-      <p>${greeting}</p>
-      <p><strong>${sender}</strong> disponibilizou o documento <strong>${documentTitle}</strong> para sua análise.</p>
+      <p>${escapeHtml(greeting)}</p>
+      <p><strong>${escapeHtml(sender)}</strong> disponibilizou o documento <strong>${escapeHtml(documentTitle)}</strong> para sua análise.</p>
       <p>No portal você poderá ler o documento, conversar com a CKM, solicitar ajustes ou validar a entrega.</p>
       <p style="margin:28px 0">
-        <a href="${accessLink}" style="background:#111827;color:#fff;text-decoration:none;padding:12px 18px;border-radius:8px;display:inline-block">
+        <a href="${escapeHtml(accessLink)}" style="background:#111827;color:#fff;text-decoration:none;padding:12px 18px;border-radius:8px;display:inline-block">
           Acessar documento
         </a>
       </p>
-      <p style="color:#6b7280;font-size:13px">Este link é individual e dá acesso somente a esta entrega. Não o encaminhe.</p>
+      <p style="color:#6b7280;font-size:13px">Este link é individual, expira em 30 dias e dá acesso somente a esta entrega. Não o encaminhe.</p>
     </div>
   `;
 
@@ -200,11 +209,11 @@ async function sendPortalNotificationEmail({ to, subject, title, lines = [], act
   ].join('\n');
 
   const htmlLines = safeLines
-    .map(line => `<p style="margin:8px 0;line-height:1.5">${line}</p>`)
+    .map(line => `<p style="margin:8px 0;line-height:1.5">${escapeHtml(line)}</p>`)
     .join('');
 
   const actionHtml = actionLink
-    ? `<p style="margin:24px 0"><a href="${actionLink}" style="background:#111827;color:#fff;text-decoration:none;padding:12px 18px;border-radius:8px;display:inline-block">${actionLabel || 'Acessar'}</a></p>`
+    ? `<p style="margin:24px 0"><a href="${escapeHtml(actionLink)}" style="background:#111827;color:#fff;text-decoration:none;padding:12px 18px;border-radius:8px;display:inline-block">${escapeHtml(actionLabel || 'Acessar')}</a></p>`
     : '';
 
   try {
@@ -215,7 +224,7 @@ async function sendPortalNotificationEmail({ to, subject, title, lines = [], act
       text,
       html: `
         <div style="font-family:Arial,sans-serif;max-width:640px;margin:0 auto;color:#1f2937">
-          <h2 style="margin-bottom:14px">${title || subject}</h2>
+          <h2 style="margin-bottom:14px">${escapeHtml(title || subject)}</h2>
           ${htmlLines}
           ${actionHtml}
           <p style="color:#6b7280;font-size:12px;margin-top:24px">Mensagem automática do Portal de Entregas e Validações da CKM Talents.</p>
