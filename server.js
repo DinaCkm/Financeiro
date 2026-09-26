@@ -1927,7 +1927,7 @@ const server = http.createServer(async (req, res) => {
     try {
       guestResult = await pg.query(
         `SELECT g.*, e.titulo, e.descricao, e.status as entrega_status, e.current_version,
-                e.validation_mode, c.nome as cliente_nome, c.nome_curto as cliente_nome_curto,
+                e.validation_mode, e.responsavel_user_id, c.nome as cliente_nome, c.nome_curto as cliente_nome_curto,
                 p.nome as projeto_nome, ct.numero as contrato_numero
            FROM portal_entrega_convidados g
            JOIN portal_entregas e ON e.id=g.entrega_id
@@ -1993,6 +1993,17 @@ const server = http.createServer(async (req, res) => {
          VALUES ($1,$2,$3,'cliente',$4,$5,$6,$7,NOW())`,
         [crypto.randomUUID(), guest.entrega_id, version.id, guest.id, guest.nome, guest.email, message]
       );
+      notifyPortalResponsible(
+        db,
+        req,
+        { id: guest.entrega_id, responsavel_user_id: guest.responsavel_user_id },
+        `Nova mensagem — ${guest.titulo}`,
+        'Nova mensagem do cliente',
+        [
+          `${guest.nome} enviou uma mensagem sobre "${guest.titulo}" — V${version.version_number}.`,
+          message.length > 350 ? message.slice(0, 350) + '…' : message
+        ]
+      );
       res.writeHead(302, { Location: `/validar/${token}#conversa` });
       res.end();
       return;
@@ -2049,6 +2060,35 @@ const server = http.createServer(async (req, res) => {
           client.release();
         }
 
+        notifyPortalResponsible(
+          db,
+          req,
+          { id: guest.entrega_id, responsavel_user_id: guest.responsavel_user_id },
+          `Ajustes solicitados — ${guest.titulo}`,
+          'Cliente solicitou ajustes',
+          [
+            `${guest.nome} solicitou ajustes na versão V${version.version_number} de "${guest.titulo}".`,
+            decisionText.length > 500 ? decisionText.slice(0, 500) + '…' : decisionText
+          ]
+        );
+
+        const otherGuests = (await pg.query(
+          `SELECT email, nome FROM portal_entrega_convidados
+            WHERE entrega_id=$1 AND version_id=$2 AND id<>$3`,
+          [guest.entrega_id, version.id, guest.id]
+        )).rows;
+        for (const other of otherGuests) {
+          sendPortalNotificationEmail({
+            to: other.email,
+            subject: `Ajustes solicitados — ${guest.titulo}`,
+            title: 'A análise desta versão foi interrompida para ajustes',
+            lines: [
+              `${guest.nome} solicitou ajustes na versão V${version.version_number} de "${guest.titulo}".`,
+              'Aguarde a CKM disponibilizar uma nova versão para continuar a análise.'
+            ]
+          }).catch(e => console.warn('[email] Aviso aos demais validadores não enviado:', e && e.message ? e.message : e));
+        }
+
         res.writeHead(302, { Location: `/validar/${token}?decisao=ajustes` });
         res.end();
         return;
@@ -2071,7 +2111,8 @@ const server = http.createServer(async (req, res) => {
             LIMIT 1`,
           [version.id, guest.id]
         );
-        if (!existing.rows.length) {
+        const isNewApproval = !existing.rows.length;
+        if (isNewApproval) {
           await pg.query(
             `INSERT INTO portal_entrega_decisions
               (id, entrega_id, version_id, convidado_id, decision, decision_text, created_at)
@@ -2094,6 +2135,7 @@ const server = http.createServer(async (req, res) => {
           [version.id]
         )).rows[0].c || 0);
 
+        let finalProtocol = null;
         if (totalRequired > 0 && totalApproved >= totalRequired) {
           const protocol = `CKM-DOC-${new Date().getUTCFullYear()}-${crypto.randomUUID().split('-')[0].toUpperCase()}`;
           const declaration = 'Todos os validadores indicados para esta entrega registraram concordância com esta versão do documento.';
@@ -2109,6 +2151,7 @@ const server = http.createServer(async (req, res) => {
             await client.query("UPDATE portal_entrega_versions SET status='validated' WHERE id=$1", [version.id]);
             await client.query("UPDATE portal_entregas SET status='validado' WHERE id=$1", [guest.entrega_id]);
             await client.query('COMMIT');
+            finalProtocol = protocol;
           } catch (e) {
             await client.query('ROLLBACK');
             if (!String(e.message || '').includes('duplicate')) {
@@ -2117,6 +2160,49 @@ const server = http.createServer(async (req, res) => {
           } finally {
             client.release();
           }
+        }
+
+        if (finalProtocol) {
+          notifyPortalResponsible(
+            db,
+            req,
+            { id: guest.entrega_id, responsavel_user_id: guest.responsavel_user_id },
+            `Entrega validada — ${guest.titulo}`,
+            'Entrega concluída e validada',
+            [
+              `Todos os validadores registraram concordância com a versão V${version.version_number} de "${guest.titulo}".`,
+              `Protocolo: ${finalProtocol}`
+            ]
+          );
+
+          const allGuests = (await pg.query(
+            `SELECT DISTINCT email, nome FROM portal_entrega_convidados
+              WHERE entrega_id=$1 AND version_id=$2`,
+            [guest.entrega_id, version.id]
+          )).rows;
+          for (const recipient of allGuests) {
+            sendPortalNotificationEmail({
+              to: recipient.email,
+              subject: `Entrega validada — ${guest.titulo}`,
+              title: 'Entrega concluída',
+              lines: [
+                `A versão V${version.version_number} de "${guest.titulo}" foi validada por todos os responsáveis indicados.`,
+                `Protocolo: ${finalProtocol}`
+              ]
+            }).catch(e => console.warn('[email] Confirmação final ao cliente não enviada:', e && e.message ? e.message : e));
+          }
+        } else if (isNewApproval) {
+          notifyPortalResponsible(
+            db,
+            req,
+            { id: guest.entrega_id, responsavel_user_id: guest.responsavel_user_id },
+            `Concordância registrada — ${guest.titulo}`,
+            'Um validador registrou concordância',
+            [
+              `${guest.nome} registrou "De acordo" para a versão V${version.version_number} de "${guest.titulo}".`,
+              `Progresso: ${totalApproved} de ${totalRequired} validação(ões) necessária(s).`
+            ]
+          );
         }
 
         res.writeHead(302, { Location: `/validar/${token}?decisao=validado` });
@@ -2929,6 +3015,25 @@ const server = http.createServer(async (req, res) => {
        VALUES ($1,$2,$3,'ckm',$4,$5,$6,$7,NOW())`,
       [crypto.randomUUID(), entregaId, v.id, user.id, user.name || user.email || 'CKM', user.email || null, message]
     );
+
+    const recipients = (await pg.query(
+      `SELECT DISTINCT email, nome FROM portal_entrega_convidados
+        WHERE entrega_id=$1 AND version_id=$2`,
+      [entregaId, v.id]
+    )).rows;
+    for (const recipient of recipients) {
+      sendPortalNotificationEmail({
+        to: recipient.email,
+        subject: `Nova mensagem da CKM — ${entrega.titulo}`,
+        title: 'A CKM respondeu na conversa da entrega',
+        lines: [
+          `Há uma nova mensagem sobre "${entrega.titulo}".`,
+          message.length > 350 ? message.slice(0, 350) + '…' : message,
+          'Use o link individual recebido anteriormente para abrir a conversa.'
+        ]
+      }).catch(e => console.warn('[email] Aviso de resposta ao cliente não enviado:', e && e.message ? e.message : e));
+    }
+
     res.writeHead(302, { Location: `/entregas/${entregaId}#conversa` });
     res.end();
     return;
