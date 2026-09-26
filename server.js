@@ -942,6 +942,356 @@ function conciliarPlanilha(allNewEntries, db) {
 }
 
 function requireAuth(req, res, db) {
+
+  // ============================================================
+  // PORTAL EXTERNO DE VALIDAÇÃO — acesso somente por link individual
+  // ============================================================
+  const validarMatch = url.pathname.match(/^\/validar\/([a-f0-9]{64})(?:\/(pdf|mensagem|decisao))?$/i);
+  if (validarMatch) {
+    const token = validarMatch[1];
+    const action = validarMatch[2] || '';
+    const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
+    const pg = storage.getPool ? storage.getPool() : null;
+    if (!pg) return json(res, 503, { error: 'Serviço temporariamente indisponível.' });
+
+    let guestResult;
+    try {
+      guestResult = await pg.query(
+        `SELECT g.*, e.titulo, e.descricao, e.status as entrega_status, e.current_version,
+                e.validation_mode, c.nome as cliente_nome, c.nome_curto as cliente_nome_curto,
+                p.nome as projeto_nome, ct.numero as contrato_numero
+           FROM portal_entrega_convidados g
+           JOIN portal_entregas e ON e.id=g.entrega_id
+           LEFT JOIN clientes c ON c.id=e.cliente_id
+           LEFT JOIN projetos p ON p.id=e.projeto_id
+           LEFT JOIN contratos ct ON ct.id=e.contrato_id
+          WHERE g.token_hash=$1
+          LIMIT 1`,
+        [tokenHash]
+      );
+    } catch (e) {
+      return json(res, 500, { error: 'Não foi possível abrir esta entrega.' });
+    }
+
+    if (!guestResult.rows.length) {
+      res.writeHead(404, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end('<!doctype html><html lang="pt-BR"><meta charset="utf-8"><title>Link inválido</title><body style="font-family:Arial;padding:40px"><h2>Link inválido ou não disponível.</h2><p>Solicite um novo acesso à equipe CKM.</p></body></html>');
+      return;
+    }
+
+    const guest = guestResult.rows[0];
+    const versionResult = await pg.query(
+      `SELECT * FROM portal_entrega_versions
+        WHERE entrega_id=$1 AND version_number=$2
+        LIMIT 1`,
+      [guest.entrega_id, Number(guest.current_version || 1)]
+    );
+    if (!versionResult.rows.length) return json(res, 404, { error: 'Versão do documento não encontrada.' });
+    const version = versionResult.rows[0];
+
+    if (req.method === 'GET' && action === 'pdf') {
+      res.writeHead(200, {
+        'Content-Type': 'application/pdf',
+        'Content-Disposition': `inline; filename="${String(version.file_name || 'documento.pdf').replace(/"/g, '')}"`,
+        'Content-Length': Number(version.file_size || version.file_data.length || 0),
+        'Cache-Control': 'private, no-store',
+        'X-Content-Type-Options': 'nosniff'
+      });
+      res.end(version.file_data);
+      return;
+    }
+
+    if (req.method === 'POST' && action === 'mensagem') {
+      if (!guest.can_comment) return json(res, 403, { error: 'Você não possui permissão para conversar nesta entrega.' });
+      const form = new URLSearchParams(await readBody(req));
+      const message = String(form.get('message') || '').trim();
+      if (!message) {
+        res.writeHead(302, { Location: `/validar/${token}?erro=mensagem` });
+        res.end();
+        return;
+      }
+      if (message.length > 5000) {
+        res.writeHead(302, { Location: `/validar/${token}?erro=mensagem_longa` });
+        res.end();
+        return;
+      }
+
+      await pg.query(
+        `INSERT INTO portal_entrega_messages
+          (id, entrega_id, version_id, actor_type, convidado_id, actor_name, actor_email, message, created_at)
+         VALUES ($1,$2,$3,'cliente',$4,$5,$6,$7,NOW())`,
+        [crypto.randomUUID(), guest.entrega_id, version.id, guest.id, guest.nome, guest.email, message]
+      );
+      res.writeHead(302, { Location: `/validar/${token}#conversa` });
+      res.end();
+      return;
+    }
+
+    if (req.method === 'POST' && action === 'decisao') {
+      const form = new URLSearchParams(await readBody(req));
+      const decision = String(form.get('decision') || '').trim();
+      const decisionText = String(form.get('decisionText') || '').trim();
+      const cpf = String(form.get('cpf') || '').replace(/\D/g, '');
+
+      if (decision === 'changes_requested') {
+        if (!guest.can_request_changes) return json(res, 403, { error: 'Você não possui permissão para solicitar ajustes.' });
+        if (!decisionText) {
+          res.writeHead(302, { Location: `/validar/${token}?erro=justificativa` });
+          res.end();
+          return;
+        }
+        if (version.status === 'validated') {
+          return json(res, 409, { error: 'Esta versão já foi validada e não pode ser alterada.' });
+        }
+
+        const client = await pg.connect();
+        try {
+          await client.query('BEGIN');
+          await client.query(
+            `INSERT INTO portal_entrega_decisions
+              (id, entrega_id, version_id, convidado_id, decision, decision_text, created_at)
+             VALUES ($1,$2,$3,$4,'changes_requested',$5,NOW())`,
+            [crypto.randomUUID(), guest.entrega_id, version.id, guest.id, decisionText]
+          );
+          await client.query(
+            `INSERT INTO portal_entrega_messages
+              (id, entrega_id, version_id, actor_type, convidado_id, actor_name, actor_email, message, created_at)
+             VALUES ($1,$2,$3,'cliente',$4,$5,$6,$7,NOW())`,
+            [crypto.randomUUID(), guest.entrega_id, version.id, guest.id, guest.nome, guest.email, `AJUSTES SOLICITADOS: ${decisionText}`]
+          );
+          await client.query(
+            "UPDATE portal_entrega_versions SET status='ajustes_solicitados' WHERE id=$1",
+            [version.id]
+          );
+          await client.query(
+            "UPDATE portal_entregas SET status='ajustes_solicitados' WHERE id=$1",
+            [guest.entrega_id]
+          );
+          await client.query('COMMIT');
+        } catch (e) {
+          await client.query('ROLLBACK');
+          return json(res, 500, { error: 'Não foi possível registrar a solicitação de ajustes.' });
+        } finally {
+          client.release();
+        }
+
+        res.writeHead(302, { Location: `/validar/${token}?decisao=ajustes` });
+        res.end();
+        return;
+      }
+
+      if (decision === 'validated') {
+        if (!guest.can_validate) return json(res, 403, { error: 'Você não possui permissão para validar esta entrega.' });
+        if (version.status === 'ajustes_solicitados' || guest.entrega_status === 'ajustes_solicitados') {
+          return json(res, 409, { error: 'Esta versão possui ajustes solicitados. Aguarde a CKM enviar uma nova versão.' });
+        }
+        if (cpf && (cpf.length !== 11)) {
+          res.writeHead(302, { Location: `/validar/${token}?erro=cpf` });
+          res.end();
+          return;
+        }
+
+        const existing = await pg.query(
+          `SELECT id FROM portal_entrega_decisions
+            WHERE version_id=$1 AND convidado_id=$2 AND decision='validated'
+            LIMIT 1`,
+          [version.id, guest.id]
+        );
+        if (!existing.rows.length) {
+          await pg.query(
+            `INSERT INTO portal_entrega_decisions
+              (id, entrega_id, version_id, convidado_id, decision, decision_text, created_at)
+             VALUES ($1,$2,$3,$4,'validated',$5,NOW())`,
+            [crypto.randomUUID(), guest.entrega_id, version.id, guest.id, 'De acordo e validar entrega']
+          );
+        }
+
+        const totalRequired = Number((await pg.query(
+          'SELECT COUNT(*)::int AS c FROM portal_entrega_convidados WHERE entrega_id=$1 AND can_validate=true',
+          [guest.entrega_id]
+        )).rows[0].c || 0);
+        const totalApproved = Number((await pg.query(
+          `SELECT COUNT(DISTINCT convidado_id)::int AS c
+             FROM portal_entrega_decisions
+            WHERE version_id=$1 AND decision='validated'`,
+          [version.id]
+        )).rows[0].c || 0);
+
+        if (totalRequired > 0 && totalApproved >= totalRequired) {
+          const protocol = `CKM-DOC-${new Date().getUTCFullYear()}-${crypto.randomUUID().split('-')[0].toUpperCase()}`;
+          const declaration = 'Todos os validadores indicados para esta entrega registraram concordância com esta versão do documento.';
+          const client = await pg.connect();
+          try {
+            await client.query('BEGIN');
+            await client.query(
+              `INSERT INTO portal_entrega_validations
+                (id, entrega_id, version_id, convidado_id, protocol, file_hash, validator_name, validator_email, validator_cpf, declaration_text, validated_at)
+               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,NOW())`,
+              [crypto.randomUUID(), guest.entrega_id, version.id, guest.id, protocol, version.file_hash, guest.nome, guest.email, cpf || null, declaration]
+            );
+            await client.query("UPDATE portal_entrega_versions SET status='validated' WHERE id=$1", [version.id]);
+            await client.query("UPDATE portal_entregas SET status='validado' WHERE id=$1", [guest.entrega_id]);
+            await client.query('COMMIT');
+          } catch (e) {
+            await client.query('ROLLBACK');
+            if (!String(e.message || '').includes('duplicate')) {
+              return json(res, 500, { error: 'Não foi possível concluir a validação.' });
+            }
+          } finally {
+            client.release();
+          }
+        }
+
+        res.writeHead(302, { Location: `/validar/${token}?decisao=validado` });
+        res.end();
+        return;
+      }
+
+      return json(res, 400, { error: 'Decisão inválida.' });
+    }
+
+    if (req.method === 'GET' && !action) {
+      await pg.query(
+        `UPDATE portal_entrega_convidados
+            SET first_access_at=COALESCE(first_access_at,NOW()), last_access_at=NOW(), status='acessou'
+          WHERE id=$1`,
+        [guest.id]
+      );
+
+      const messages = (await pg.query(
+        `SELECT * FROM portal_entrega_messages
+          WHERE version_id=$1
+          ORDER BY created_at ASC`,
+        [version.id]
+      )).rows;
+
+      const decisions = (await pg.query(
+        `SELECT d.*, g.nome, g.email
+           FROM portal_entrega_decisions d
+           LEFT JOIN portal_entrega_convidados g ON g.id=d.convidado_id
+          WHERE d.version_id=$1
+          ORDER BY d.created_at ASC`,
+        [version.id]
+      )).rows;
+
+      const validation = (await pg.query(
+        `SELECT * FROM portal_entrega_validations
+          WHERE version_id=$1
+          ORDER BY validated_at DESC
+          LIMIT 1`,
+        [version.id]
+      )).rows[0] || null;
+
+      const approvedIds = new Set(decisions.filter(d => d.decision === 'validated').map(d => d.convidado_id));
+      const alreadyApproved = approvedIds.has(guest.id);
+      const erro = url.searchParams.get('erro');
+      const decisao = url.searchParams.get('decisao');
+
+      const messageHtml = messages.map(m => `
+        <div style='padding:.75rem;border:1px solid #e2e8f0;border-radius:10px;margin:.5rem 0;background:${m.actor_type === 'cliente' ? '#f8fafc' : '#f0fdf4'}'>
+          <div style='font-size:.76rem;color:#64748b;margin-bottom:.25rem'><strong>${escapeHtml(m.actor_name)}</strong> · ${escapeHtml(new Date(m.created_at).toLocaleString('pt-BR'))}</div>
+          <div style='white-space:pre-wrap'>${escapeHtml(m.message)}</div>
+        </div>
+      `).join('');
+
+      const statusText = validation
+        ? `Validado / Entregue — Protocolo ${escapeHtml(validation.protocol)}`
+        : version.status === 'ajustes_solicitados'
+          ? 'Ajustes solicitados'
+          : alreadyApproved
+            ? 'Sua validação foi registrada. Aguardando os demais validadores.'
+            : 'Aguardando análise';
+
+      const html = `<!doctype html><html lang='pt-BR'><head>
+        <meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>
+        <title>${escapeHtml(guest.titulo)} — CKM Talents</title>
+        <style>
+          *{box-sizing:border-box} body{margin:0;font-family:Inter,Arial,sans-serif;background:#f8fafc;color:#1e293b}
+          header{background:#111827;color:#fff;padding:16px 24px} header strong{font-size:18px}
+          .wrap{max-width:1500px;margin:0 auto;padding:20px}.grid{display:grid;grid-template-columns:minmax(0,1.5fr) minmax(340px,.7fr);gap:18px}
+          .card{background:#fff;border:1px solid #e2e8f0;border-radius:14px;padding:16px}.pdf{width:100%;height:78vh;border:0;border-radius:10px;background:#e2e8f0}
+          .badge{display:inline-block;padding:6px 10px;border-radius:999px;background:#e0f2fe;color:#075985;font-size:12px;font-weight:700}
+          label{display:block;font-size:13px;font-weight:700;margin:10px 0 5px}textarea,input{width:100%;padding:10px;border:1px solid #cbd5e1;border-radius:8px;font:inherit}
+          button{border:0;border-radius:9px;padding:10px 14px;font-weight:700;cursor:pointer}.primary{background:#0f766e;color:#fff}.warn{background:#fff7ed;color:#9a3412;border:1px solid #fdba74}
+          .success{background:#ecfdf5;color:#065f46;border:1px solid #a7f3d0;padding:10px;border-radius:8px;margin-bottom:10px}.error{background:#fef2f2;color:#991b1b;border:1px solid #fecaca;padding:10px;border-radius:8px;margin-bottom:10px}
+          @media(max-width:900px){.grid{grid-template-columns:1fr}.pdf{height:60vh}}
+        </style></head><body>
+        <header><strong>CKM Talents — Entregas e Validações</strong></header>
+        <div class='wrap'>
+          <div style='margin-bottom:14px'>
+            <h1 style='margin:0 0 6px;font-size:24px'>${escapeHtml(guest.titulo)}</h1>
+            <div class='badge'>${statusText}</div>
+          </div>
+          ${decisao === 'ajustes' ? "<div class='success'>Sua solicitação de ajustes foi registrada.</div>" : ''}
+          ${decisao === 'validado' ? "<div class='success'>Sua concordância foi registrada.</div>" : ''}
+          ${erro ? "<div class='error'>Revise os dados informados e tente novamente.</div>" : ''}
+          <div class='grid'>
+            <div class='card'>
+              <iframe class='pdf' src='/validar/${token}/pdf'></iframe>
+              <div style='margin-top:10px'><a href='/validar/${token}/pdf' target='_blank'>Abrir PDF em nova aba</a></div>
+            </div>
+            <div>
+              <div class='card'>
+                <div style='font-size:12px;color:#64748b'>Documento</div><strong>${escapeHtml(guest.titulo)}</strong>
+                <p style='line-height:1.55'>${escapeHtml(guest.descricao)}</p>
+                <div style='font-size:13px;line-height:1.7'>
+                  <strong>Cliente:</strong> ${escapeHtml(guest.cliente_nome_curto || guest.cliente_nome || '-')}<br>
+                  <strong>Projeto:</strong> ${escapeHtml(guest.projeto_nome || '-')}<br>
+                  <strong>Contrato:</strong> ${escapeHtml(guest.contrato_numero || '-')}<br>
+                  <strong>Versão:</strong> V${Number(version.version_number)}
+                </div>
+              </div>
+              <div class='card' id='conversa' style='margin-top:14px'>
+                <h3 style='margin-top:0'>Conversa</h3>
+                <div style='max-height:330px;overflow:auto'>${messageHtml || "<p style='color:#64748b;font-size:13px'>Nenhuma mensagem ainda.</p>"}</div>
+                ${guest.can_comment && !validation ? `
+                  <form method='post' action='/validar/${token}/mensagem'>
+                    <label>Escrever mensagem</label>
+                    <textarea name='message' rows='3' maxlength='5000' required></textarea>
+                    <button class='primary' type='submit' style='margin-top:8px'>Enviar mensagem</button>
+                  </form>` : ''}
+              </div>
+              <div class='card' style='margin-top:14px'>
+                <h3 style='margin-top:0'>Decisão</h3>
+                ${validation ? `
+                  <div class='success'><strong>Entrega validada.</strong><br>Protocolo: ${escapeHtml(validation.protocol)}<br>Data: ${escapeHtml(new Date(validation.validated_at).toLocaleString('pt-BR'))}</div>
+                ` : version.status === 'ajustes_solicitados' ? `
+                  <div class='error'>Esta versão possui ajustes solicitados. Aguarde a CKM enviar uma nova versão.</div>
+                ` : `
+                  ${guest.can_request_changes ? `
+                    <form method='post' action='/validar/${token}/decisao' style='margin-bottom:14px'>
+                      <input type='hidden' name='decision' value='changes_requested'>
+                      <label>Se precisar de alterações, descreva exatamente o que deve ser ajustado</label>
+                      <textarea name='decisionText' rows='3' required></textarea>
+                      <button class='warn' type='submit' style='margin-top:8px'>Solicitar ajustes</button>
+                    </form>` : ''}
+                  ${guest.can_validate ? (alreadyApproved ? `
+                    <div class='success'>Você já registrou sua concordância com esta versão. A entrega será concluída quando todos os validadores indicados tiverem concordado.</div>
+                  ` : `
+                    <form method='post' action='/validar/${token}/decisao'>
+                      <input type='hidden' name='decision' value='validated'>
+                      <p style='font-size:13px;line-height:1.5'>Ao confirmar, você declara estar de acordo com a versão V${Number(version.version_number)} deste documento.</p>
+                      <label>CPF para identificação do registro (opcional nesta fase)</label>
+                      <input name='cpf' inputmode='numeric' maxlength='14' placeholder='000.000.000-00'>
+                      <button class='primary' type='submit' style='margin-top:10px'>De acordo e validar entrega</button>
+                    </form>`) : ''}
+                `}
+              </div>
+            </div>
+          </div>
+        </div></body></html>`;
+
+      res.writeHead(200, {
+        'Content-Type': 'text/html; charset=utf-8',
+        'Cache-Control': 'private, no-store',
+        'X-Frame-Options': 'SAMEORIGIN',
+        'Referrer-Policy': 'no-referrer'
+      });
+      res.end(html);
+      return;
+    }
+  }
+
   const user = currentUser(req, db);
   if (!user) {
     json(res, 401, { error: 'Não autenticado' });
