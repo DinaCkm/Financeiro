@@ -5,6 +5,7 @@ const crypto = require('crypto');
 const os = require('os');
 const { spawnSync } = require('child_process');
 const { createStorage } = require('./storage');
+const { handleMyDocuments, getSessionEmail } = require('./portal-my-documents');
 const storage = createStorage({ dbPath: path.join(__dirname, 'data', 'db.json'), databaseUrl: process.env.DATABASE_URL });
 
 const PORT = process.env.PORT || 3000;
@@ -1936,13 +1937,26 @@ const server = http.createServer(async (req, res) => {
   // ============================================================
   // PORTAL EXTERNO DE VALIDAÇÃO — acesso somente por link individual
   // ============================================================
-  const validarMatch = url.pathname.match(/^\/validar\/([a-f0-9]{64})(?:\/(pdf|mensagem|decisao))?$/i);
-  if (validarMatch) {
-    const token = validarMatch[1];
-    const action = validarMatch[2] || '';
-    const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
+  if (url.pathname.startsWith('/meus-documentos')) {
     const pg = storage.getPool ? storage.getPool() : null;
     if (!pg) return json(res, 503, { error: 'Serviço temporariamente indisponível.' });
+    if (await handleMyDocuments(req, res, url, pg)) return;
+  }
+  const validarMatch = url.pathname.match(/^\/validar\/([a-f0-9]{64})(?:\/(pdf|mensagem|decisao))?$/i);
+  const sessionDocumentMatch = url.pathname.match(/^\/meus-documentos\/documento\/([0-9a-f-]{36})(?:\/(pdf|mensagem|decisao))?$/i);
+  if (validarMatch || sessionDocumentMatch) {
+    const token = validarMatch ? validarMatch[1] : null;
+    const action = (validarMatch || sessionDocumentMatch)[2] || '';
+    const accessPath = validarMatch ? `/validar/${token}` : `/meus-documentos/documento/${sessionDocumentMatch[1]}`;
+    const tokenHash = token ? crypto.createHash('sha256').update(token).digest('hex') : null;
+    const pg = storage.getPool ? storage.getPool() : null;
+    if (!pg) return json(res, 503, { error: 'Serviço temporariamente indisponível.' });
+    const sessionEmail = await getSessionEmail(pg, req);
+    if (sessionDocumentMatch && !sessionEmail) {
+      res.writeHead(303, { Location: '/meus-documentos', 'Cache-Control': 'private, no-store' });
+      res.end();
+      return;
+    }
 
     let guestResult;
     try {
@@ -1955,9 +1969,9 @@ const server = http.createServer(async (req, res) => {
            LEFT JOIN clientes c ON c.id=e.cliente_id
            LEFT JOIN projetos p ON p.id=e.projeto_id
            LEFT JOIN contratos ct ON ct.id=e.contrato_id
-          WHERE g.token_hash=$1
+          WHERE ${validarMatch ? 'g.token_hash=$1' : 'g.id=$1 AND lower(trim(g.email))=$2 AND g.revoked_at IS NULL'}
           LIMIT 1`,
-        [tokenHash]
+        validarMatch ? [tokenHash] : [sessionDocumentMatch[1], sessionEmail]
       );
     } catch (e) {
       return json(res, 500, { error: 'Não foi possível abrir esta entrega.' });
@@ -1970,7 +1984,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     const guest = guestResult.rows[0];
-    if (guest.revoked_at || !guest.expires_at || new Date(guest.expires_at).getTime() <= Date.now()) {
+    if (guest.revoked_at || (validarMatch && (!guest.expires_at || new Date(guest.expires_at).getTime() <= Date.now()))) {
       res.writeHead(403, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'private, no-store' });
       res.end('<!doctype html><html lang="pt-BR"><meta charset="utf-8"><title>Link indisponível</title><body style="font-family:Arial;padding:40px"><h2>Este link expirou ou foi revogado.</h2><p>Solicite um novo acesso à equipe CKM.</p></body></html>');
       return;
@@ -2013,12 +2027,12 @@ const server = http.createServer(async (req, res) => {
       const form = new URLSearchParams(await readBody(req));
       const message = String(form.get('message') || '').trim();
       if (!message) {
-        res.writeHead(302, { Location: `/validar/${token}?erro=mensagem` });
+        res.writeHead(302, { Location: `${accessPath}?erro=mensagem` });
         res.end();
         return;
       }
       if (message.length > 5000) {
-        res.writeHead(302, { Location: `/validar/${token}?erro=mensagem_longa` });
+        res.writeHead(302, { Location: `${accessPath}?erro=mensagem_longa` });
         res.end();
         return;
       }
@@ -2040,7 +2054,7 @@ const server = http.createServer(async (req, res) => {
           message.length > 350 ? message.slice(0, 350) + '…' : message
         ]
       );
-      res.writeHead(302, { Location: `/validar/${token}#conversa` });
+      res.writeHead(302, { Location: `${accessPath}#conversa` });
       res.end();
       return;
     }
@@ -2056,7 +2070,7 @@ const server = http.createServer(async (req, res) => {
       if (decision === 'changes_requested') {
         if (!guest.can_request_changes) return json(res, 403, { error: 'Você não possui permissão para solicitar ajustes.' });
         if (!decisionText) {
-          res.writeHead(302, { Location: `/validar/${token}?erro=justificativa` });
+          res.writeHead(302, { Location: `${accessPath}?erro=justificativa` });
           res.end();
           return;
         }
@@ -2125,7 +2139,7 @@ const server = http.createServer(async (req, res) => {
           }).catch(e => console.warn('[email] Aviso aos demais validadores não enviado:', e && e.message ? e.message : e));
         }
 
-        res.writeHead(302, { Location: `/validar/${token}?decisao=ajustes` });
+        res.writeHead(302, { Location: `${accessPath}?decisao=ajustes` });
         res.end();
         return;
       }
@@ -2243,7 +2257,7 @@ const server = http.createServer(async (req, res) => {
           );
         }
 
-        res.writeHead(302, { Location: `/validar/${token}?decisao=validado` });
+        res.writeHead(302, { Location: `${accessPath}?decisao=validado` });
         res.end();
         return;
       }
@@ -2320,6 +2334,11 @@ const server = http.createServer(async (req, res) => {
         <header><strong>CKM Talents — Entregas e Validações</strong></header>
         <div class='wrap'>
           <div style='margin-bottom:14px'>
+            ${validarMatch && sessionEmail !== String(guest.email || '').trim().toLowerCase() ? `
+              <form method='post' action='/meus-documentos/iniciar' style='display:inline'>
+                <input type='hidden' name='convite' value='${token}'>
+                <button type='submit' class='primary'>Meus documentos</button>
+              </form>` : `<a href='/meus-documentos'>← Meus documentos</a>`}
             <h1 style='margin:0 0 6px;font-size:24px'>${escapeHtml(guest.titulo)}</h1>
             <div class='badge'>${statusText}</div>
           </div>
@@ -2328,8 +2347,8 @@ const server = http.createServer(async (req, res) => {
           ${erro ? "<div class='error'>Revise os dados informados e tente novamente.</div>" : ''}
           <div class='grid'>
             <div class='card'>
-              <iframe class='pdf' src='/validar/${token}/pdf'></iframe>
-              <div style='margin-top:10px'><a href='/validar/${token}/pdf' target='_blank'>Abrir PDF em nova aba</a></div>
+              <iframe class='pdf' src='${accessPath}/pdf'></iframe>
+              <div style='margin-top:10px'><a href='${accessPath}/pdf' target='_blank' rel='noopener'>Abrir PDF em nova aba</a></div>
             </div>
             <div>
               <div class='card'>
@@ -2346,7 +2365,7 @@ const server = http.createServer(async (req, res) => {
                 <h3 style='margin-top:0'>Conversa</h3>
                 <div style='max-height:330px;overflow:auto'>${messageHtml || "<p style='color:#64748b;font-size:13px'>Nenhuma mensagem ainda.</p>"}</div>
                 ${guest.can_comment && !validation ? `
-                  <form method='post' action='/validar/${token}/mensagem'>
+                  <form method='post' action='${accessPath}/mensagem'>
                     <label>Escrever mensagem</label>
                     <textarea name='message' rows='3' maxlength='5000' required></textarea>
                     <button class='primary' type='submit' style='margin-top:8px'>Enviar mensagem</button>
@@ -2360,7 +2379,7 @@ const server = http.createServer(async (req, res) => {
                   <div class='error'>Esta versão possui ajustes solicitados. Aguarde a CKM enviar uma nova versão.</div>
                 ` : `
                   ${guest.can_request_changes ? `
-                    <form method='post' action='/validar/${token}/decisao' style='margin-bottom:14px'>
+                    <form method='post' action='${accessPath}/decisao' style='margin-bottom:14px'>
                       <input type='hidden' name='decision' value='changes_requested'>
                       <label>Se precisar de alterações, descreva exatamente o que deve ser ajustado</label>
                       <textarea name='decisionText' rows='3' required></textarea>
@@ -2369,7 +2388,7 @@ const server = http.createServer(async (req, res) => {
                   ${guest.can_validate ? (alreadyApproved ? `
                     <div class='success'>Você já registrou sua concordância com esta versão. A entrega será concluída quando todos os validadores indicados tiverem concordado.</div>
                   ` : `
-                    <form method='post' action='/validar/${token}/decisao'>
+                    <form method='post' action='${accessPath}/decisao'>
                       <input type='hidden' name='decision' value='validated'>
                       <p style='font-size:13px;line-height:1.5'>Ao confirmar, você declara estar de acordo com a versão V${Number(version.version_number)} deste documento.</p>
                       <button class='primary' type='submit' style='margin-top:10px'>De acordo e validar entrega</button>
