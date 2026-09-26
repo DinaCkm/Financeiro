@@ -152,11 +152,14 @@ const {
   MAX_FAILED_LOGIN_ATTEMPTS,
   LOGIN_BLOCK_DURATION_MINUTES,
   validatePasswordStrength,
+  generatePasswordResetToken,
+  hashResetToken,
   isHashedPassword,
   hashPassword,
   verifyPassword,
   loginBlockUntilFromNow,
 } = require('./auth-security');
+const { sendPasswordResetEmail } = require('./email-service');
 
 const COLUMN_ALIASES = {
   data: ['data', 'dt', 'date', 'data_movimento', 'data movimento', 'vencimento',
@@ -1483,7 +1486,7 @@ const server = http.createServer(async (req, res) => {
         : erro === 'credenciais'
           ? 'E-mail ou senha inválidos.'
           : '';
-    const html = `<!doctype html><html lang='pt-BR'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>Login — CKM Financeiro</title><link rel='preconnect' href='https://fonts.googleapis.com'><link rel='stylesheet' href='https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap'><link rel='stylesheet' href='/public/style.css'></head><body class='login-page'><div class='login-card'><div class='brand'><h2>Painel CKM Financeiro</h2><p>Gestão Financeira Gerencial</p></div>${senhaAlterada ? `<div style='margin:0 0 1rem;padding:.7rem .8rem;border-radius:.5rem;background:#ecfdf5;color:#065f46;border:1px solid #a7f3d0;font-size:.85rem'>Senha alterada com sucesso. Entre novamente.</div>` : ''}${erroMsg ? `<div style='margin:0 0 1rem;padding:.7rem .8rem;border-radius:.5rem;background:#fef2f2;color:#991b1b;border:1px solid #fecaca;font-size:.85rem'>${erroMsg}</div>` : ''}<form method='post' action='/login'><label>E-mail<input name='email' type='email' placeholder='seu@email.com' autocomplete='username' required></label><label>Senha<input type='password' name='password' placeholder='••••••' autocomplete='current-password' required></label><button type='submit' style='width:100%;justify-content:center;padding:.75rem'>Entrar</button></form></div></body></html>`;
+    const html = `<!doctype html><html lang='pt-BR'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>Login — CKM Financeiro</title><link rel='preconnect' href='https://fonts.googleapis.com'><link rel='stylesheet' href='https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap'><link rel='stylesheet' href='/public/style.css'></head><body class='login-page'><div class='login-card'><div class='brand'><h2>Painel CKM Financeiro</h2><p>Gestão Financeira Gerencial</p></div>${senhaAlterada ? `<div style='margin:0 0 1rem;padding:.7rem .8rem;border-radius:.5rem;background:#ecfdf5;color:#065f46;border:1px solid #a7f3d0;font-size:.85rem'>Senha alterada com sucesso. Entre novamente.</div>` : ''}${erroMsg ? `<div style='margin:0 0 1rem;padding:.7rem .8rem;border-radius:.5rem;background:#fef2f2;color:#991b1b;border:1px solid #fecaca;font-size:.85rem'>${erroMsg}</div>` : ''}<form method='post' action='/login'><label>E-mail<input name='email' type='email' placeholder='seu@email.com' autocomplete='username' required></label><label>Senha<input type='password' name='password' placeholder='••••••' autocomplete='current-password' required></label><button type='submit' style='width:100%;justify-content:center;padding:.75rem'>Entrar</button></form><div style='text-align:center;margin-top:.9rem'><a href='/forgot-password' style='font-size:.82rem;color:#2563eb;text-decoration:none'>Esqueci minha senha</a></div></div></body></html>`;
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
     res.end(html);
     return;
@@ -1559,6 +1562,111 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+
+
+  if (req.method === 'GET' && url.pathname === '/forgot-password') {
+    const enviado = url.searchParams.get('enviado') === '1';
+    const html = `<!doctype html><html lang='pt-BR'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>Esqueci minha senha — CKM Financeiro</title><link rel='preconnect' href='https://fonts.googleapis.com'><link rel='stylesheet' href='https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap'><link rel='stylesheet' href='/public/style.css'></head><body class='login-page'><div class='login-card'><div class='brand'><h2>Redefinir senha</h2><p>Informe seu e-mail de acesso</p></div>${enviado ? `<div style='margin:0 0 1rem;padding:.75rem;border-radius:.5rem;background:#ecfdf5;color:#065f46;border:1px solid #a7f3d0;font-size:.85rem'>Se existir uma conta ativa com este e-mail, enviaremos um link de redefinição.</div>` : ''}<form method='post' action='/forgot-password'><label>E-mail<input name='email' type='email' autocomplete='email' required></label><button type='submit' style='width:100%;justify-content:center;padding:.75rem'>Enviar link</button></form><div style='text-align:center;margin-top:.9rem'><a href='/login' style='font-size:.82rem;color:#2563eb;text-decoration:none'>Voltar ao login</a></div></div></body></html>`;
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+    res.end(html);
+    return;
+  }
+
+  if (req.method === 'POST' && url.pathname === '/forgot-password') {
+    const form = new URLSearchParams(await readBody(req));
+    const email = String(form.get('email') || '').trim().toLowerCase();
+    const user = db.users.find((u) => String(u.email || '').trim().toLowerCase() === email);
+
+    // Resposta sempre genérica para não revelar se o endereço está cadastrado.
+    if (user && (!user.status || user.status === 'ativo')) {
+      const { token, tokenHash, expiresAt } = generatePasswordResetToken();
+      user.passwordResetTokenHash = tokenHash;
+      user.passwordResetExpiresAt = expiresAt;
+      saveDb(db);
+
+      const forwardedProto = String(req.headers['x-forwarded-proto'] || '').split(',')[0].trim();
+      const proto = forwardedProto || (isSecureRequest(req) ? 'https' : 'http');
+      const configuredBase = String(process.env.APP_BASE_URL || '').trim().replace(/\/+$/, '');
+      const baseUrl = configuredBase || `${proto}://${req.headers.host}`;
+      const resetLink = `${baseUrl}/reset-password?token=${encodeURIComponent(token)}`;
+
+      sendPasswordResetEmail({ to: user.email, resetLink })
+        .catch((e) => console.warn('[email] Erro inesperado na redefinição:', e && e.message ? e.message : e));
+    }
+
+    res.writeHead(302, { Location: '/forgot-password?enviado=1' });
+    res.end();
+    return;
+  }
+
+  if (req.method === 'GET' && url.pathname === '/reset-password') {
+    const token = String(url.searchParams.get('token') || '');
+    const erro = url.searchParams.get('erro');
+    const erroMsg = erro === 'token'
+      ? 'Este link é inválido ou expirou.'
+      : erro === 'confirmacao'
+        ? 'A confirmação da nova senha não confere.'
+        : erro === 'fraca'
+          ? 'Use pelo menos 8 caracteres, com ao menos 1 número e 1 caractere especial (!@#$%).'
+          : '';
+
+    const html = `<!doctype html><html lang='pt-BR'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>Nova senha — CKM Financeiro</title><link rel='preconnect' href='https://fonts.googleapis.com'><link rel='stylesheet' href='https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap'><link rel='stylesheet' href='/public/style.css'></head><body class='login-page'><div class='login-card'><div class='brand'><h2>Criar nova senha</h2><p>Defina uma senha segura</p></div>${erroMsg ? `<div style='margin:0 0 1rem;padding:.7rem .8rem;border-radius:.5rem;background:#fef2f2;color:#991b1b;border:1px solid #fecaca;font-size:.85rem'>${erroMsg}</div>` : ''}${token ? `<form method='post' action='/reset-password'><input type='hidden' name='token' value='${token.replace(/'/g, '&#39;')}'><label>Nova senha<input name='newPassword' type='password' autocomplete='new-password' required></label><div style='font-size:.76rem;color:#64748b;margin-top:-.45rem;margin-bottom:.65rem'>Mínimo de 8 caracteres, com ao menos 1 número e 1 caractere especial (!@#$%).</div><label>Confirmar nova senha<input name='confirmPassword' type='password' autocomplete='new-password' required></label><button type='submit' style='width:100%;justify-content:center;padding:.75rem'>Salvar nova senha</button></form>` : `<div style='font-size:.85rem;color:#991b1b'>Link de redefinição inválido.</div>`}<div style='text-align:center;margin-top:.9rem'><a href='/login' style='font-size:.82rem;color:#2563eb;text-decoration:none'>Voltar ao login</a></div></div></body></html>`;
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+    res.end(html);
+    return;
+  }
+
+  if (req.method === 'POST' && url.pathname === '/reset-password') {
+    const form = new URLSearchParams(await readBody(req));
+    const token = String(form.get('token') || '');
+    const newPassword = form.get('newPassword') || '';
+    const confirmPassword = form.get('confirmPassword') || '';
+
+    if (!token || newPassword !== confirmPassword) {
+      res.writeHead(302, {
+        Location: `/reset-password?token=${encodeURIComponent(token)}&erro=${!token ? 'token' : 'confirmacao'}`
+      });
+      res.end();
+      return;
+    }
+
+    const validation = validatePasswordStrength(newPassword);
+    if (!validation.isValid) {
+      res.writeHead(302, { Location: `/reset-password?token=${encodeURIComponent(token)}&erro=fraca` });
+      res.end();
+      return;
+    }
+
+    const tokenHash = hashResetToken(token);
+    const user = db.users.find((u) => u.passwordResetTokenHash === tokenHash);
+    const expiresAt = user && user.passwordResetExpiresAt ? new Date(user.passwordResetExpiresAt) : null;
+
+    if (!user || !expiresAt || Number.isNaN(expiresAt.getTime()) || expiresAt.getTime() < Date.now()) {
+      res.writeHead(302, { Location: '/reset-password?erro=token' });
+      res.end();
+      return;
+    }
+
+    user.password = hashPassword(newPassword);
+    user.passwordResetTokenHash = null;
+    user.passwordResetExpiresAt = null;
+    user.mustChangePassword = false;
+    user.failedLoginAttempts = 0;
+    user.loginBlockedUntil = null;
+    saveDb(db);
+
+    for (const [sid, sessionData] of sessions.entries()) {
+      const sessionUserId = typeof sessionData === 'string' ? sessionData : sessionData.userId;
+      if (sessionUserId === user.id) sessions.delete(sid);
+    }
+    if (storage.sessionDeleteByUser) {
+      await storage.sessionDeleteByUser(user.id).catch(e => console.warn('[session] Erro ao invalidar sessões:', e.message));
+    }
+
+    res.writeHead(302, { Location: '/login?senha=alterada' });
+    res.end();
+    return;
+  }
 
   if (req.method === 'GET' && url.pathname === '/change-password') {
     const user = currentUser(req, db);
