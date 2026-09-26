@@ -164,6 +164,40 @@ function createPostgresStorage(databaseUrl) {
         first_access_at TIMESTAMPTZ,
         last_access_at TIMESTAMPTZ
       );
+      CREATE TABLE IF NOT EXISTS portal_entrega_messages (
+        id TEXT PRIMARY KEY,
+        entrega_id TEXT NOT NULL,
+        version_id TEXT NOT NULL,
+        actor_type TEXT NOT NULL,
+        actor_user_id TEXT,
+        convidado_id TEXT,
+        actor_name TEXT NOT NULL,
+        actor_email TEXT,
+        message TEXT NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
+      CREATE TABLE IF NOT EXISTS portal_entrega_decisions (
+        id TEXT PRIMARY KEY,
+        entrega_id TEXT NOT NULL,
+        version_id TEXT NOT NULL,
+        convidado_id TEXT NOT NULL,
+        decision TEXT NOT NULL,
+        decision_text TEXT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
+      CREATE TABLE IF NOT EXISTS portal_entrega_validations (
+        id TEXT PRIMARY KEY,
+        entrega_id TEXT NOT NULL,
+        version_id TEXT NOT NULL,
+        convidado_id TEXT NOT NULL,
+        protocol TEXT NOT NULL UNIQUE,
+        file_hash TEXT NOT NULL,
+        validator_name TEXT NOT NULL,
+        validator_email TEXT NOT NULL,
+        validator_cpf TEXT,
+        declaration_text TEXT NOT NULL,
+        validated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
     `);
 
     // Migração aditiva e idempotente para instalações que já possuem a tabela users.
