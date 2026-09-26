@@ -2462,6 +2462,16 @@ const server = http.createServer(async (req, res) => {
   ` : `
     ${!r2Ready ? "<div style='margin-top:1rem;padding:.8rem;background:#fff7ed;color:#9a3412;border:1px solid #fdba74;border-radius:.6rem'>Novas entregas estão temporariamente indisponíveis. O administrador está concluindo a configuração de segurança do módulo.</div>" : ""}
   `}
+  <div style='display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:.9rem;margin-top:1.25rem'>
+    <a href='/entregas/contratos' style='display:block;text-decoration:none;color:inherit;border:1px solid #e2e8f0;border-radius:12px;padding:1rem;background:#fff'>
+      <strong>Contratos de referência</strong>
+      <div style='font-size:.82rem;color:#64748b;margin-top:.3rem'>Consultar contratos relacionados aos clientes autorizados, sem dados financeiros.</div>
+    </a>
+    <a href='/entregas/contatos' style='display:block;text-decoration:none;color:inherit;border:1px solid #e2e8f0;border-radius:12px;padding:1rem;background:#fff'>
+      <strong>Contatos / Validadores</strong>
+      <div style='font-size:.82rem;color:#64748b;margin-top:.3rem'>Cadastrar e manter nomes e e-mails usados nas validações.</div>
+    </a>
+  </div>
   <div class='cards' style='margin-top:1.25rem'>
     <div class='card'><strong>Aguardando cliente</strong><span>${counts.aguardando_cliente}</span></div>
     <div class='card'><strong>Ajustes solicitados</strong><span>${counts.ajustes_solicitados}</span></div>
@@ -2479,6 +2489,231 @@ const server = http.createServer(async (req, res) => {
 </section>`, user, '/entregas');
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
     res.end(html);
+    return;
+  }
+
+
+  if (req.method === 'GET' && url.pathname === '/entregas/contratos') {
+    const pg = storage.getPool ? storage.getPool() : null;
+    if (!pg) return json(res, 503, { error: 'Banco não disponível.' });
+
+    const allowed = await getPortalAllowedClientIds(user);
+    const params = [];
+    let where = '';
+    if (allowed !== null) {
+      if (!allowed.length) {
+        where = 'WHERE 1=0';
+      } else {
+        params.push(allowed);
+        where = 'WHERE ct.cliente_id = ANY($1::int[])';
+      }
+    }
+
+    let contratos = [];
+    try {
+      contratos = (await pg.query(`
+        SELECT ct.id, ct.numero, ct.descricao, ct.status,
+               ct.data_inicio, ct.data_fim,
+               cl.nome as cliente_nome, cl.nome_curto as cliente_nome_curto,
+               pr.nome as projeto_nome
+          FROM contratos ct
+          LEFT JOIN clientes cl ON cl.id=ct.cliente_id
+          LEFT JOIN projetos pr ON pr.id=ct.projeto_id
+          ${where}
+         ORDER BY cl.nome, ct.numero
+      `, params)).rows;
+    } catch (e) {
+      return json(res, 500, { error: e.message });
+    }
+
+    const rows = contratos.map(ct => `
+      <tr>
+        <td><strong>${escapeHtml(ct.numero || ('Contrato #' + ct.id))}</strong></td>
+        <td>${escapeHtml(ct.cliente_nome_curto || ct.cliente_nome || '-')}</td>
+        <td>${escapeHtml(ct.projeto_nome || '-')}</td>
+        <td>${escapeHtml(ct.descricao || '-')}</td>
+        <td>${escapeHtml(ct.status || '-')}</td>
+        <td>${ct.data_inicio ? escapeHtml(new Date(ct.data_inicio).toLocaleDateString('pt-BR')) : '-'}</td>
+        <td>${ct.data_fim ? escapeHtml(new Date(ct.data_fim).toLocaleDateString('pt-BR')) : '-'}</td>
+      </tr>
+    `).join('');
+
+    const body = `
+      <div style='display:flex;justify-content:space-between;align-items:flex-start;gap:1rem;flex-wrap:wrap'>
+        <div>
+          <a href='/entregas' style='font-size:.82rem'>← Voltar para Entregas</a>
+          <h2 class='page-title' style='margin-top:.5rem'>Contratos de referência</h2>
+          <p style='color:#64748b;font-size:.9rem'>Consulta segura dos contratos vinculados aos clientes que você pode gerenciar. Valores e informações financeiras não são exibidos.</p>
+        </div>
+      </div>
+      <section>
+        <div style='overflow-x:auto'>
+          <table>
+            <thead><tr><th>Contrato</th><th>Cliente</th><th>Projeto</th><th>Descrição</th><th>Status</th><th>Início</th><th>Fim</th></tr></thead>
+            <tbody>${rows || "<tr><td colspan='7'>Nenhum contrato disponível para os clientes autorizados.</td></tr>"}</tbody>
+          </table>
+        </div>
+      </section>
+    `;
+
+    const html = page('Contratos de referência', body, user, '/entregas');
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+    res.end(html);
+    return;
+  }
+
+  if (req.method === 'GET' && url.pathname === '/entregas/contatos') {
+    const pg = storage.getPool ? storage.getPool() : null;
+    if (!pg) return json(res, 503, { error: 'Banco não disponível.' });
+
+    const allowed = await getPortalAllowedClientIds(user);
+    let clientes = [];
+    if (allowed === null) {
+      clientes = (await pg.query('SELECT id, nome, nome_curto FROM clientes WHERE ativo=true ORDER BY nome')).rows;
+    } else if (allowed.length) {
+      clientes = (await pg.query(
+        'SELECT id, nome, nome_curto FROM clientes WHERE ativo=true AND id=ANY($1::int[]) ORDER BY nome',
+        [allowed]
+      )).rows;
+    }
+
+    const params = [];
+    let where = '';
+    if (allowed !== null) {
+      if (!allowed.length) where = 'WHERE 1=0';
+      else {
+        params.push(allowed);
+        where = 'WHERE pc.cliente_id = ANY($1::int[])';
+      }
+    }
+
+    const contatos = (await pg.query(`
+      SELECT pc.*, cl.nome as cliente_nome, cl.nome_curto as cliente_nome_curto
+        FROM portal_contatos_validacao pc
+        LEFT JOIN clientes cl ON cl.id=pc.cliente_id
+        ${where}
+       ORDER BY cl.nome, pc.nome
+    `, params)).rows;
+
+    const rows = contatos.map(ct => `
+      <tr>
+        <td><strong>${escapeHtml(ct.nome)}</strong></td>
+        <td>${escapeHtml(ct.email)}</td>
+        <td>${escapeHtml(ct.cliente_nome_curto || ct.cliente_nome || '-')}</td>
+        <td>${ct.ativo ? '<span class="badge badge-green">Ativo</span>' : '<span class="badge" style="background:#fee2e2;color:#991b1b">Inativo</span>'}</td>
+        <td>
+          <form method='post' action='/entregas/contatos/status' style='margin:0'>
+            <input type='hidden' name='id' value='${escapeHtml(ct.id)}'>
+            <input type='hidden' name='status' value='${ct.ativo ? 'inativo' : 'ativo'}'>
+            <button type='submit' class='btn-outline'>${ct.ativo ? 'Inativar' : 'Ativar'}</button>
+          </form>
+        </td>
+      </tr>
+    `).join('');
+
+    const body = `
+      <div style='display:flex;justify-content:space-between;align-items:flex-start;gap:1rem;flex-wrap:wrap'>
+        <div>
+          <a href='/entregas' style='font-size:.82rem'>← Voltar para Entregas</a>
+          <h2 class='page-title' style='margin-top:.5rem'>Contatos / Validadores</h2>
+          <p style='color:#64748b;font-size:.9rem'>Cadastre uma vez os nomes e e-mails dos responsáveis pela validação de cada cliente.</p>
+        </div>
+      </div>
+
+      <section>
+        <h2>Novo contato</h2>
+        <form method='post' action='/entregas/contatos' style='display:grid;grid-template-columns:minmax(220px,1fr) minmax(220px,1fr) minmax(220px,1fr) auto;gap:.75rem;align-items:end'>
+          <label>Cliente *
+            <select name='clienteId' required>
+              <option value=''>-- Selecione --</option>
+              ${clientes.map(cl => `<option value='${cl.id}'>${escapeHtml(cl.nome_curto || cl.nome)}</option>`).join('')}
+            </select>
+          </label>
+          <label>Nome *
+            <input name='nome' required maxlength='160' placeholder='Nome completo'>
+          </label>
+          <label>E-mail *
+            <input name='email' type='email' required maxlength='240' placeholder='nome@empresa.com.br'>
+          </label>
+          <button type='submit'>Cadastrar</button>
+        </form>
+      </section>
+
+      <section>
+        <h2>Contatos cadastrados</h2>
+        <div style='overflow-x:auto'>
+          <table>
+            <thead><tr><th>Nome</th><th>E-mail</th><th>Cliente</th><th>Status</th><th>Ação</th></tr></thead>
+            <tbody>${rows || "<tr><td colspan='5'>Nenhum contato cadastrado.</td></tr>"}</tbody>
+          </table>
+        </div>
+      </section>
+    `;
+
+    const html = page('Contatos / Validadores', body, user, '/entregas');
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+    res.end(html);
+    return;
+  }
+
+  if (req.method === 'POST' && url.pathname === '/entregas/contatos') {
+    const pg = storage.getPool ? storage.getPool() : null;
+    if (!pg) return json(res, 503, { error: 'Banco não disponível.' });
+
+    const form = new URLSearchParams(await readBody(req));
+    const clienteId = Number(form.get('clienteId') || 0);
+    const nome = String(form.get('nome') || '').trim();
+    const email = String(form.get('email') || '').trim().toLowerCase();
+
+    if (!clienteId || !nome || !email || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
+      return json(res, 400, { error: 'Cliente, nome e e-mail válido são obrigatórios.' });
+    }
+    if (!(await userCanAccessPortalClient(user, clienteId))) {
+      return json(res, 403, { error: 'Você não possui acesso a este cliente.' });
+    }
+
+    try {
+      await pg.query(
+        `INSERT INTO portal_contatos_validacao
+          (id, cliente_id, nome, email, ativo, created_by, created_at, updated_at)
+         VALUES ($1,$2,$3,$4,true,$5,NOW(),NOW())
+         ON CONFLICT (cliente_id, email)
+         DO UPDATE SET nome=EXCLUDED.nome, ativo=true, updated_at=NOW()`,
+        [crypto.randomUUID(), clienteId, nome, email, user.id]
+      );
+    } catch (e) {
+      return json(res, 500, { error: e.message });
+    }
+
+    res.writeHead(302, { Location: '/entregas/contatos' });
+    res.end();
+    return;
+  }
+
+  if (req.method === 'POST' && url.pathname === '/entregas/contatos/status') {
+    const pg = storage.getPool ? storage.getPool() : null;
+    if (!pg) return json(res, 503, { error: 'Banco não disponível.' });
+
+    const form = new URLSearchParams(await readBody(req));
+    const id = String(form.get('id') || '').trim();
+    const status = String(form.get('status') || '').trim();
+
+    const found = (await pg.query(
+      'SELECT id, cliente_id FROM portal_contatos_validacao WHERE id=$1 LIMIT 1',
+      [id]
+    )).rows[0];
+    if (!found) return json(res, 404, { error: 'Contato não encontrado.' });
+    if (!(await userCanAccessPortalClient(user, Number(found.cliente_id)))) {
+      return json(res, 403, { error: 'Acesso não autorizado.' });
+    }
+
+    await pg.query(
+      'UPDATE portal_contatos_validacao SET ativo=$2, updated_at=NOW() WHERE id=$1',
+      [id, status === 'ativo']
+    );
+
+    res.writeHead(302, { Location: '/entregas/contatos' });
+    res.end();
     return;
   }
 
