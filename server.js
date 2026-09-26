@@ -159,7 +159,13 @@ const {
   verifyPassword,
   loginBlockUntilFromNow,
 } = require('./auth-security');
-const { sendPasswordResetEmail } = require('./email-service');
+const { sendPasswordResetEmail, sendConsultantInviteEmail } = require('./email-service');
+const {
+  ROLE_CONSULTOR_ENTREGAS,
+  isDeliveryConsultant,
+  isFinancialAdmin,
+  authorizationForRequest,
+} = require('./access-control');
 
 const COLUMN_ALIASES = {
   data: ['data', 'dt', 'date', 'data_movimento', 'data movimento', 'vencimento',
@@ -321,6 +327,15 @@ function readBody(req) {
 function json(res, status, payload) {
   res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' });
   res.end(JSON.stringify(payload));
+}
+
+function escapeHtml(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }
 
 function normalizeName(name) {
@@ -917,30 +932,44 @@ function serveStatic(req, res) {
 }
 
 function page(title, body, user, activePage) {
-  const navLinks = user ? [
-    ['/', 'Home', ''],
-    ['/upload', 'Upload', ''],
-    ['/fatura', 'Fatura', ''],
-    ['/lancamentos', '✏ Lançamentos', ''],
-    ['/historico', 'Histórico', ''],
-    ['/dashboard', 'Dashboard', ''],
-    ['/cadastros-mestres', '⚙ Cadastros', 'nav-cad'],
-    ['/contratos', '📋 Contratos', ''],
-    ['/contas', '💰 Contas', ''],
-    ['/conciliacao', '🏦 Conciliação', ''],
-    ['/ia', '🤖 IA', 'nav-ia'],
-    ['/relatorio', '📄 Relatórios', 'nav-rel'],
-    ['/extrato', '📊 Extrato CC', ''],
-    ['/logout', 'Sair', 'sair'],
-  ] : [];
+  let navLinks = [];
+  if (user) {
+    if (isDeliveryConsultant(user)) {
+      navLinks = [
+        ['/entregas', 'Entregas e Validações', ''],
+        ['/logout', 'Sair', 'sair'],
+      ];
+    } else {
+      navLinks = [
+        ['/', 'Home', ''],
+        ['/upload', 'Upload', ''],
+        ['/fatura', 'Fatura', ''],
+        ['/lancamentos', '✏ Lançamentos', ''],
+        ['/historico', 'Histórico', ''],
+        ['/dashboard', 'Dashboard', ''],
+        ['/cadastros-mestres', '⚙ Cadastros', 'nav-cad'],
+        ['/contratos', '📋 Contratos', ''],
+        ['/entregas', 'Entregas e Validações', ''],
+        ['/acessos', 'Acessos', ''],
+        ['/contas', '💰 Contas', ''],
+        ['/conciliacao', '🏦 Conciliação', ''],
+        ['/ia', '🤖 IA', 'nav-ia'],
+        ['/relatorio', '📄 Relatórios', 'nav-rel'],
+        ['/extrato', '📊 Extrato CC', ''],
+        ['/logout', 'Sair', 'sair'],
+      ];
+    }
+  }
   const nav = navLinks.map(([href, label, cls]) =>
     `<a href='${href}' class='${cls}${activePage === href ? ' active' : ''}'>${label}</a>`
   ).join('');
-  return `<!doctype html><html lang='pt-BR'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>${title} — Eco do Bem Financeiro</title><link rel='preconnect' href='https://fonts.googleapis.com'><link rel='stylesheet' href='https://fonts.googleapis.com/css2?family=Poppins:wght@400;600;700&family=Inter:wght@400;500;600&family=Sora:wght@400;700&display=swap'><link rel='stylesheet' href='/public/style.css'></head><body>
+  const homeHref = isDeliveryConsultant(user) ? '/entregas' : '/';
+  const systemLabel = isDeliveryConsultant(user) ? 'Portal de Entregas' : 'Sistema Financeiro';
+  return `<!doctype html><html lang='pt-BR'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>${title} — CKM</title><link rel='preconnect' href='https://fonts.googleapis.com'><link rel='stylesheet' href='https://fonts.googleapis.com/css2?family=Poppins:wght@400;600;700&family=Inter:wght@400;500;600&family=Sora:wght@400;700&display=swap'><link rel='stylesheet' href='/public/style.css'></head><body>
 <header>
-  <a href='/' class='header-logo'>
+  <a href='${homeHref}' class='header-logo'>
     <img src='/public/logo-branco.png' alt='Eco do Bem' onerror="this.style.display='none'">
-    <div class='header-logo-text'><span>Sistema</span><span>Financeiro</span></div>
+    <div class='header-logo-text'><span>CKM Talents</span><span>${systemLabel}</span></div>
   </a>
   ${user ? `<nav>${nav}</nav>` : ''}
 </header>
@@ -1556,7 +1585,9 @@ const server = http.createServer(async (req, res) => {
     }
     res.writeHead(302, {
       'Set-Cookie': buildSessionCookie(req, sid),
-      Location: user.mustChangePassword ? '/change-password' : '/'
+      Location: user.mustChangePassword
+        ? '/change-password'
+        : (isDeliveryConsultant(user) ? '/entregas' : '/')
     });
     res.end();
     return;
@@ -1651,6 +1682,9 @@ const server = http.createServer(async (req, res) => {
     user.passwordResetTokenHash = null;
     user.passwordResetExpiresAt = null;
     user.mustChangePassword = false;
+    if (isDeliveryConsultant(user) && user.status === 'pendente') {
+      user.status = 'ativo';
+    }
     user.failedLoginAttempts = 0;
     user.loginBlockedUntil = null;
     saveDb(db);
@@ -1826,6 +1860,139 @@ const server = http.createServer(async (req, res) => {
   const user = currentUser(req, db);
   if (!user) {
     res.writeHead(302, { Location: '/login' });
+    res.end();
+    return;
+  }
+
+  const accessDecision = authorizationForRequest(user, url.pathname);
+  if (!accessDecision.allowed) {
+    if (url.pathname.startsWith('/api/')) {
+      return json(res, 403, { error: 'Acesso não autorizado para este perfil.' });
+    }
+    res.writeHead(302, { Location: '/entregas' });
+    res.end();
+    return;
+  }
+
+
+  if (req.method === 'GET' && url.pathname === '/entregas') {
+    const html = page('Entregas e Validações', `
+<section>
+  <h2 class='page-title'>Entregas e Validações</h2>
+  <p style='color:var(--gray-600);font-size:.92rem;max-width:820px'>
+    Área destinada à gestão dos documentos enviados aos clientes para análise, solicitação de ajustes e validação.
+  </p>
+  <div class='cards' style='margin-top:1.25rem'>
+    <div class='card'><strong>Aguardando cliente</strong><span>0</span></div>
+    <div class='card'><strong>Ajustes solicitados</strong><span>0</span></div>
+    <div class='card'><strong>Validados</strong><span>0</span></div>
+  </div>
+  <section style='margin-top:1rem'>
+    <h2>Módulo em preparação</h2>
+    <p style='color:var(--gray-600);font-size:.9rem'>
+      O acesso restrito já está ativo. A próxima etapa incluirá Nova Entrega, convidados, versões, conversa e validação.
+    </p>
+  </section>
+</section>`, user, '/entregas');
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+    res.end(html);
+    return;
+  }
+
+  if (req.method === 'GET' && url.pathname === '/acessos') {
+    if (!isFinancialAdmin(user)) {
+      res.writeHead(403, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end(page('Acesso negado', '<h2>Acesso não autorizado</h2>', user, ''));
+      return;
+    }
+
+    const consultores = (db.users || []).filter(u => isDeliveryConsultant(u));
+    const criado = url.searchParams.get('criado');
+    const erro = url.searchParams.get('erro');
+    const rows = consultores.map(u => `
+      <tr>
+        <td><strong>${escapeHtml(u.name || '-')}</strong></td>
+        <td>${escapeHtml(u.email || '-')}</td>
+        <td>${u.status === 'ativo' ? '<span class="badge badge-green">Ativo</span>' : '<span class="badge badge-amber">Convite pendente</span>'}</td>
+        <td>${u.lastLoginAt ? escapeHtml(new Date(u.lastLoginAt).toLocaleString('pt-BR')) : '-'}</td>
+      </tr>
+    `).join('');
+
+    const body = `
+      <h2 class='page-title'>Acessos</h2>
+      <p style='color:var(--gray-600);font-size:.9rem'>Cadastre consultores independentes com acesso exclusivo ao módulo Entregas e Validações.</p>
+      ${criado ? "<div style='margin:1rem 0;padding:.75rem;background:#ecfdf5;color:#065f46;border:1px solid #a7f3d0;border-radius:.5rem'>Consultor cadastrado. O convite para criação da senha será enviado se o SMTP estiver configurado.</div>" : ''}
+      ${erro === 'email' ? "<div style='margin:1rem 0;padding:.75rem;background:#fef2f2;color:#991b1b;border:1px solid #fecaca;border-radius:.5rem'>Este e-mail já está cadastrado.</div>" : ''}
+      <section>
+        <h2>Novo consultor de entregas</h2>
+        <form method='post' action='/acessos/consultor' style='display:grid;grid-template-columns:1fr 1fr auto;gap:.75rem;align-items:end'>
+          <label>Nome<input name='name' required placeholder='Nome completo'></label>
+          <label>E-mail<input name='email' type='email' required placeholder='nome@email.com'></label>
+          <button type='submit' style='height:42px'>Criar acesso e enviar convite</button>
+        </form>
+      </section>
+      <section>
+        <h2>Consultores cadastrados</h2>
+        <div style='overflow-x:auto'>
+          <table>
+            <thead><tr><th>Nome</th><th>E-mail</th><th>Status</th><th>Último acesso</th></tr></thead>
+            <tbody>${rows || "<tr><td colspan='4'>Nenhum consultor cadastrado.</td></tr>"}</tbody>
+          </table>
+        </div>
+      </section>
+    `;
+    const html = page('Acessos', body, user, '/acessos');
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+    res.end(html);
+    return;
+  }
+
+  if (req.method === 'POST' && url.pathname === '/acessos/consultor') {
+    if (!isFinancialAdmin(user)) return json(res, 403, { error: 'Acesso não autorizado.' });
+
+    const form = new URLSearchParams(await readBody(req));
+    const name = String(form.get('name') || '').trim();
+    const email = String(form.get('email') || '').trim().toLowerCase();
+    if (!name || !email) {
+      res.writeHead(302, { Location: '/acessos?erro=dados' });
+      res.end();
+      return;
+    }
+    if ((db.users || []).some(u => String(u.email || '').trim().toLowerCase() === email)) {
+      res.writeHead(302, { Location: '/acessos?erro=email' });
+      res.end();
+      return;
+    }
+
+    const { token, tokenHash, expiresAt } = generatePasswordResetToken();
+    const randomInitialSecret = crypto.randomBytes(48).toString('hex') + '!1';
+    const newUser = {
+      id: crypto.randomUUID(),
+      name,
+      email,
+      password: hashPassword(randomInitialSecret),
+      role: ROLE_CONSULTOR_ENTREGAS,
+      status: 'pendente',
+      failedLoginAttempts: 0,
+      loginBlockedUntil: null,
+      lastLoginAt: null,
+      mustChangePassword: true,
+      passwordResetTokenHash: tokenHash,
+      passwordResetExpiresAt: expiresAt,
+    };
+    if (!db.users) db.users = [];
+    db.users.push(newUser);
+    saveDb(db);
+
+    const forwardedProto = String(req.headers['x-forwarded-proto'] || '').split(',')[0].trim();
+    const proto = forwardedProto || (isSecureRequest(req) ? 'https' : 'http');
+    const configuredBase = String(process.env.APP_BASE_URL || '').trim().replace(/\/+$/, '');
+    const baseUrl = configuredBase || `${proto}://${req.headers.host}`;
+    const activationLink = `${baseUrl}/reset-password?token=${encodeURIComponent(token)}`;
+    sendConsultantInviteEmail({ to: email, name, activationLink })
+      .catch(e => console.warn('[email] Erro ao enviar convite:', e && e.message ? e.message : e));
+
+    res.writeHead(302, { Location: '/acessos?criado=1' });
     res.end();
     return;
   }
