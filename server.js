@@ -159,7 +159,7 @@ const {
   verifyPassword,
   loginBlockUntilFromNow,
 } = require('./auth-security');
-const { sendPasswordResetEmail, sendConsultantInviteEmail, sendDeliveryInviteEmail, sendPortalNotificationEmail, sendSmtpTestEmail } = require('./email-service');
+const { isSmtpConfigured, sendPasswordResetEmail, sendConsultantInviteEmail, sendDeliveryInviteEmail, sendPortalNotificationEmail, sendSmtpTestEmail } = require('./email-service');
 const {
   ROLE_CONSULTOR_ENTREGAS,
   isDeliveryConsultant,
@@ -2383,6 +2383,8 @@ const server = http.createServer(async (req, res) => {
 
   if (req.method === 'GET' && url.pathname === '/entregas') {
     const pg = storage.getPool ? storage.getPool() : null;
+    const smtpReady = isSmtpConfigured();
+    const r2Ready = isR2Configured();
     let entregas = [];
     let counts = { aguardando_cliente: 0, ajustes_solicitados: 0, validado: 0 };
     if (pg) {
@@ -2446,8 +2448,14 @@ const server = http.createServer(async (req, res) => {
         Gestão dos documentos enviados aos clientes para análise, solicitação de ajustes e validação.
       </p>
     </div>
-    <a href='/entregas/nova'><button>+ Nova Entrega</button></a>
+    ${r2Ready ? "<a href='/entregas/nova'><button>+ Nova Entrega</button></a>" : "<button disabled title='Configure o R2 privado para liberar novas entregas'>+ Nova Entrega</button>"}
   </div>
+  <div style='display:flex;gap:.75rem;flex-wrap:wrap;margin-top:1rem'>
+    <span class='badge ${smtpReady ? "badge-green" : "badge-amber"}'>E-mail: ${smtpReady ? "configurado" : "pendente"}</span>
+    <span class='badge ${r2Ready ? "badge-green" : "badge-amber"}'>Armazenamento seguro: ${r2Ready ? "configurado" : "pendente"}</span>
+  </div>
+  ${!r2Ready ? "<div style='margin-top:1rem;padding:.8rem;background:#fff7ed;color:#9a3412;border:1px solid #fdba74;border-radius:.6rem'>Novas entregas estão temporariamente bloqueadas até a configuração do armazenamento privado R2.</div>" : ""}
+  ${!smtpReady ? "<div style='margin-top:.75rem;padding:.8rem;background:#fffbeb;color:#92400e;border:1px solid #fde68a;border-radius:.6rem'>Os avisos por e-mail ainda estão pendentes de SMTP_USER e SMTP_PASS.</div>" : ""}
   <div class='cards' style='margin-top:1.25rem'>
     <div class='card'><strong>Aguardando cliente</strong><span>${counts.aguardando_cliente}</span></div>
     <div class='card'><strong>Ajustes solicitados</strong><span>${counts.ajustes_solicitados}</span></div>
@@ -2469,6 +2477,11 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method === 'GET' && url.pathname === '/entregas/nova') {
+    if (!isR2Configured()) {
+      res.writeHead(302, { Location: '/entregas' });
+      res.end();
+      return;
+    }
     const pg = storage.getPool ? storage.getPool() : null;
     if (!pg) return json(res, 503, { error: 'Banco não disponível.' });
 
@@ -3238,6 +3251,10 @@ const server = http.createServer(async (req, res) => {
     const body = `
       <h2 class='page-title'>Acessos</h2>
       <p style='color:var(--gray-600);font-size:.9rem'>Cadastre consultores independentes com acesso exclusivo ao módulo Entregas e Validações e defina quais clientes cada um pode gerenciar.</p>
+      <div style='display:flex;gap:.75rem;flex-wrap:wrap;margin:1rem 0'>
+        <span class='badge ${isSmtpConfigured() ? "badge-green" : "badge-amber"}'>SMTP: ${isSmtpConfigured() ? "configurado" : "pendente"}</span>
+        <span class='badge ${isR2Configured() ? "badge-green" : "badge-amber"}'>R2 privado: ${isR2Configured() ? "configurado" : "pendente"}</span>
+      </div>
       <section style='margin-top:1rem'>
         <h2>Teste de e-mail</h2>
         <form method='post' action='/acessos/testar-email' style='display:flex;gap:.75rem;align-items:end;flex-wrap:wrap'>
