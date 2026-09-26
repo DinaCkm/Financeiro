@@ -218,6 +218,9 @@ function createPostgresStorage(databaseUrl) {
 
     await pool.query("ALTER TABLE portal_entregas ADD COLUMN IF NOT EXISTS validation_mode TEXT NOT NULL DEFAULT 'all'");
     await pool.query("ALTER TABLE portal_entrega_convidados ADD COLUMN IF NOT EXISTS version_id TEXT");
+    await pool.query("ALTER TABLE portal_entrega_convidados ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ");
+    await pool.query("ALTER TABLE portal_entrega_convidados ADD COLUMN IF NOT EXISTS revoked_at TIMESTAMPTZ");
+    await pool.query("UPDATE portal_entrega_convidados SET expires_at=NOW()+INTERVAL '30 days' WHERE expires_at IS NULL");
     await pool.query("ALTER TABLE portal_entrega_versions ADD COLUMN IF NOT EXISTS storage_key TEXT");
 
     // Migração aditiva e idempotente para instalações que já possuem a tabela users.
