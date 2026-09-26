@@ -123,6 +123,19 @@ function createPostgresStorage(databaseUrl) {
         created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
         PRIMARY KEY (consultant_user_id, cliente_id)
       );
+      CREATE TABLE IF NOT EXISTS portal_contatos_validacao (
+        id TEXT PRIMARY KEY,
+        cliente_id INTEGER NOT NULL,
+        nome TEXT NOT NULL,
+        email TEXT NOT NULL,
+        ativo BOOLEAN NOT NULL DEFAULT TRUE,
+        created_by TEXT NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        UNIQUE (cliente_id, email)
+      );
+      CREATE INDEX IF NOT EXISTS idx_portal_contatos_cliente
+        ON portal_contatos_validacao(cliente_id, ativo);
       CREATE TABLE IF NOT EXISTS portal_entregas (
         id TEXT PRIMARY KEY,
         cliente_id INTEGER NOT NULL,
