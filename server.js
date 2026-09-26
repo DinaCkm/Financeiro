@@ -1934,9 +1934,11 @@ const server = http.createServer(async (req, res) => {
     const guest = guestResult.rows[0];
     const versionResult = await pg.query(
       `SELECT * FROM portal_entrega_versions
-        WHERE entrega_id=$1 AND version_number=$2
+        WHERE entrega_id=$1
+          AND (id=$2 OR ($2 IS NULL AND version_number=$3))
+        ORDER BY CASE WHEN id=$2 THEN 0 ELSE 1 END
         LIMIT 1`,
-      [guest.entrega_id, Number(guest.current_version || 1)]
+      [guest.entrega_id, guest.version_id || null, Number(guest.current_version || 1)]
     );
     if (!versionResult.rows.length) return json(res, 404, { error: 'Versão do documento não encontrada.' });
     const version = versionResult.rows[0];
@@ -2658,9 +2660,9 @@ const server = http.createServer(async (req, res) => {
         const convidadoId = crypto.randomUUID();
         await client.query(
           `INSERT INTO portal_entrega_convidados
-            (id, entrega_id, nome, email, can_comment, can_request_changes, can_validate, token_hash, status, invited_at)
-           VALUES ($1,$2,$3,$4,true,true,true,$5,'convidado',$6)`,
-          [convidadoId, entregaId, guest.nome, guest.email, tokenHash, now]
+            (id, entrega_id, version_id, nome, email, can_comment, can_request_changes, can_validate, token_hash, status, invited_at)
+           VALUES ($1,$2,$3,$4,$5,true,true,true,$6,'convidado',$7)`,
+          [convidadoId, entregaId, versionId, guest.nome, guest.email, tokenHash, now]
         );
         invitations.push({ ...guest, token, convidadoId });
       }
