@@ -145,6 +145,7 @@ function createPostgresStorage(databaseUrl) {
         mime_type TEXT NOT NULL,
         file_size BIGINT NOT NULL,
         file_hash TEXT NOT NULL,
+        storage_key TEXT,
         file_data BYTEA NOT NULL,
         uploaded_by TEXT NOT NULL,
         uploaded_at TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -204,6 +205,7 @@ function createPostgresStorage(databaseUrl) {
 
     await pool.query("ALTER TABLE portal_entregas ADD COLUMN IF NOT EXISTS validation_mode TEXT NOT NULL DEFAULT 'all'");
     await pool.query("ALTER TABLE portal_entrega_convidados ADD COLUMN IF NOT EXISTS version_id TEXT");
+    await pool.query("ALTER TABLE portal_entrega_versions ADD COLUMN IF NOT EXISTS storage_key TEXT");
 
     // Migração aditiva e idempotente para instalações que já possuem a tabela users.
     await pool.query(`
