@@ -159,7 +159,7 @@ const {
   verifyPassword,
   loginBlockUntilFromNow,
 } = require('./auth-security');
-const { sendPasswordResetEmail, sendConsultantInviteEmail, sendDeliveryInviteEmail, sendPortalNotificationEmail } = require('./email-service');
+const { sendPasswordResetEmail, sendConsultantInviteEmail, sendDeliveryInviteEmail, sendPortalNotificationEmail, sendSmtpTestEmail } = require('./email-service');
 const {
   ROLE_CONSULTOR_ENTREGAS,
   isDeliveryConsultant,
@@ -3169,6 +3169,7 @@ const server = http.createServer(async (req, res) => {
     const criado = url.searchParams.get('criado');
     const salvo = url.searchParams.get('salvo');
     const erro = url.searchParams.get('erro');
+    const emailTeste = url.searchParams.get('emailTeste');
     const cards = consultores.map(u => {
       const selected = byConsultant.get(u.id) || new Set();
       const checks = clientes.map(cl => `
@@ -3202,8 +3203,19 @@ const server = http.createServer(async (req, res) => {
     const body = `
       <h2 class='page-title'>Acessos</h2>
       <p style='color:var(--gray-600);font-size:.9rem'>Cadastre consultores independentes com acesso exclusivo ao módulo Entregas e Validações e defina quais clientes cada um pode gerenciar.</p>
+      <section style='margin-top:1rem'>
+        <h2>Teste de e-mail</h2>
+        <form method='post' action='/acessos/testar-email' style='display:flex;gap:.75rem;align-items:end;flex-wrap:wrap'>
+          <label style='min-width:280px'>Enviar teste para
+            <input name='email' type='email' required value='${escapeHtml(user.email || '')}' placeholder='email@ckm.com.br'>
+          </label>
+          <button type='submit'>Enviar e-mail de teste</button>
+        </form>
+      </section>
       ${criado ? "<div style='margin:1rem 0;padding:.75rem;background:#ecfdf5;color:#065f46;border:1px solid #a7f3d0;border-radius:.5rem'>Consultor cadastrado. O convite para criação da senha será enviado se o SMTP estiver configurado.</div>" : ''}
       ${salvo ? "<div style='margin:1rem 0;padding:.75rem;background:#ecfdf5;color:#065f46;border:1px solid #a7f3d0;border-radius:.5rem'>Clientes autorizados atualizados.</div>" : ''}
+      ${emailTeste === 'ok' ? "<div style='margin:1rem 0;padding:.75rem;background:#ecfdf5;color:#065f46;border:1px solid #a7f3d0;border-radius:.5rem'>E-mail de teste enviado com sucesso.</div>" : ''}
+      ${emailTeste === 'erro' ? "<div style='margin:1rem 0;padding:.75rem;background:#fef2f2;color:#991b1b;border:1px solid #fecaca;border-radius:.5rem'>O e-mail não foi enviado. Verifique SMTP_USER e SMTP_PASS no Railway.</div>" : ''}
       ${erro === 'email' ? "<div style='margin:1rem 0;padding:.75rem;background:#fef2f2;color:#991b1b;border:1px solid #fecaca;border-radius:.5rem'>Este e-mail já está cadastrado.</div>" : ''}
       <section>
         <h2>Novo consultor de entregas</h2>
@@ -3221,6 +3233,19 @@ const server = http.createServer(async (req, res) => {
     const html = page('Acessos', body, user, '/acessos');
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
     res.end(html);
+    return;
+  }
+
+  if (req.method === 'POST' && url.pathname === '/acessos/testar-email') {
+    if (!isFinancialAdmin(user)) return json(res, 403, { error: 'Acesso não autorizado.' });
+    const form = new URLSearchParams(await readBody(req));
+    const email = String(form.get('email') || '').trim().toLowerCase();
+    if (!email || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
+      return json(res, 400, { error: 'Informe um e-mail válido.' });
+    }
+    const ok = await sendSmtpTestEmail({ to: email });
+    res.writeHead(302, { Location: ok ? '/acessos?emailTeste=ok' : '/acessos?emailTeste=erro' });
+    res.end();
     return;
   }
 
