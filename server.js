@@ -151,6 +151,7 @@ const MAPA_TIPOS_DESPESA_CKM = {
 const {
   MAX_FAILED_LOGIN_ATTEMPTS,
   LOGIN_BLOCK_DURATION_MINUTES,
+  validatePasswordStrength,
   isHashedPassword,
   hashPassword,
   verifyPassword,
@@ -1474,6 +1475,7 @@ const server = http.createServer(async (req, res) => {
 
   if (req.method === 'GET' && url.pathname === '/login') {
     const erro = url.searchParams.get('erro');
+    const senhaAlterada = url.searchParams.get('senha') === 'alterada';
     const erroMsg = erro === 'bloqueado'
       ? `Muitas tentativas incorretas. Tente novamente em ${LOGIN_BLOCK_DURATION_MINUTES} minutos.`
       : erro === 'inativo'
@@ -1481,7 +1483,7 @@ const server = http.createServer(async (req, res) => {
         : erro === 'credenciais'
           ? 'E-mail ou senha inválidos.'
           : '';
-    const html = `<!doctype html><html lang='pt-BR'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>Login — CKM Financeiro</title><link rel='preconnect' href='https://fonts.googleapis.com'><link rel='stylesheet' href='https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap'><link rel='stylesheet' href='/public/style.css'></head><body class='login-page'><div class='login-card'><div class='brand'><h2>Painel CKM Financeiro</h2><p>Gestão Financeira Gerencial</p></div>${erroMsg ? `<div style='margin:0 0 1rem;padding:.7rem .8rem;border-radius:.5rem;background:#fef2f2;color:#991b1b;border:1px solid #fecaca;font-size:.85rem'>${erroMsg}</div>` : ''}<form method='post' action='/login'><label>E-mail<input name='email' type='email' placeholder='seu@email.com' autocomplete='username' required></label><label>Senha<input type='password' name='password' placeholder='••••••' autocomplete='current-password' required></label><button type='submit' style='width:100%;justify-content:center;padding:.75rem'>Entrar</button></form></div></body></html>`;
+    const html = `<!doctype html><html lang='pt-BR'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>Login — CKM Financeiro</title><link rel='preconnect' href='https://fonts.googleapis.com'><link rel='stylesheet' href='https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap'><link rel='stylesheet' href='/public/style.css'></head><body class='login-page'><div class='login-card'><div class='brand'><h2>Painel CKM Financeiro</h2><p>Gestão Financeira Gerencial</p></div>${senhaAlterada ? `<div style='margin:0 0 1rem;padding:.7rem .8rem;border-radius:.5rem;background:#ecfdf5;color:#065f46;border:1px solid #a7f3d0;font-size:.85rem'>Senha alterada com sucesso. Entre novamente.</div>` : ''}${erroMsg ? `<div style='margin:0 0 1rem;padding:.7rem .8rem;border-radius:.5rem;background:#fef2f2;color:#991b1b;border:1px solid #fecaca;font-size:.85rem'>${erroMsg}</div>` : ''}<form method='post' action='/login'><label>E-mail<input name='email' type='email' placeholder='seu@email.com' autocomplete='username' required></label><label>Senha<input type='password' name='password' placeholder='••••••' autocomplete='current-password' required></label><button type='submit' style='width:100%;justify-content:center;padding:.75rem'>Entrar</button></form></div></body></html>`;
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
     res.end(html);
     return;
@@ -1534,6 +1536,10 @@ const server = http.createServer(async (req, res) => {
     if (!isHashedPassword(user.password)) {
       user.password = hashPassword(rawPassword);
     }
+    // Senhas antigas/fracas continuam funcionando uma vez, mas exigem troca imediata.
+    if (!validatePasswordStrength(rawPassword).isValid) {
+      user.mustChangePassword = true;
+    }
     user.failedLoginAttempts = 0;
     user.loginBlockedUntil = null;
     user.lastLoginAt = new Date().toISOString();
@@ -1545,7 +1551,94 @@ const server = http.createServer(async (req, res) => {
     if (storage.sessionSet) {
       storage.sessionSet(sid, user.id, SESSION_TTL_SECONDS).catch(e => console.warn('[session] Erro ao salvar sessão:', e.message));
     }
-    res.writeHead(302, { 'Set-Cookie': buildSessionCookie(req, sid), Location: '/' });
+    res.writeHead(302, {
+      'Set-Cookie': buildSessionCookie(req, sid),
+      Location: user.mustChangePassword ? '/change-password' : '/'
+    });
+    res.end();
+    return;
+  }
+
+
+  if (req.method === 'GET' && url.pathname === '/change-password') {
+    const user = currentUser(req, db);
+    if (!user) {
+      res.writeHead(302, { Location: '/login' });
+      res.end();
+      return;
+    }
+
+    const erro = url.searchParams.get('erro');
+    const erroMsg = erro === 'atual'
+      ? 'A senha atual não confere.'
+      : erro === 'iguais'
+        ? 'A nova senha deve ser diferente da senha atual.'
+        : erro === 'confirmacao'
+          ? 'A confirmação da nova senha não confere.'
+          : erro === 'fraca'
+            ? 'Use pelo menos 8 caracteres, com ao menos 1 número e 1 caractere especial (!@#$%).'
+            : '';
+
+    const html = `<!doctype html><html lang='pt-BR'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>Trocar senha — CKM Financeiro</title><link rel='preconnect' href='https://fonts.googleapis.com'><link rel='stylesheet' href='https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap'><link rel='stylesheet' href='/public/style.css'></head><body class='login-page'><div class='login-card'><div class='brand'><h2>Defina uma senha segura</h2><p>Proteção de acesso ao Sistema Financeiro CKM</p></div>${erroMsg ? `<div style='margin:0 0 1rem;padding:.7rem .8rem;border-radius:.5rem;background:#fef2f2;color:#991b1b;border:1px solid #fecaca;font-size:.85rem'>${erroMsg}</div>` : ''}<form method='post' action='/change-password'><label>Senha atual<input name='currentPassword' type='password' autocomplete='current-password' required></label><label>Nova senha<input name='newPassword' type='password' autocomplete='new-password' required></label><div style='font-size:.76rem;color:#64748b;margin-top:-.45rem;margin-bottom:.65rem'>Mínimo de 8 caracteres, com ao menos 1 número e 1 caractere especial (!@#$%).</div><label>Confirmar nova senha<input name='confirmPassword' type='password' autocomplete='new-password' required></label><button type='submit' style='width:100%;justify-content:center;padding:.75rem'>Salvar nova senha</button></form></div></body></html>`;
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+    res.end(html);
+    return;
+  }
+
+  if (req.method === 'POST' && url.pathname === '/change-password') {
+    const user = currentUser(req, db);
+    if (!user) {
+      res.writeHead(302, { Location: '/login' });
+      res.end();
+      return;
+    }
+
+    const form = new URLSearchParams(await readBody(req));
+    const currentPassword = form.get('currentPassword') || '';
+    const newPassword = form.get('newPassword') || '';
+    const confirmPassword = form.get('confirmPassword') || '';
+
+    if (!verifyPassword(currentPassword, user.password)) {
+      res.writeHead(302, { Location: '/change-password?erro=atual' });
+      res.end();
+      return;
+    }
+    if (String(currentPassword).normalize('NFKC').trim() === String(newPassword).normalize('NFKC').trim()) {
+      res.writeHead(302, { Location: '/change-password?erro=iguais' });
+      res.end();
+      return;
+    }
+    if (newPassword !== confirmPassword) {
+      res.writeHead(302, { Location: '/change-password?erro=confirmacao' });
+      res.end();
+      return;
+    }
+    const validation = validatePasswordStrength(newPassword);
+    if (!validation.isValid) {
+      res.writeHead(302, { Location: '/change-password?erro=fraca' });
+      res.end();
+      return;
+    }
+
+    user.password = hashPassword(newPassword);
+    user.mustChangePassword = false;
+    user.failedLoginAttempts = 0;
+    user.loginBlockedUntil = null;
+    saveDb(db);
+
+    // Invalida todas as sessões do usuário, inclusive a atual.
+    for (const [sid, sessionData] of sessions.entries()) {
+      const sessionUserId = typeof sessionData === 'string' ? sessionData : sessionData.userId;
+      if (sessionUserId === user.id) sessions.delete(sid);
+    }
+    if (storage.sessionDeleteByUser) {
+      await storage.sessionDeleteByUser(user.id).catch(e => console.warn('[session] Erro ao invalidar sessões:', e.message));
+    }
+
+    res.writeHead(302, {
+      'Set-Cookie': buildSessionCookie(req, '', 0),
+      Location: '/login?senha=alterada'
+    });
     res.end();
     return;
   }
