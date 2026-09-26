@@ -2462,16 +2462,32 @@ const server = http.createServer(async (req, res) => {
   ` : `
     ${!r2Ready ? "<div style='margin-top:1rem;padding:.8rem;background:#fff7ed;color:#9a3412;border:1px solid #fdba74;border-radius:.6rem'>Novas entregas estão temporariamente indisponíveis. O administrador está concluindo a configuração de segurança do módulo.</div>" : ""}
   `}
-  <div style='display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:.9rem;margin-top:1.25rem'>
-    <a href='/entregas/contratos' style='display:block;text-decoration:none;color:inherit;border:1px solid #e2e8f0;border-radius:12px;padding:1rem;background:#fff'>
-      <strong>Contratos de referência</strong>
-      <div style='font-size:.82rem;color:#64748b;margin-top:.3rem'>Consultar contratos relacionados aos clientes autorizados, sem dados financeiros.</div>
-    </a>
-    <a href='/entregas/contatos' style='display:block;text-decoration:none;color:inherit;border:1px solid #e2e8f0;border-radius:12px;padding:1rem;background:#fff'>
-      <strong>Contatos / Validadores</strong>
-      <div style='font-size:.82rem;color:#64748b;margin-top:.3rem'>Cadastrar e manter nomes e e-mails usados nas validações.</div>
-    </a>
-  </div>
+  <section style='margin-top:1.25rem'>
+    <h2 style='margin-bottom:.7rem'>Fluxo do administrador</h2>
+    <div style='display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:.9rem'>
+      <a href='/entregas/contratos' style='display:block;text-decoration:none;color:inherit;border:1px solid #e2e8f0;border-radius:12px;padding:1rem;background:#fff'>
+        <div style='font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase'>Passo 1</div>
+        <strong style='display:block;margin-top:.25rem'>Contratos de referência</strong>
+        <div style='font-size:.82rem;color:#64748b;margin-top:.3rem'>Consulte o contrato que poderá ser relacionado à entrega, sem expor dados financeiros.</div>
+      </a>
+      <a href='/entregas/contatos' style='display:block;text-decoration:none;color:inherit;border:1px solid #e2e8f0;border-radius:12px;padding:1rem;background:#fff'>
+        <div style='font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase'>Passo 2</div>
+        <strong style='display:block;margin-top:.25rem'>Contatos / Validadores</strong>
+        <div style='font-size:.82rem;color:#64748b;margin-top:.3rem'>Cadastre nome e e-mail das pessoas que receberão os documentos para análise.</div>
+      </a>
+      ${r2Ready
+        ? `<a href='/entregas/nova' style='display:block;text-decoration:none;color:inherit;border:2px solid #6d28d9;border-radius:12px;padding:1rem;background:#faf5ff'>
+            <div style='font-size:.72rem;font-weight:700;color:#6d28d9;text-transform:uppercase'>Passo 3</div>
+            <strong style='display:block;margin-top:.25rem'>Nova Entrega</strong>
+            <div style='font-size:.82rem;color:#64748b;margin-top:.3rem'>Cadastre o documento, anexe o PDF V1, selecione os validadores e envie para análise.</div>
+          </a>`
+        : `<div style='display:block;border:1px solid #cbd5e1;border-radius:12px;padding:1rem;background:#f8fafc;color:#64748b'>
+            <div style='font-size:.72rem;font-weight:700;text-transform:uppercase'>Passo 3</div>
+            <strong style='display:block;margin-top:.25rem'>Nova Entrega — bloqueada</strong>
+            <div style='font-size:.82rem;margin-top:.3rem'>Será liberada automaticamente após a configuração do armazenamento seguro.</div>
+          </div>`}
+    </div>
+  </section>
   <div class='cards' style='margin-top:1.25rem'>
     <div class='card'><strong>Aguardando cliente</strong><span>${counts.aguardando_cliente}</span></div>
     <div class='card'><strong>Ajustes solicitados</strong><span>${counts.ajustes_solicitados}</span></div>
