@@ -2016,7 +2016,6 @@ const server = http.createServer(async (req, res) => {
       const form = new URLSearchParams(await readBody(req));
       const decision = String(form.get('decision') || '').trim();
       const decisionText = String(form.get('decisionText') || '').trim();
-      const cpf = String(form.get('cpf') || '').replace(/\D/g, '');
 
       if (decision === 'changes_requested') {
         if (!guest.can_request_changes) return json(res, 403, { error: 'Você não possui permissão para solicitar ajustes.' });
@@ -2099,11 +2098,6 @@ const server = http.createServer(async (req, res) => {
         if (version.status === 'ajustes_solicitados' || guest.entrega_status === 'ajustes_solicitados') {
           return json(res, 409, { error: 'Esta versão possui ajustes solicitados. Aguarde a CKM enviar uma nova versão.' });
         }
-        if (cpf && (cpf.length !== 11)) {
-          res.writeHead(302, { Location: `/validar/${token}?erro=cpf` });
-          res.end();
-          return;
-        }
 
         const existing = await pg.query(
           `SELECT id FROM portal_entrega_decisions
@@ -2146,7 +2140,7 @@ const server = http.createServer(async (req, res) => {
               `INSERT INTO portal_entrega_validations
                 (id, entrega_id, version_id, convidado_id, protocol, file_hash, validator_name, validator_email, validator_cpf, declaration_text, validated_at)
                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,NOW())`,
-              [crypto.randomUUID(), guest.entrega_id, version.id, guest.id, protocol, version.file_hash, guest.nome, guest.email, cpf || null, declaration]
+              [crypto.randomUUID(), guest.entrega_id, version.id, guest.id, protocol, version.file_hash, guest.nome, guest.email, null, declaration]
             );
             await client.query("UPDATE portal_entrega_versions SET status='validated' WHERE id=$1", [version.id]);
             await client.query("UPDATE portal_entregas SET status='validado' WHERE id=$1", [guest.entrega_id]);
@@ -2334,8 +2328,6 @@ const server = http.createServer(async (req, res) => {
                     <form method='post' action='/validar/${token}/decisao'>
                       <input type='hidden' name='decision' value='validated'>
                       <p style='font-size:13px;line-height:1.5'>Ao confirmar, você declara estar de acordo com a versão V${Number(version.version_number)} deste documento.</p>
-                      <label>CPF para identificação do registro (opcional nesta fase)</label>
-                      <input name='cpf' inputmode='numeric' maxlength='14' placeholder='000.000.000-00'>
                       <button class='primary' type='submit' style='margin-top:10px'>De acordo e validar entrega</button>
                     </form>`) : ''}
                 `}
