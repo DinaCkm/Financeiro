@@ -381,6 +381,21 @@ function portalBaseUrl(req) {
   return configuredBase || `${proto}://${req.headers.host}`;
 }
 
+async function recordPortalAudit(pg, req, { entregaId, versionId, actorType, actorId, action, details = {} }) {
+  try {
+    await pg.query(
+      `INSERT INTO portal_audit_events
+        (id, entrega_id, version_id, actor_type, actor_id, action, ip_address, user_agent, details)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb)`,
+      [crypto.randomUUID(), entregaId || null, versionId || null, actorType, String(actorId || ''), action,
+        String(req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').split(',')[0].trim().slice(0, 64),
+        String(req.headers['user-agent'] || '').slice(0, 500), JSON.stringify(details)]
+    );
+  } catch (e) {
+    console.warn('[entregas] Falha ao registrar auditoria:', e.message);
+  }
+}
+
 function findPortalResponsibleUser(db, responsibleUserId) {
   return (db.users || []).find(u => String(u.id) === String(responsibleUserId)) || null;
 }
@@ -2080,6 +2095,7 @@ const server = http.createServer(async (req, res) => {
           client.release();
         }
 
+        await recordPortalAudit(pg, req, { entregaId:guest.entrega_id, versionId:version.id, actorType:'cliente', actorId:guest.id, action:'ajustes_solicitados' });
         notifyPortalResponsible(
           db,
           req,
@@ -2183,6 +2199,7 @@ const server = http.createServer(async (req, res) => {
         }
 
         if (finalProtocol) {
+          await recordPortalAudit(pg, req, { entregaId:guest.entrega_id, versionId:version.id, actorType:'cliente', actorId:guest.id, action:'validacao_final', details:{ protocol:finalProtocol, fileHash:version.file_hash } });
           notifyPortalResponsible(
             db,
             req,
@@ -2212,6 +2229,7 @@ const server = http.createServer(async (req, res) => {
             }).catch(e => console.warn('[email] Confirmação final ao cliente não enviada:', e && e.message ? e.message : e));
           }
         } else if (isNewApproval) {
+          await recordPortalAudit(pg, req, { entregaId:guest.entrega_id, versionId:version.id, actorType:'cliente', actorId:guest.id, action:'concordancia_registrada' });
           notifyPortalResponsible(
             db,
             req,
@@ -3137,6 +3155,7 @@ const server = http.createServer(async (req, res) => {
       client.release();
     }
 
+    await recordPortalAudit(pg, req, { entregaId, versionId, actorType:'ckm', actorId:user.id, action:'entrega_criada', details:{ fileHash } });
     const baseUrl = portalBaseUrl(req);
     for (const inv of invitations) {
       const accessLink = `${baseUrl}/validar/${encodeURIComponent(inv.token)}`;
@@ -3193,6 +3212,7 @@ const server = http.createServer(async (req, res) => {
         senderName: user.name || user.email || 'Equipe CKM Talents'
       }).catch(e => console.warn('[entregas] Falha ao reemitir link:', e.message));
     }
+    await recordPortalAudit(pg, req, { entregaId, versionId:guest.version_id, actorType:'ckm', actorId:user.id, action:action === 'revogar' ? 'link_revogado' : 'link_reemitido', details:{ convidadoId:guest.id } });
     res.writeHead(302, { Location: `/entregas/${entregaId}` });
     res.end();
     return;
@@ -3539,6 +3559,7 @@ const server = http.createServer(async (req, res) => {
       client.release();
     }
 
+    await recordPortalAudit(pg, req, { entregaId, versionId, actorType:'ckm', actorId:user.id, action:'nova_versao', details:{ version:nextVersion, fileHash:hash } });
     const baseUrl = portalBaseUrl(req);
     for (const inv of invitations) {
       sendDeliveryInviteEmail({
