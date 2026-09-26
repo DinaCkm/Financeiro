@@ -2726,7 +2726,7 @@ const server = http.createServer(async (req, res) => {
     const pg = storage.getPool ? storage.getPool() : null;
     if (!pg) return json(res, 503, { error: 'Banco não disponível.' });
 
-    let clientes = [], projetos = [], contratos = [];
+    let clientes = [], projetos = [], contratos = [], contatos = [];
     try {
       const allowed = await getPortalAllowedClientIds(user);
       if (allowed === null) {
@@ -2739,6 +2739,16 @@ const server = http.createServer(async (req, res) => {
       }
       projetos = (await pg.query('SELECT id, codigo, nome, cliente_id FROM projetos WHERE ativo=true ORDER BY codigo')).rows;
       contratos = (await pg.query('SELECT id, numero, descricao, cliente_id, projeto_id, status FROM contratos ORDER BY numero')).rows;
+      if (allowed === null) {
+        contatos = (await pg.query(
+          'SELECT id, cliente_id, nome, email FROM portal_contatos_validacao WHERE ativo=true ORDER BY nome'
+        )).rows;
+      } else if (allowed.length) {
+        contatos = (await pg.query(
+          'SELECT id, cliente_id, nome, email FROM portal_contatos_validacao WHERE ativo=true AND cliente_id=ANY($1::int[]) ORDER BY nome',
+          [allowed]
+        )).rows;
+      }
     } catch (e) {
       return json(res, 500, { error: e.message });
     }
@@ -2746,6 +2756,7 @@ const server = http.createServer(async (req, res) => {
     const clientesJson = JSON.stringify(clientes).replace(/</g, '\\u003c');
     const projetosJson = JSON.stringify(projetos).replace(/</g, '\\u003c');
     const contratosJson = JSON.stringify(contratos).replace(/</g, '\\u003c');
+    const contatosJson = JSON.stringify(contatos).replace(/</g, '\\u003c');
 
     const body = `
       <div style='display:flex;justify-content:space-between;align-items:center;gap:1rem'>
@@ -2796,7 +2807,18 @@ const server = http.createServer(async (req, res) => {
             <h2 style='margin-bottom:.25rem'>Pessoas responsáveis pela validação</h2>
             <p style='color:#64748b;font-size:.82rem'>Informe nome e e-mail. Cada pessoa receberá seu próprio link individual.</p>
           </div>
-          <button type='button' class='btn-outline' onclick='adicionarValidador()'>+ Adicionar pessoa</button>
+          <div style='display:flex;gap:.5rem;flex-wrap:wrap'>
+            <button type='button' class='btn-outline' onclick='usarContatoCadastrado()'>Selecionar contato cadastrado</button>
+            <button type='button' class='btn-outline' onclick='adicionarValidador()'>+ Adicionar pessoa</button>
+          </div>
+        </div>
+        <div id='contato-picker' style='display:none;margin:.75rem 0;padding:.75rem;border:1px solid #e2e8f0;border-radius:10px;background:#f8fafc'>
+          <label>Contato cadastrado
+            <select id='contato-select'>
+              <option value=''>-- Selecione --</option>
+            </select>
+          </label>
+          <button type='button' class='btn-outline' style='margin-top:.5rem' onclick='adicionarContatoSelecionado()'>Adicionar à validação</button>
         </div>
         <div id='validadores'></div>
       </section>
@@ -2811,6 +2833,7 @@ const server = http.createServer(async (req, res) => {
       const CLIENTES = ${clientesJson};
       const PROJETOS = ${projetosJson};
       const CONTRATOS = ${contratosJson};
+      const CONTATOS = ${contatosJson};
 
       function filtrarRelacionados() {
         const clienteId = Number(document.getElementById('ent-cliente').value || 0);
@@ -2831,6 +2854,27 @@ const server = http.createServer(async (req, res) => {
         );
         contrato.innerHTML = '<option value="">-- Nenhum --</option>' +
           lista.map(ct => '<option value="'+ct.id+'">'+(ct.numero || ('Contrato #'+ct.id))+(ct.descricao ? ' — '+ct.descricao : '')+'</option>').join('');
+        atualizarContatosDoCliente();
+      }
+
+      function atualizarContatosDoCliente() {
+        const clienteId = Number(document.getElementById('ent-cliente').value || 0);
+        const select = document.getElementById('contato-select');
+        const lista = CONTATOS.filter(ct => Number(ct.cliente_id) === clienteId);
+        select.innerHTML = '<option value="">-- Selecione --</option>' +
+          lista.map(ct => '<option value="'+ct.id+'">'+ct.nome+' — '+ct.email+'</option>').join('');
+      }
+
+      function usarContatoCadastrado() {
+        atualizarContatosDoCliente();
+        document.getElementById('contato-picker').style.display = '';
+      }
+
+      function adicionarContatoSelecionado() {
+        const id = document.getElementById('contato-select').value;
+        const contato = CONTATOS.find(ct => String(ct.id) === String(id));
+        if (!contato) return;
+        adicionarValidador(contato.nome || '', contato.email || '');
       }
 
       function adicionarValidador(nome='', email='') {
