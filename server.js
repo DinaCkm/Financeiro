@@ -2448,14 +2448,20 @@ const server = http.createServer(async (req, res) => {
         Gestão dos documentos enviados aos clientes para análise, solicitação de ajustes e validação.
       </p>
     </div>
-    ${r2Ready ? "<a href='/entregas/nova'><button>+ Nova Entrega</button></a>" : "<button disabled title='Configure o R2 privado para liberar novas entregas'>+ Nova Entrega</button>"}
+    ${r2Ready
+      ? "<a href='/entregas/nova'><button>+ Nova Entrega</button></a>"
+      : "<span style='display:inline-flex;align-items:center;padding:.72rem 1.2rem;border-radius:.6rem;background:#e2e8f0;color:#64748b;font-weight:700;cursor:not-allowed;border:1px solid #cbd5e1' title='Novas entregas ainda não estão liberadas'>Nova Entrega — bloqueada</span>"}
   </div>
-  <div style='display:flex;gap:.75rem;flex-wrap:wrap;margin-top:1rem'>
-    <span class='badge ${smtpReady ? "badge-green" : "badge-amber"}'>E-mail: ${smtpReady ? "configurado" : "pendente"}</span>
-    <span class='badge ${r2Ready ? "badge-green" : "badge-amber"}'>Armazenamento seguro: ${r2Ready ? "configurado" : "pendente"}</span>
-  </div>
-  ${!r2Ready ? "<div style='margin-top:1rem;padding:.8rem;background:#fff7ed;color:#9a3412;border:1px solid #fdba74;border-radius:.6rem'>Novas entregas estão temporariamente bloqueadas até a configuração do armazenamento privado R2.</div>" : ""}
-  ${!smtpReady ? "<div style='margin-top:.75rem;padding:.8rem;background:#fffbeb;color:#92400e;border:1px solid #fde68a;border-radius:.6rem'>Os avisos por e-mail ainda estão pendentes de SMTP_USER e SMTP_PASS.</div>" : ""}
+  ${isFinancialAdmin(user) ? `
+    <div style='display:flex;gap:.75rem;flex-wrap:wrap;margin-top:1rem'>
+      <span class='badge ${smtpReady ? "badge-green" : "badge-amber"}'>E-mail: ${smtpReady ? "configurado" : "pendente"}</span>
+      <span class='badge ${r2Ready ? "badge-green" : "badge-amber"}'>Armazenamento seguro: ${r2Ready ? "configurado" : "pendente"}</span>
+    </div>
+    ${!r2Ready ? "<div style='margin-top:1rem;padding:.8rem;background:#fff7ed;color:#9a3412;border:1px solid #fdba74;border-radius:.6rem'><strong>Configuração pendente:</strong> o armazenamento privado R2 ainda não possui credenciais neste ambiente. Novas entregas permanecem bloqueadas para proteger os documentos.</div>" : ""}
+    ${!smtpReady ? "<div style='margin-top:.75rem;padding:.8rem;background:#fffbeb;color:#92400e;border:1px solid #fde68a;border-radius:.6rem'><strong>Configuração pendente:</strong> o serviço de e-mail ainda não possui as credenciais SMTP_USER e SMTP_PASS.</div>" : ""}
+  ` : `
+    ${!r2Ready ? "<div style='margin-top:1rem;padding:.8rem;background:#fff7ed;color:#9a3412;border:1px solid #fdba74;border-radius:.6rem'>Novas entregas estão temporariamente indisponíveis. O administrador está concluindo a configuração de segurança do módulo.</div>" : ""}
+  `}
   <div class='cards' style='margin-top:1.25rem'>
     <div class='card'><strong>Aguardando cliente</strong><span>${counts.aguardando_cliente}</span></div>
     <div class='card'><strong>Ajustes solicitados</strong><span>${counts.ajustes_solicitados}</span></div>
