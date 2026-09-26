@@ -1982,6 +1982,9 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (req.method === 'POST' && action === 'decisao') {
+      if (Number(version.version_number) !== Number(guest.current_version || 1)) {
+        return json(res, 409, { error: 'Este link pertence a uma versão anterior. Use o convite da versão atual.' });
+      }
       const form = new URLSearchParams(await readBody(req));
       const decision = String(form.get('decision') || '').trim();
       const decisionText = String(form.get('decisionText') || '').trim();
@@ -2061,8 +2064,11 @@ const server = http.createServer(async (req, res) => {
         }
 
         const totalRequired = Number((await pg.query(
-          'SELECT COUNT(*)::int AS c FROM portal_entrega_convidados WHERE entrega_id=$1 AND can_validate=true',
-          [guest.entrega_id]
+          `SELECT COUNT(*)::int AS c
+             FROM portal_entrega_convidados
+            WHERE entrega_id=$1 AND can_validate=true
+              AND (version_id=$2 OR (version_id IS NULL AND $2 IS NULL))`,
+          [guest.entrega_id, version.id]
         )).rows[0].c || 0);
         const totalApproved = Number((await pg.query(
           `SELECT COUNT(DISTINCT convidado_id)::int AS c
