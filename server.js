@@ -2077,6 +2077,13 @@ const server = http.createServer(async (req, res) => {
         if (version.status === 'validated') {
           return json(res, 409, { error: 'Esta versão já foi validada e não pode ser alterada.' });
         }
+        const priorApproval = await pg.query(
+          `SELECT 1 FROM portal_entrega_decisions WHERE version_id=$1 AND convidado_id=$2 AND decision='validated' LIMIT 1`,
+          [version.id, guest.id]
+        );
+        if (priorApproval.rows.length) {
+          return json(res, 409, { error: 'Sua concordância já foi registrada nesta versão.' });
+        }
 
         const client = await pg.connect();
         try {
@@ -2378,7 +2385,7 @@ const server = http.createServer(async (req, res) => {
                 ` : version.status === 'ajustes_solicitados' ? `
                   <div class='error'>Esta versão possui ajustes solicitados. Aguarde a CKM enviar uma nova versão.</div>
                 ` : `
-                  ${guest.can_request_changes ? `
+                  ${guest.can_request_changes && !alreadyApproved ? `
                     <form method='post' action='${accessPath}/decisao' style='margin-bottom:14px'>
                       <input type='hidden' name='decision' value='changes_requested'>
                       <label>Se precisar de alterações, descreva exatamente o que deve ser ajustado</label>
