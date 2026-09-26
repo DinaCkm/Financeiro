@@ -355,6 +355,13 @@ async function userCanAccessPortalClient(user, clienteId) {
   return allowed.includes(Number(clienteId));
 }
 
+async function userCanAccessPortalDelivery(user, delivery) {
+  if (!delivery) return false;
+  if (!isDeliveryConsultant(user)) return true;
+  if (String(delivery.responsavel_user_id) !== String(user.id)) return false;
+  return userCanAccessPortalClient(user, Number(delivery.cliente_id));
+}
+
 function createGuestToken() {
   const token = crypto.randomBytes(32).toString('hex');
   const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
