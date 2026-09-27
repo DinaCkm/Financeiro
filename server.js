@@ -2890,9 +2890,11 @@ const server = http.createServer(async (req, res) => {
       function filtrarRelacionados() {
         const clienteId = Number(document.getElementById('ent-cliente').value || 0);
         const projeto = document.getElementById('ent-projeto');
+        const projetoAnterior = projeto.value;
         const lista = PROJETOS.filter(p => !p.cliente_id || Number(p.cliente_id) === clienteId);
         projeto.innerHTML = '<option value="">-- Nenhum --</option>' +
           lista.map(p => '<option value="'+p.id+'">'+(p.codigo ? p.codigo+' — ' : '')+p.nome+'</option>').join('');
+        if (lista.some(p => String(p.id) === projetoAnterior)) projeto.value = projetoAnterior;
         filtrarContratos();
       }
 
@@ -2900,12 +2902,14 @@ const server = http.createServer(async (req, res) => {
         const clienteId = Number(document.getElementById('ent-cliente').value || 0);
         const projetoId = Number(document.getElementById('ent-projeto').value || 0);
         const contrato = document.getElementById('ent-contrato');
+        const contratoAnterior = contrato.value;
         const lista = CONTRATOS.filter(ct =>
           Number(ct.cliente_id) === clienteId &&
           (!projetoId || !ct.projeto_id || Number(ct.projeto_id) === projetoId)
         );
         contrato.innerHTML = '<option value="">-- Nenhum --</option>' +
           lista.map(ct => '<option value="'+ct.id+'">'+(ct.numero || ('Contrato #'+ct.id))+(ct.descricao ? ' — '+ct.descricao : '')+'</option>').join('');
+        if (lista.some(ct => String(ct.id) === contratoAnterior)) contrato.value = contratoAnterior;
         atualizarContatosDoCliente();
       }
 
@@ -3016,6 +3020,7 @@ const server = http.createServer(async (req, res) => {
       }
 
       adicionarValidador();
+      window.addEventListener('pageshow', filtrarRelacionados);
       </script>
     `;
 
