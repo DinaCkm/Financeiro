@@ -9583,9 +9583,25 @@ async function saveBanco() {
       if (pg) {
         contratos = (await pg.query(`SELECT ct.*, cl.nome_curto as cliente_nome, pr.nome as projeto_nome FROM contratos ct LEFT JOIN clientes cl ON ct.cliente_id=cl.id LEFT JOIN projetos pr ON ct.projeto_id=pr.id ORDER BY ct.status, ct.data_fim`)).rows;
         clientes  = (await pg.query('SELECT id, nome, nome_curto FROM clientes WHERE ativo=true ORDER BY nome')).rows;
-        projetos  = (await pg.query('SELECT id, codigo, nome, cliente_id FROM projetos WHERE ativo=true ORDER BY codigo')).rows;
+        projetos  = (await pg.query('SELECT id, codigo, nome, cliente_id FROM projetos p WHERE ativo=true OR EXISTS (SELECT 1 FROM contratos ct WHERE ct.projeto_id=p.id) ORDER BY codigo')).rows;
       }
     } catch(e) { console.error('[contratos]', e.message); }
+
+    const isoData = (v) => {
+      if (!v) return '';
+      if (v instanceof Date) return isNaN(v) ? '' : v.toISOString().slice(0, 10);
+      return String(v).slice(0, 10);
+    };
+    const brData = (v) => {
+      const iso = isoData(v);
+      return iso ? iso.split('-').reverse().join('/') : '';
+    };
+    const contratosEditJson = JSON.stringify(contratos.map(c => ({
+      id: c.id, numero: c.numero || '', cliente_id: c.cliente_id || '', projeto_id: c.projeto_id || '',
+      descricao: c.descricao || '', valor_total: c.valor_total, valor_parcela: c.valor_parcela,
+      data_inicio: isoData(c.data_inicio), data_fim: isoData(c.data_fim),
+      periodicidade: c.periodicidade || 'MENSAL', status: c.status || 'ATIVO', observacoes: c.observacoes || ''
+    }))).replace(/</g, '\\u003c');
 
     const statusColors = { ATIVO:'#5ED38C', ENCERRADO:'#808080', SUSPENSO:'#f59e0b', EM_NEGOCIACAO:'#00B8D9' };
     const hoje = new Date();
@@ -9598,14 +9614,15 @@ async function saveBanco() {
       return `<div class='contrato-card'>
         <div class='contrato-badge'>📋</div>
         <div class='contrato-info'>
-          <h4>${c.descricao || c.numero || 'Contrato #'+c.id} ${vencendo?'<span class="badge badge-amber">⚠ Vence em breve</span>':''}</h4>
-          <div style='font-size:.82rem;color:#808080;margin-bottom:.4rem'>${c.cliente_nome||'-'} · ${c.projeto_nome||'-'} · ${c.periodicidade||'MENSAL'}</div>
-          ${decorrido !== null ? `<div class='progress-bar'><div class='progress-bar-fill' style='width:${decorrido}%'></div></div><div style='font-size:.72rem;color:#808080;margin-top:.2rem'>${decorrido}% do período · ${c.data_inicio||'-'} → ${c.data_fim||'Indeterminado'}</div>` : ''}
+          <h4>${escapeHtml([c.numero, c.descricao].filter(Boolean).join(' — ') || 'Contrato #'+c.id)} ${vencendo?'<span class="badge badge-amber">⚠ Vence em breve</span>':''}</h4>
+          <div style='font-size:.82rem;color:#808080;margin-bottom:.4rem'>${escapeHtml(c.cliente_nome||'-')} · ${escapeHtml(c.projeto_nome||'-')} · ${c.periodicidade||'MENSAL'}</div>
+          ${decorrido !== null ? `<div class='progress-bar'><div class='progress-bar-fill' style='width:${decorrido}%'></div></div><div style='font-size:.72rem;color:#808080;margin-top:.2rem'>${decorrido}% do período · ${brData(c.data_inicio)||'-'} → ${brData(c.data_fim)||'Indeterminado'}</div>` : ''}
         </div>
         <div style='text-align:right;flex-shrink:0'>
           <div class='contrato-valor'>R$ ${Number(c.valor_total||0).toLocaleString('pt-BR',{minimumFractionDigits:2})}</div>
           <div style='font-size:.78rem;color:#808080'>${c.valor_parcela ? 'Parcela: R$ '+Number(c.valor_parcela).toLocaleString('pt-BR',{minimumFractionDigits:2}) : ''}</div>
           <span class='badge' style='background:${statusColors[c.status]||'#808080'}22;color:${statusColors[c.status]||'#808080'};margin-top:.4rem'>${c.status}</span>
+          <div style='margin-top:.6rem'><button type='button' class='btn-outline' onclick='editarContrato(${Number(c.id)})'>✏️ Editar</button></div>
         </div>
       </div>`;
     }).join('') || '<p style="color:#808080;padding:1rem">Nenhum contrato cadastrado.</p>';
@@ -9625,8 +9642,8 @@ async function saveBanco() {
   <div class='card card-warning'><strong>Vencendo em 60 dias</strong><span class='neg'>${contratos.filter(c=>{const f=c.data_fim?new Date(c.data_fim):null;return f&&c.status==='ATIVO'&&(f-hoje)<60*24*60*60*1000;}).length}</span></div>
 </div>
 
-<section>
-  <h2>➕ Novo Contrato</h2>
+<section id='sec-form-contrato'>
+  <h2 id='ct-form-titulo'>➕ Novo Contrato</h2>
   <div class='form-grid'>
     <label>Número / Referência <input id='ct-numero' placeholder='Ex: SEBRAE-TO-2025-001'></label>
     <label>Cliente <select id='ct-cliente' onchange='filtrarProjetosContrato()'><option value=''>-- Selecione --</option>${clienteOpts}</select></label>
@@ -9654,7 +9671,8 @@ async function saveBanco() {
     </label>
   </div>
   <label style='margin-bottom:1rem'>Observações <textarea id='ct-obs' rows='2' placeholder='Informações adicionais...'></textarea></label>
-  <button onclick='saveContrato()'>💾 Salvar Contrato</button>
+  <button id='ct-btn-salvar' onclick='saveContrato()'>💾 Salvar Contrato</button>
+  <button id='ct-btn-cancelar' type='button' class='btn-outline' style='display:none;margin-left:.5rem' onclick='cancelarEdicao()'>Cancelar edição</button>
 </section>
 
 <section>
@@ -9664,6 +9682,51 @@ async function saveBanco() {
 
 <script>
 const PROJETOS_CONTRATO = ${projetosContratoJson};
+const CONTRATOS_EDIT = ${contratosEditJson};
+let contratoEditandoId = null;
+
+function setCampo(id, valor) { document.getElementById(id).value = (valor === null || valor === undefined) ? '' : valor; }
+
+function editarContrato(id) {
+  const c = CONTRATOS_EDIT.find(x => Number(x.id) === Number(id));
+  if (!c) { alert('Contrato não encontrado.'); return; }
+  contratoEditandoId = c.id;
+  setCampo('ct-numero', c.numero);
+  setCampo('ct-cliente', c.cliente_id);
+  filtrarProjetosContrato();
+  const projeto = document.getElementById('ct-projeto');
+  if (c.projeto_id && ![...projeto.options].some(o => String(o.value) === String(c.projeto_id))) {
+    const p = PROJETOS_CONTRATO.find(x => Number(x.id) === Number(c.projeto_id));
+    const opt = document.createElement('option');
+    opt.value = c.projeto_id;
+    opt.textContent = p ? (p.codigo + ' — ' + p.nome) : ('Projeto #' + c.projeto_id);
+    projeto.appendChild(opt);
+  }
+  setCampo('ct-projeto', c.projeto_id);
+  setCampo('ct-descricao', c.descricao);
+  setCampo('ct-valor', c.valor_total);
+  setCampo('ct-parcela', c.valor_parcela);
+  setCampo('ct-inicio', c.data_inicio);
+  setCampo('ct-fim', c.data_fim);
+  setCampo('ct-period', c.periodicidade);
+  setCampo('ct-status', c.status);
+  setCampo('ct-obs', c.observacoes);
+  document.getElementById('ct-form-titulo').textContent = '✏️ Editando contrato #' + c.id;
+  document.getElementById('ct-btn-salvar').textContent = '💾 Salvar alterações';
+  document.getElementById('ct-btn-cancelar').style.display = 'inline-block';
+  document.getElementById('sec-form-contrato').scrollIntoView({ behavior: 'smooth' });
+}
+
+function cancelarEdicao() {
+  contratoEditandoId = null;
+  ['ct-numero','ct-cliente','ct-descricao','ct-valor','ct-parcela','ct-inicio','ct-fim','ct-obs'].forEach(id => setCampo(id, ''));
+  setCampo('ct-period', 'MENSAL');
+  setCampo('ct-status', 'ATIVO');
+  filtrarProjetosContrato();
+  document.getElementById('ct-form-titulo').textContent = '➕ Novo Contrato';
+  document.getElementById('ct-btn-salvar').textContent = '💾 Salvar Contrato';
+  document.getElementById('ct-btn-cancelar').style.display = 'none';
+}
 
 function filtrarProjetosContrato() {
   const clienteId = Number(document.getElementById('ct-cliente').value || 0);
@@ -9694,7 +9757,8 @@ async function saveContrato() {
   if (!payload.data_inicio) { alert('Informe a data de início'); return; }
   if (!payload.valor_total) { alert('Informe o valor total'); return; }
   try {
-    const r = await fetch('/api/contratos', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload) });
+    const urlApi = contratoEditandoId ? '/api/contratos/' + contratoEditandoId : '/api/contratos';
+    const r = await fetch(urlApi, { method: contratoEditandoId ? 'PUT' : 'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload) });
     const d = await r.json();
     if (d.ok) location.reload();
     else alert(d.error);
@@ -9707,6 +9771,34 @@ window.addEventListener('pageshow', filtrarProjetosContrato);
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
     res.end(html);
     return;
+  }
+
+  if (req.method === 'PUT' && /^\/api\/contratos\/\d+$/.test(url.pathname)) {
+    if (!requireAuth(req, res, db)) return;
+    const pg = storage.getPool ? storage.getPool() : null;
+    if (!pg) return json(res, 503, { error: 'Banco não disponível' });
+    const contratoId = Number(url.pathname.split('/').pop());
+    const body = await new Promise((resolve) => { let d=''; req.on('data',c=>d+=c); req.on('end',()=>{try{resolve(JSON.parse(d));}catch{resolve({});}}); });
+    try {
+      const atual = await pg.query('SELECT id, projeto_id FROM contratos WHERE id=$1', [contratoId]);
+      if (!atual.rows.length) return json(res, 404, { error: 'Contrato não encontrado.' });
+      const clienteId = Number(body.cliente_id || 0) || null;
+      const projetoId = Number(body.projeto_id || 0) || null;
+      if (!body.data_inicio) return json(res, 400, { error: 'Informe a data de início.' });
+      if (projetoId) {
+        const p = await pg.query('SELECT id, cliente_id, ativo FROM projetos WHERE id=$1', [projetoId]);
+        const mesmoProjeto = Number(atual.rows[0].projeto_id || 0) === projetoId;
+        if (!p.rows.length || (!p.rows[0].ativo && !mesmoProjeto)) return json(res, 400, { error: 'Projeto inválido.' });
+        if (p.rows[0].cliente_id && Number(p.rows[0].cliente_id) !== Number(clienteId || 0)) {
+          return json(res, 400, { error: 'Este projeto está vinculado a outro cliente. Selecione um projeto do cliente escolhido.' });
+        }
+      }
+      await pg.query(
+        'UPDATE contratos SET numero=$1, cliente_id=$2, projeto_id=$3, descricao=$4, valor_total=$5, valor_parcela=$6, data_inicio=$7, data_fim=$8, periodicidade=$9, status=$10, observacoes=$11 WHERE id=$12',
+        [body.numero||null, clienteId, projetoId, body.descricao||null, body.valor_total||0, body.valor_parcela||null, body.data_inicio, body.data_fim||null, body.periodicidade||'MENSAL', body.status||'ATIVO', body.observacoes||null, contratoId]
+      );
+      return json(res, 200, { ok: true, id: contratoId });
+    } catch(e) { return json(res, 500, { error: e.message }); }
   }
 
   if (req.method === 'POST' && url.pathname === '/api/contratos') {
