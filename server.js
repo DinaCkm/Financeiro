@@ -2788,11 +2788,7 @@ const server = http.createServer(async (req, res) => {
             FROM projetos p
             LEFT JOIN clientes c ON c.id = p.cliente_id
            WHERE p.ativo = true
-              OR EXISTS (
-                SELECT 1
-                  FROM contratos ct
-                 WHERE ct.projeto_id = p.id
-              )
+              OR EXISTS (SELECT 1 FROM contratos ct WHERE ct.projeto_id = p.id)
            ORDER BY p.codigo
         `)).rows;
         contratos = (await pg.query(`
@@ -2891,6 +2887,7 @@ const server = http.createServer(async (req, res) => {
               <option value=''>-- Nenhum --</option>
             </select>
           </label>
+          <div id='ent-aviso-vinculos' style='display:none;grid-column:1/-1;background:#fff7ed;border:1px solid #fdba74;color:#9a3412;border-radius:8px;padding:.6rem .8rem;font-size:.85rem'></div>
           <label>Responsável CKM
             <input value='${escapeHtml(user.name || user.email || 'Usuário CKM')}' disabled>
           </label>
@@ -3018,6 +3015,19 @@ const server = http.createServer(async (req, res) => {
         contrato.innerHTML = '<option value="">-- Nenhum --</option>' +
           lista.map(ct => '<option value="'+ct.id+'">'+(ct.numero || ('Contrato #'+ct.id))+(ct.descricao ? ' — '+ct.descricao : '')+'</option>').join('');
         if (lista.some(ct => String(ct.id) === contratoAnterior)) contrato.value = contratoAnterior;
+        const aviso = document.getElementById('ent-aviso-vinculos');
+        const nProj = document.getElementById('ent-projeto').options.length - 1;
+        if (aviso) {
+          if (clienteId && !nProj && !lista.length) {
+            aviso.innerHTML = 'Este cliente não tem projeto nem contrato vinculado no cadastro. ' +
+              'Cadastre em <a href="/cadastros-mestres" target="_blank">Cadastros</a> (projeto com este cliente) ' +
+              'ou em <a href="/contratos" target="_blank">Contratos</a> (contrato com cliente e projeto). ' +
+              'Projetos cadastrados: ' + PROJETOS.length + ' · Contratos: ' + CONTRATOS.length + '.';
+            aviso.style.display = 'block';
+          } else {
+            aviso.style.display = 'none';
+          }
+        }
         atualizarContatosDoCliente();
       }
 
@@ -3067,7 +3077,7 @@ const server = http.createServer(async (req, res) => {
         row.innerHTML =
           '<label>Nome *<input class="val-nome" value="'+nome.replace(/"/g,'&quot;')+'" required></label>'+
           '<label>E-mail *<input class="val-email" type="email" value="'+email.replace(/"/g,'&quot;')+'" required></label>'+
-          '<button type="button" class="btn-outline" onclick="this.closest(\'.validador-row\').remove()">Remover</button>';
+          '<button type="button" class="btn-outline" onclick="this.closest(&quot;.validador-row&quot;).remove()">Remover</button>';
         wrap.appendChild(row);
       }
 
