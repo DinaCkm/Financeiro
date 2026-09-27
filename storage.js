@@ -234,6 +234,11 @@ function createPostgresStorage(databaseUrl) {
     await pool.query("ALTER TABLE portal_entrega_convidados ADD COLUMN IF NOT EXISTS version_id TEXT");
     await pool.query("ALTER TABLE portal_entrega_convidados ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ");
     await pool.query("ALTER TABLE portal_entrega_convidados ADD COLUMN IF NOT EXISTS revoked_at TIMESTAMPTZ");
+    await pool.query("ALTER TABLE portal_entrega_convidados ADD COLUMN IF NOT EXISTS cargo TEXT");
+    await pool.query("ALTER TABLE portal_entrega_convidados ADD COLUMN IF NOT EXISTS telefone TEXT");
+    await pool.query("ALTER TABLE portal_entrega_convidados ADD COLUMN IF NOT EXISTS cadastro_em TIMESTAMPTZ");
+    await pool.query("ALTER TABLE portal_contatos_validacao ADD COLUMN IF NOT EXISTS cargo TEXT");
+    await pool.query("ALTER TABLE portal_contatos_validacao ADD COLUMN IF NOT EXISTS telefone TEXT");
     await pool.query("UPDATE portal_entrega_convidados SET expires_at=NOW()+INTERVAL '30 days' WHERE expires_at IS NULL");
     await pool.query("ALTER TABLE portal_entrega_versions ADD COLUMN IF NOT EXISTS storage_key TEXT");
 

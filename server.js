@@ -1936,7 +1936,7 @@ const server = http.createServer(async (req, res) => {
   // ============================================================
   // PORTAL EXTERNO DE VALIDAÇÃO — acesso somente por link individual
   // ============================================================
-  const validarMatch = url.pathname.match(/^\/validar\/([a-f0-9]{64})(?:\/(pdf|mensagem|decisao))?$/i);
+  const validarMatch = url.pathname.match(/^\/validar\/([a-f0-9]{64})(?:\/(pdf|mensagem|decisao|cadastro))?$/i);
   if (validarMatch) {
     const token = validarMatch[1];
     const action = validarMatch[2] || '';
@@ -1947,7 +1947,7 @@ const server = http.createServer(async (req, res) => {
     let guestResult;
     try {
       guestResult = await pg.query(
-        `SELECT g.*, e.titulo, e.descricao, e.status as entrega_status, e.current_version,
+        `SELECT g.*, e.titulo, e.descricao, e.status as entrega_status, e.current_version, e.cliente_id,
                 e.validation_mode, e.responsavel_user_id, c.nome as cliente_nome, c.nome_curto as cliente_nome_curto,
                 p.nome as projeto_nome, ct.numero as contrato_numero
            FROM portal_entrega_convidados g
@@ -1985,6 +1985,102 @@ const server = http.createServer(async (req, res) => {
     );
     if (!versionResult.rows.length) return json(res, 404, { error: 'Versão do documento não encontrada.' });
     const version = versionResult.rows[0];
+
+    // ---- Cadastro obrigatório no primeiro acesso ----
+    if (!guest.cadastro_em && guest.cliente_id) {
+      try {
+        const jaContato = await pg.query(
+          'SELECT nome, cargo, telefone FROM portal_contatos_validacao WHERE cliente_id=$1 AND lower(email)=lower($2) AND ativo=true LIMIT 1',
+          [guest.cliente_id, guest.email]
+        );
+        if (jaContato.rows.length) {
+          const ct = jaContato.rows[0];
+          await pg.query(
+            'UPDATE portal_entrega_convidados SET cadastro_em=NOW(), cargo=COALESCE(cargo,$2), telefone=COALESCE(telefone,$3) WHERE id=$1',
+            [guest.id, ct.cargo || null, ct.telefone || null]
+          );
+          guest.cadastro_em = new Date();
+        }
+      } catch (e) { console.warn('[validar] checagem de contato:', e.message); }
+    }
+
+    if (req.method === 'POST' && action === 'cadastro') {
+      const form = new URLSearchParams(await readBody(req));
+      const nome = String(form.get('nome') || '').trim().slice(0, 150);
+      const cargo = String(form.get('cargo') || '').trim().slice(0, 120);
+      const telefone = String(form.get('telefone') || '').trim().slice(0, 40);
+      const aceite = form.get('aceite') === 'on';
+      if (!nome || !cargo || !aceite) {
+        res.writeHead(302, { Location: `/validar/${token}?erro=cadastro` });
+        res.end();
+        return;
+      }
+      try {
+        await pg.query(
+          'UPDATE portal_entrega_convidados SET nome=$2, cargo=$3, telefone=$4, cadastro_em=COALESCE(cadastro_em,NOW()) WHERE id=$1',
+          [guest.id, nome, cargo, telefone || null]
+        );
+        if (guest.cliente_id) {
+          await pg.query(
+            `INSERT INTO portal_contatos_validacao (id, cliente_id, nome, email, cargo, telefone, ativo, created_by)
+             VALUES ($1,$2,$3,lower($4),$5,$6,true,$7)
+             ON CONFLICT (cliente_id, email) DO UPDATE
+               SET nome=EXCLUDED.nome, cargo=EXCLUDED.cargo, telefone=COALESCE(EXCLUDED.telefone, portal_contatos_validacao.telefone),
+                   ativo=true, updated_at=now()`,
+            [crypto.randomUUID(), guest.cliente_id, nome, guest.email, cargo, telefone || null, 'convidado:' + guest.id]
+          );
+        }
+        await recordPortalAudit(pg, req, { entregaId: guest.entrega_id, versionId: version.id, actorType: 'cliente', actorId: guest.id, action: 'cadastro_concluido', details: { cargo } });
+      } catch (e) {
+        console.warn('[validar] cadastro:', e.message);
+        res.writeHead(302, { Location: `/validar/${token}?erro=cadastro_falhou` });
+        res.end();
+        return;
+      }
+      res.writeHead(302, { Location: `/validar/${token}` });
+      res.end();
+      return;
+    }
+
+    if (!guest.cadastro_em) {
+      if (req.method !== 'GET' || action) {
+        if (action === 'pdf') return json(res, 403, { error: 'Conclua seu cadastro para acessar o documento.' });
+        res.writeHead(302, { Location: `/validar/${token}` });
+        res.end();
+        return;
+      }
+      const erroCad = url.searchParams.get('erro');
+      const cadHtml = `<!doctype html><html lang='pt-BR'><head>
+        <meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>
+        <title>Primeiro acesso — CKM Talents</title>
+        <style>
+          *{box-sizing:border-box} body{margin:0;font-family:Inter,Arial,sans-serif;background:#f8fafc;color:#1e293b}
+          header{background:#111827;color:#fff;padding:16px 24px} header strong{font-size:18px}
+          .wrap{max-width:560px;margin:32px auto;padding:0 16px}.card{background:#fff;border:1px solid #e2e8f0;border-radius:14px;padding:22px}
+          label{display:block;font-size:13px;font-weight:700;margin:12px 0 5px}input{width:100%;padding:10px;border:1px solid #cbd5e1;border-radius:8px;font:inherit}
+          input[disabled]{background:#f1f5f9;color:#475569}.chk{display:flex;gap:8px;align-items:flex-start;font-weight:400;font-size:13px}.chk input{width:auto;margin-top:3px}
+          button{border:0;border-radius:9px;padding:12px 16px;font-weight:700;cursor:pointer;background:#0f766e;color:#fff;width:100%;margin-top:16px;font-size:15px}
+          .error{background:#fef2f2;color:#991b1b;border:1px solid #fecaca;padding:10px;border-radius:8px;margin-bottom:10px}
+        </style></head><body>
+        <header><strong>CKM Talents — Entregas e Validações</strong></header>
+        <div class='wrap'><div class='card'>
+          <h2 style='margin-top:0'>Primeiro acesso</h2>
+          <p style='color:#475569;font-size:14px'>Você foi convidado(a) para analisar <strong>${escapeHtml(guest.titulo)}</strong>${guest.cliente_nome ? ' — ' + escapeHtml(guest.cliente_nome_curto || guest.cliente_nome) : ''}. Confirme seus dados para acessar o documento. Este cadastro é feito apenas uma vez.</p>
+          ${erroCad === 'cadastro' ? "<div class='error'>Preencha nome e cargo e marque a concordância.</div>" : ''}
+          ${erroCad === 'cadastro_falhou' ? "<div class='error'>Não foi possível salvar seu cadastro. Tente novamente.</div>" : ''}
+          <form method='post' action='/validar/${token}/cadastro'>
+            <label>E-mail</label><input value='${escapeHtml(guest.email)}' disabled>
+            <label>Nome completo *</label><input name='nome' maxlength='150' required value='${escapeHtml(guest.nome || '')}'>
+            <label>Cargo / Função *</label><input name='cargo' maxlength='120' required placeholder='Ex: Secretária de Administração'>
+            <label>Telefone</label><input name='telefone' maxlength='40' placeholder='(11) 99999-9999'>
+            <label class='chk'><input type='checkbox' name='aceite' required> Concordo que meus dados sejam usados pela CKM Talents exclusivamente para a análise e validação desta e de futuras entregas, conforme a LGPD.</label>
+            <button type='submit'>Concluir cadastro e acessar o documento</button>
+          </form>
+        </div></div></body></html>`;
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'private, no-store' });
+      res.end(cadHtml);
+      return;
+    }
 
     if (req.method === 'GET' && action === 'pdf') {
       let pdfBuffer;
@@ -3093,9 +3189,24 @@ const server = http.createServer(async (req, res) => {
           email: r.querySelector('.val-email').value.trim()
         })).filter(v => v.nome || v.email);
 
-        if (!clienteId || !titulo || !descricao || !file) {
-          msg.textContent = 'Preencha cliente, nome, descrição e selecione o PDF.';
+        const faltando = [];
+        if (!clienteId) faltando.push(['ent-cliente', 'Cliente']);
+        if (!titulo) faltando.push(['ent-titulo', 'Nome do documento']);
+        if (!descricao) faltando.push(['ent-descricao', 'Descrição da entrega']);
+        if (!file) faltando.push(['ent-arquivo', 'Arquivo da versão 1 (PDF)']);
+        ['ent-cliente','ent-titulo','ent-descricao','ent-arquivo'].forEach(id => {
+          const el = document.getElementById(id);
+          if (el) { el.style.border = ''; el.style.background = ''; }
+        });
+        if (faltando.length) {
+          faltando.forEach(([id]) => {
+            const el = document.getElementById(id);
+            if (el) { el.style.border = '2px solid #ef4444'; el.style.background = '#fff5f5'; }
+          });
+          msg.textContent = 'Falta preencher: ' + faltando.map(f => f[1]).join(', ') + '.';
           msg.style.color = '#991b1b';
+          const primeiro = document.getElementById(faltando[0][0]);
+          if (primeiro) { primeiro.scrollIntoView({ behavior: 'smooth', block: 'center' }); primeiro.focus(); }
           return;
         }
         if (file.type !== 'application/pdf' && !file.name.toLowerCase().endsWith('.pdf')) {
