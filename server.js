@@ -335,6 +335,53 @@ function json(res, status, payload) {
   res.end(JSON.stringify(payload));
 }
 
+async function loadPreviousConversations(pg, entregaId, currentVersionNumber) {
+  try {
+    return (await pg.query(
+      `SELECT m.actor_type, m.actor_name, m.message, m.created_at, v.version_number
+         FROM portal_entrega_messages m
+         JOIN portal_entrega_versions v ON v.id = m.version_id
+        WHERE v.entrega_id = $1 AND v.version_number < $2
+        ORDER BY v.version_number DESC, m.created_at ASC`,
+      [entregaId, Number(currentVersionNumber || 1)]
+    )).rows;
+  } catch (e) {
+    console.warn('[entregas] historico de conversas:', e.message);
+    return [];
+  }
+}
+
+function renderPreviousConversations(rows) {
+  if (!rows || !rows.length) return '';
+  const porVersao = new Map();
+  rows.forEach(m => {
+    const k = Number(m.version_number);
+    if (!porVersao.has(k)) porVersao.set(k, []);
+    porVersao.get(k).push(m);
+  });
+  const blocos = [...porVersao.entries()].map(([ver, msgs]) => `
+    <details style='border:1px solid #e2e8f0;border-radius:10px;padding:.5rem .75rem;margin:.5rem 0;background:#fff'>
+      <summary style='cursor:pointer;font-weight:700;font-size:.9rem'>Conversa da V${ver} — ${msgs.length} mensage${msgs.length === 1 ? 'm' : 'ns'} (somente leitura)</summary>
+      <div style='max-height:360px;overflow:auto;margin-top:.5rem'>
+        ${msgs.map(m => `
+          <div style='padding:.6rem .75rem;border:1px solid #e2e8f0;border-radius:10px;margin:.4rem 0;background:${m.actor_type === 'cliente' ? '#f8fafc' : '#f0fdf4'}'>
+            <div style='font-size:.74rem;color:#64748b;margin-bottom:.2rem'><strong>${escapeHtml(m.actor_name)}</strong> · ${escapeHtml(new Date(m.created_at).toLocaleString('pt-BR'))}</div>
+            <div style='white-space:pre-wrap;font-size:.9rem'>${escapeHtml(m.message)}</div>
+          </div>`).join('')}
+      </div>
+    </details>`).join('');
+  const totalMsgs = rows.length;
+  return `
+    <details class='hist-conversas' style='margin-top:1rem'>
+      <summary style='display:inline-block;list-style:none;cursor:pointer;border:1px solid #6d28d9;color:#6d28d9;background:#fff;border-radius:9px;padding:.55rem .9rem;font-weight:700;font-size:.88rem'>
+        🕘 Ver conversas das versões anteriores (${totalMsgs})
+      </summary>
+      <div style='font-size:.8rem;color:#64748b;margin:.6rem 0 .3rem'>Somente leitura. Consulte o que já foi combinado antes de pedir novos ajustes.</div>
+      ${blocos}
+    </details>
+    <style>.hist-conversas>summary::-webkit-details-marker{display:none}.hist-conversas[open]>summary{background:#f5f3ff}</style>`;
+}
+
 function escapeHtml(value) {
   return String(value ?? '')
     .replace(/&/g, '&amp;')
@@ -2355,6 +2402,9 @@ const server = http.createServer(async (req, res) => {
         [guest.id]
       );
 
+      const historicoConversasHtml = renderPreviousConversations(
+        await loadPreviousConversations(pg, guest.entrega_id, version.version_number)
+      );
       const messages = (await pg.query(
         `SELECT * FROM portal_entrega_messages
           WHERE version_id=$1
@@ -2447,6 +2497,7 @@ const server = http.createServer(async (req, res) => {
                     <textarea name='message' rows='3' maxlength='5000' required></textarea>
                     <button class='primary' type='submit' style='margin-top:8px'>Enviar mensagem</button>
                   </form>` : ''}
+                ${historicoConversasHtml}
               </div>
               <div class='card' style='margin-top:14px'>
                 <h3 style='margin-top:0'>Decisão</h3>
@@ -3589,6 +3640,9 @@ const server = http.createServer(async (req, res) => {
         ORDER BY g.nome`,
       [entregaId, currentVersion.id]
     )).rows : [];
+    const historicoConversasInternoHtml = currentVersion
+      ? renderPreviousConversations(await loadPreviousConversations(pg, entregaId, currentVersion.version_number))
+      : '';
     const messages = currentVersion ? (await pg.query(
       'SELECT * FROM portal_entrega_messages WHERE version_id=$1 ORDER BY created_at ASC',
       [currentVersion.id]
@@ -3685,6 +3739,7 @@ const server = http.createServer(async (req, res) => {
             <label>Responder ao cliente<textarea name='message' rows='3' maxlength='5000' required></textarea></label>
             <button type='submit'>Enviar mensagem</button>
           </form>` : ''}
+        ${historicoConversasInternoHtml}
       </section>
 
       ${canNewVersion ? `
