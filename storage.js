@@ -228,6 +228,25 @@ function createPostgresStorage(databaseUrl) {
       );
       CREATE INDEX IF NOT EXISTS idx_portal_audit_delivery
         ON portal_audit_events(entrega_id, created_at DESC);
+      CREATE TABLE IF NOT EXISTS portal_email_challenges (
+        id TEXT PRIMARY KEY,
+        email TEXT NOT NULL,
+        code_salt TEXT NOT NULL,
+        code_hash TEXT NOT NULL,
+        requested_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        expires_at TIMESTAMPTZ NOT NULL,
+        attempts INTEGER NOT NULL DEFAULT 0,
+        ip_address TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_portal_email_challenges_email
+        ON portal_email_challenges(email, requested_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_portal_email_challenges_ip
+        ON portal_email_challenges(ip_address, requested_at DESC);
+      CREATE TABLE IF NOT EXISTS portal_email_sessions (
+        token_hash TEXT PRIMARY KEY,
+        email TEXT NOT NULL,
+        expires_at TIMESTAMPTZ NOT NULL
+      );
     `);
 
     await pool.query("ALTER TABLE portal_entregas ADD COLUMN IF NOT EXISTS validation_mode TEXT NOT NULL DEFAULT 'all'");
