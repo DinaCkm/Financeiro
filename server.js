@@ -2789,11 +2789,36 @@ const server = http.createServer(async (req, res) => {
         )).rows;
       } else if (allowed.length) {
         projetos = (await pg.query(
-          'SELECT id, codigo, nome, cliente_id FROM projetos WHERE ativo=true AND cliente_id=ANY($1::int[]) ORDER BY codigo',
+          `SELECT DISTINCT p.id, p.codigo, p.nome, p.cliente_id, p.ativo
+             FROM projetos p
+            WHERE (
+              p.cliente_id = ANY($1::int[])
+              OR EXISTS (
+                SELECT 1
+                  FROM contratos ct
+                 WHERE ct.projeto_id = p.id
+                   AND ct.cliente_id = ANY($1::int[])
+              )
+            )
+              AND (
+                p.ativo = true
+                OR EXISTS (
+                  SELECT 1
+                    FROM contratos ct
+                   WHERE ct.projeto_id = p.id
+                     AND ct.cliente_id = ANY($1::int[])
+                )
+              )
+            ORDER BY p.codigo`,
           [allowed]
         )).rows;
         contratos = (await pg.query(
-          'SELECT id, numero, descricao, cliente_id, projeto_id, status FROM contratos WHERE cliente_id=ANY($1::int[]) ORDER BY numero',
+          `SELECT DISTINCT ct.id, ct.numero, ct.descricao, ct.cliente_id, ct.projeto_id, ct.status
+             FROM contratos ct
+             LEFT JOIN projetos p ON p.id = ct.projeto_id
+            WHERE ct.cliente_id = ANY($1::int[])
+               OR p.cliente_id = ANY($1::int[])
+            ORDER BY ct.numero`,
           [allowed]
         )).rows;
         contatos = (await pg.query(
@@ -3128,7 +3153,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (projetoId) {
-      const p = await pg.query('SELECT id, cliente_id FROM projetos WHERE id=$1 AND ativo=true', [projetoId]);
+      const p = await pg.query('SELECT id, cliente_id, ativo FROM projetos WHERE id=$1', [projetoId]);
       if (!p.rows.length) return json(res, 400, { error: 'Projeto inválido.' });
       if (p.rows[0].cliente_id && Number(p.rows[0].cliente_id) !== clienteId) {
         const vinculoPorContrato = await pg.query(
