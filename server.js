@@ -3518,6 +3518,38 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  const entregaPdfMatch = url.pathname.match(/^\/entregas\/([0-9a-f-]{36})\/versoes\/([0-9a-f-]{36})\/pdf$/i);
+  if (req.method === 'GET' && entregaPdfMatch) {
+    const [, entregaId, versionId] = entregaPdfMatch;
+    const pg = storage.getPool ? storage.getPool() : null;
+    if (!pg) return json(res, 503, { error: 'Banco não disponível.' });
+    const entregaResult = await pg.query('SELECT * FROM portal_entregas WHERE id=$1 LIMIT 1', [entregaId]);
+    if (!entregaResult.rows.length) return json(res, 404, { error: 'Entrega não encontrada.' });
+    if (!(await userCanAccessPortalDelivery(user, entregaResult.rows[0]))) {
+      return json(res, 403, { error: 'Você não possui acesso a esta entrega.' });
+    }
+    const vr = await pg.query('SELECT * FROM portal_entrega_versions WHERE id=$1 AND entrega_id=$2 LIMIT 1', [versionId, entregaId]);
+    if (!vr.rows.length) return json(res, 404, { error: 'Versão não encontrada.' });
+    const v = vr.rows[0];
+    let pdfBuffer;
+    try {
+      pdfBuffer = v.storage_key ? await getPrivateObjectBuffer(v.storage_key) : v.file_data;
+    } catch (e) {
+      console.warn('[entregas] Erro ao ler PDF interno:', e.message);
+      return json(res, 503, { error: 'Documento temporariamente indisponível.' });
+    }
+    if (!pdfBuffer || !pdfBuffer.length) return json(res, 404, { error: 'Documento não encontrado.' });
+    res.writeHead(200, {
+      'Content-Type': 'application/pdf',
+      'Content-Disposition': `inline; filename="${String(v.file_name || 'documento.pdf').replace(/[\r\n"]/g, '')}"`,
+      'Content-Length': Number(pdfBuffer.length),
+      'Cache-Control': 'private, no-store',
+      'X-Content-Type-Options': 'nosniff'
+    });
+    res.end(pdfBuffer);
+    return;
+  }
+
   const entregaDetailMatch = url.pathname.match(/^\/entregas\/([0-9a-f-]{36})$/i);
   if (req.method === 'GET' && entregaDetailMatch) {
     const entregaId = entregaDetailMatch[1];
@@ -3572,7 +3604,7 @@ const server = http.createServer(async (req, res) => {
         : 'Aguardando cliente';
       return `<tr>
         <td>V${Number(v.version_number)}</td>
-        <td>${escapeHtml(v.file_name)}</td>
+        <td><a href='/entregas/${entregaId}/versoes/${v.id}/pdf' target='_blank'>${escapeHtml(v.file_name)}</a></td>
         <td>${label}</td>
         <td>${escapeHtml(new Date(v.uploaded_at).toLocaleString('pt-BR'))}</td>
         <td style='font-size:.72rem;font-family:monospace'>${escapeHtml(String(v.file_hash || '').slice(0,18))}…</td>
@@ -3633,6 +3665,17 @@ const server = http.createServer(async (req, res) => {
           ${guestRows || "<tr><td colspan='6'>Nenhum convidado nesta versão.</td></tr>"}
         </tbody></table></div>
       </section>
+
+      ${currentVersion ? `
+      <section id='documento'>
+        <div style='display:flex;justify-content:space-between;align-items:center;gap:1rem;flex-wrap:wrap'>
+          <h2 style='margin:0'>Documento — V${Number(currentVersion.version_number)}</h2>
+          <a href='/entregas/${entregaId}/versoes/${currentVersion.id}/pdf' target='_blank' style='font-size:.85rem'>Abrir em nova aba ↗</a>
+        </div>
+        <div style='font-size:.8rem;color:#64748b;margin:.35rem 0 .75rem'>${escapeHtml(currentVersion.file_name || '')}</div>
+        <iframe src='/entregas/${entregaId}/versoes/${currentVersion.id}/pdf' title='Documento' style='width:100%;height:75vh;border:1px solid #e2e8f0;border-radius:10px;background:#f1f5f9'></iframe>
+      </section>
+      ` : ''}
 
       <section id='conversa'>
         <h2>Conversa da versão atual</h2>
