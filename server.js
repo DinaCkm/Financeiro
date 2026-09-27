@@ -2774,23 +2774,42 @@ const server = http.createServer(async (req, res) => {
     try {
       const allowed = await getPortalAllowedClientIds(user);
       if (allowed === null) {
-        clientes = (await pg.query('SELECT id, nome, nome_curto FROM clientes WHERE ativo=true ORDER BY nome')).rows;
+        clientes = (await pg.query('SELECT id, codigo, nome, nome_curto FROM clientes WHERE ativo=true ORDER BY nome')).rows;
       } else if (allowed.length) {
         clientes = (await pg.query(
-          'SELECT id, nome, nome_curto FROM clientes WHERE ativo=true AND id=ANY($1::int[]) ORDER BY nome',
+          'SELECT id, codigo, nome, nome_curto FROM clientes WHERE ativo=true AND id=ANY($1::int[]) ORDER BY nome',
           [allowed]
         )).rows;
       }
       if (allowed === null) {
-        projetos = (await pg.query('SELECT id, codigo, nome, cliente_id FROM projetos WHERE ativo=true ORDER BY codigo')).rows;
-        contratos = (await pg.query('SELECT id, numero, descricao, cliente_id, projeto_id, status FROM contratos ORDER BY numero')).rows;
+        projetos = (await pg.query(`
+          SELECT p.id, p.codigo, p.nome, p.cliente_id, p.ativo,
+                 c.codigo AS cliente_codigo, c.nome AS cliente_nome, c.nome_curto AS cliente_nome_curto
+            FROM projetos p
+            LEFT JOIN clientes c ON c.id = p.cliente_id
+           WHERE p.ativo = true
+           ORDER BY p.codigo
+        `)).rows;
+        contratos = (await pg.query(`
+          SELECT ct.id, ct.numero, ct.descricao, ct.cliente_id, ct.projeto_id, ct.status,
+                 cc.codigo AS cliente_codigo, cc.nome AS cliente_nome, cc.nome_curto AS cliente_nome_curto,
+                 p.cliente_id AS projeto_cliente_id,
+                 pc.codigo AS projeto_cliente_codigo, pc.nome AS projeto_cliente_nome, pc.nome_curto AS projeto_cliente_nome_curto
+            FROM contratos ct
+            LEFT JOIN clientes cc ON cc.id = ct.cliente_id
+            LEFT JOIN projetos p ON p.id = ct.projeto_id
+            LEFT JOIN clientes pc ON pc.id = p.cliente_id
+           ORDER BY ct.numero
+        `)).rows;
         contatos = (await pg.query(
           'SELECT id, cliente_id, nome, email FROM portal_contatos_validacao WHERE ativo=true ORDER BY nome'
         )).rows;
       } else if (allowed.length) {
         projetos = (await pg.query(
-          `SELECT DISTINCT p.id, p.codigo, p.nome, p.cliente_id, p.ativo
+          `SELECT DISTINCT p.id, p.codigo, p.nome, p.cliente_id, p.ativo,
+                            c.codigo AS cliente_codigo, c.nome AS cliente_nome, c.nome_curto AS cliente_nome_curto
              FROM projetos p
+             LEFT JOIN clientes c ON c.id = p.cliente_id
             WHERE (
               p.cliente_id = ANY($1::int[])
               OR EXISTS (
@@ -2813,9 +2832,14 @@ const server = http.createServer(async (req, res) => {
           [allowed]
         )).rows;
         contratos = (await pg.query(
-          `SELECT DISTINCT ct.id, ct.numero, ct.descricao, ct.cliente_id, ct.projeto_id, ct.status
+          `SELECT DISTINCT ct.id, ct.numero, ct.descricao, ct.cliente_id, ct.projeto_id, ct.status,
+                            cc.codigo AS cliente_codigo, cc.nome AS cliente_nome, cc.nome_curto AS cliente_nome_curto,
+                            p.cliente_id AS projeto_cliente_id,
+                            pc.codigo AS projeto_cliente_codigo, pc.nome AS projeto_cliente_nome, pc.nome_curto AS projeto_cliente_nome_curto
              FROM contratos ct
+             LEFT JOIN clientes cc ON cc.id = ct.cliente_id
              LEFT JOIN projetos p ON p.id = ct.projeto_id
+             LEFT JOIN clientes pc ON pc.id = p.cliente_id
             WHERE ct.cliente_id = ANY($1::int[])
                OR p.cliente_id = ANY($1::int[])
             ORDER BY ct.numero`,
@@ -2912,23 +2936,54 @@ const server = http.createServer(async (req, res) => {
       const CONTRATOS = ${contratosJson};
       const CONTATOS = ${contatosJson};
 
+      function normalizarIdentidade(valor) {
+        return String(valor || '')
+          .normalize('NFD')
+          .replace(/[\u0300-\u036f]/g, '')
+          .toUpperCase()
+          .replace(/[^A-Z0-9]/g, '');
+      }
+
+      function referenciaClienteEquivalente(ref, clienteId, prefixo='cliente_') {
+        const selecionado = CLIENTES.find(c => Number(c.id) === Number(clienteId));
+        if (!selecionado || !ref) return false;
+        const refId = Number(ref[prefixo === 'cliente_' ? 'cliente_id' : 'projeto_cliente_id'] || 0);
+        if (refId && refId === Number(clienteId)) return true;
+
+        const codigoSelecionado = normalizarIdentidade(selecionado.codigo);
+        const codigoRef = normalizarIdentidade(ref[prefixo + 'codigo']);
+        if (codigoSelecionado && codigoRef && codigoSelecionado === codigoRef) return true;
+
+        const nomesSelecionado = [selecionado.nome, selecionado.nome_curto]
+          .map(normalizarIdentidade)
+          .filter(Boolean);
+        const nomesRef = [ref[prefixo + 'nome'], ref[prefixo + 'nome_curto']]
+          .map(normalizarIdentidade)
+          .filter(Boolean);
+        return nomesSelecionado.some(n => nomesRef.includes(n));
+      }
+
       function projetoPertenceAoCliente(p, clienteId) {
         if (!p) return false;
         if (!p.cliente_id) return true;
-        if (Number(p.cliente_id) === clienteId) return true;
+        if (referenciaClienteEquivalente(p, clienteId, 'cliente_')) return true;
         return CONTRATOS.some(ct =>
-          Number(ct.cliente_id) === clienteId &&
           ct.projeto_id &&
-          Number(ct.projeto_id) === Number(p.id)
+          Number(ct.projeto_id) === Number(p.id) &&
+          (
+            referenciaClienteEquivalente(ct, clienteId, 'cliente_') ||
+            referenciaClienteEquivalente(ct, clienteId, 'projeto_cliente_')
+          )
         );
       }
 
       function contratoPertenceAoCliente(ct, clienteId) {
         if (!ct) return false;
-        if (Number(ct.cliente_id) === clienteId) return true;
+        if (referenciaClienteEquivalente(ct, clienteId, 'cliente_')) return true;
+        if (referenciaClienteEquivalente(ct, clienteId, 'projeto_cliente_')) return true;
         if (!ct.projeto_id) return false;
         const p = PROJETOS.find(pr => Number(pr.id) === Number(ct.projeto_id));
-        return !!p && Number(p.cliente_id) === clienteId;
+        return !!p && referenciaClienteEquivalente(p, clienteId, 'cliente_');
       }
 
       function filtrarRelacionados() {
@@ -3152,15 +3207,46 @@ const server = http.createServer(async (req, res) => {
       return json(res, 400, { error: 'O arquivo enviado não parece ser um PDF válido.' });
     }
 
+    const clientesEquivalentes = async (idA, idB) => {
+      const a = Number(idA || 0), b = Number(idB || 0);
+      if (!a || !b) return false;
+      if (a === b) return true;
+      const rows = (await pg.query(
+        'SELECT id, codigo, nome, nome_curto FROM clientes WHERE id=ANY($1::int[])',
+        [[a, b]]
+      )).rows;
+      if (rows.length < 2) return false;
+      const normalizar = valor => String(valor || '')
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .toUpperCase()
+        .replace(/[^A-Z0-9]/g, '');
+      const ca = rows.find(c => Number(c.id) === a);
+      const cb = rows.find(c => Number(c.id) === b);
+      if (!ca || !cb) return false;
+      const codA = normalizar(ca.codigo), codB = normalizar(cb.codigo);
+      if (codA && codB && codA === codB) return true;
+      const nomesA = [ca.nome, ca.nome_curto].map(normalizar).filter(Boolean);
+      const nomesB = [cb.nome, cb.nome_curto].map(normalizar).filter(Boolean);
+      return nomesA.some(n => nomesB.includes(n));
+    };
+
     if (projetoId) {
       const p = await pg.query('SELECT id, cliente_id, ativo FROM projetos WHERE id=$1', [projetoId]);
       if (!p.rows.length) return json(res, 400, { error: 'Projeto inválido.' });
-      if (p.rows[0].cliente_id && Number(p.rows[0].cliente_id) !== clienteId) {
-        const vinculoPorContrato = await pg.query(
-          'SELECT 1 FROM contratos WHERE cliente_id=$1 AND projeto_id=$2 LIMIT 1',
-          [clienteId, projetoId]
-        );
-        if (!vinculoPorContrato.rows.length) {
+      if (
+        p.rows[0].cliente_id &&
+        Number(p.rows[0].cliente_id) !== clienteId &&
+        !(await clientesEquivalentes(p.rows[0].cliente_id, clienteId))
+      ) {
+        const vinculos = (await pg.query(
+          'SELECT cliente_id FROM contratos WHERE projeto_id=$1',
+          [projetoId]
+        )).rows;
+        const vinculoValido = (await Promise.all(
+          vinculos.map(v => clientesEquivalentes(v.cliente_id, clienteId))
+        )).some(Boolean);
+        if (!vinculoValido) {
           return json(res, 400, { error: 'O projeto selecionado não pertence ao cliente escolhido.' });
         }
       }
@@ -3177,7 +3263,9 @@ const server = http.createServer(async (req, res) => {
       if (!ct.rows.length) return json(res, 400, { error: 'Contrato inválido.' });
       const contratoDoCliente =
         Number(ct.rows[0].cliente_id) === clienteId ||
-        Number(ct.rows[0].projeto_cliente_id) === clienteId;
+        Number(ct.rows[0].projeto_cliente_id) === clienteId ||
+        (ct.rows[0].cliente_id && await clientesEquivalentes(ct.rows[0].cliente_id, clienteId)) ||
+        (ct.rows[0].projeto_cliente_id && await clientesEquivalentes(ct.rows[0].projeto_cliente_id, clienteId));
       if (!contratoDoCliente) {
         return json(res, 400, { error: 'O contrato selecionado não pertence ao cliente escolhido.' });
       }
