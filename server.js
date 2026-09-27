@@ -2833,7 +2833,7 @@ const server = http.createServer(async (req, res) => {
             </select>
           </label>
           <label>Contrato relacionado (opcional)
-            <select id='ent-contrato'>
+            <select id='ent-contrato' onchange='sincronizarProjetoDoContrato()'>
               <option value=''>-- Nenhum --</option>
             </select>
           </label>
@@ -2887,11 +2887,32 @@ const server = http.createServer(async (req, res) => {
       const CONTRATOS = ${contratosJson};
       const CONTATOS = ${contatosJson};
 
+      function projetoPertenceAoCliente(p, clienteId) {
+        if (!p) return false;
+        if (!p.cliente_id) return true;
+        if (Number(p.cliente_id) === clienteId) return true;
+        return CONTRATOS.some(ct =>
+          Number(ct.cliente_id) === clienteId &&
+          ct.projeto_id &&
+          Number(ct.projeto_id) === Number(p.id)
+        );
+      }
+
+      function contratoPertenceAoCliente(ct, clienteId) {
+        if (!ct) return false;
+        if (Number(ct.cliente_id) === clienteId) return true;
+        if (!ct.projeto_id) return false;
+        const p = PROJETOS.find(pr => Number(pr.id) === Number(ct.projeto_id));
+        return !!p && Number(p.cliente_id) === clienteId;
+      }
+
       function filtrarRelacionados() {
         const clienteId = Number(document.getElementById('ent-cliente').value || 0);
         const projeto = document.getElementById('ent-projeto');
         const projetoAnterior = projeto.value;
-        const lista = PROJETOS.filter(p => !p.cliente_id || Number(p.cliente_id) === clienteId);
+        const lista = clienteId
+          ? PROJETOS.filter(p => projetoPertenceAoCliente(p, clienteId))
+          : [];
         projeto.innerHTML = '<option value="">-- Nenhum --</option>' +
           lista.map(p => '<option value="'+p.id+'">'+(p.codigo ? p.codigo+' — ' : '')+p.nome+'</option>').join('');
         if (lista.some(p => String(p.id) === projetoAnterior)) projeto.value = projetoAnterior;
@@ -2903,14 +2924,34 @@ const server = http.createServer(async (req, res) => {
         const projetoId = Number(document.getElementById('ent-projeto').value || 0);
         const contrato = document.getElementById('ent-contrato');
         const contratoAnterior = contrato.value;
-        const lista = CONTRATOS.filter(ct =>
-          Number(ct.cliente_id) === clienteId &&
-          (!projetoId || !ct.projeto_id || Number(ct.projeto_id) === projetoId)
-        );
+        const lista = clienteId
+          ? CONTRATOS.filter(ct =>
+              contratoPertenceAoCliente(ct, clienteId) &&
+              (!projetoId || !ct.projeto_id || Number(ct.projeto_id) === projetoId)
+            )
+          : [];
         contrato.innerHTML = '<option value="">-- Nenhum --</option>' +
           lista.map(ct => '<option value="'+ct.id+'">'+(ct.numero || ('Contrato #'+ct.id))+(ct.descricao ? ' — '+ct.descricao : '')+'</option>').join('');
         if (lista.some(ct => String(ct.id) === contratoAnterior)) contrato.value = contratoAnterior;
         atualizarContatosDoCliente();
+      }
+
+      function sincronizarProjetoDoContrato() {
+        const clienteId = Number(document.getElementById('ent-cliente').value || 0);
+        const contratoId = Number(document.getElementById('ent-contrato').value || 0);
+        if (!clienteId || !contratoId) return;
+        const ct = CONTRATOS.find(c => Number(c.id) === contratoId);
+        if (!ct || !ct.projeto_id) return;
+        const p = PROJETOS.find(pr => Number(pr.id) === Number(ct.projeto_id));
+        if (!p) return;
+        const projeto = document.getElementById('ent-projeto');
+        if (![...projeto.options].some(opt => Number(opt.value) === Number(p.id))) {
+          const opt = document.createElement('option');
+          opt.value = String(p.id);
+          opt.textContent = (p.codigo ? p.codigo+' — ' : '') + p.nome;
+          projeto.appendChild(opt);
+        }
+        projeto.value = String(p.id);
       }
 
       function atualizarContatosDoCliente() {
@@ -3090,14 +3131,29 @@ const server = http.createServer(async (req, res) => {
       const p = await pg.query('SELECT id, cliente_id FROM projetos WHERE id=$1 AND ativo=true', [projetoId]);
       if (!p.rows.length) return json(res, 400, { error: 'Projeto inválido.' });
       if (p.rows[0].cliente_id && Number(p.rows[0].cliente_id) !== clienteId) {
-        return json(res, 400, { error: 'O projeto selecionado não pertence ao cliente escolhido.' });
+        const vinculoPorContrato = await pg.query(
+          'SELECT 1 FROM contratos WHERE cliente_id=$1 AND projeto_id=$2 LIMIT 1',
+          [clienteId, projetoId]
+        );
+        if (!vinculoPorContrato.rows.length) {
+          return json(res, 400, { error: 'O projeto selecionado não pertence ao cliente escolhido.' });
+        }
       }
     }
 
     if (contratoId) {
-      const ct = await pg.query('SELECT id, cliente_id, projeto_id FROM contratos WHERE id=$1', [contratoId]);
+      const ct = await pg.query(
+        `SELECT ct.id, ct.cliente_id, ct.projeto_id, p.cliente_id AS projeto_cliente_id
+           FROM contratos ct
+           LEFT JOIN projetos p ON p.id=ct.projeto_id
+          WHERE ct.id=$1`,
+        [contratoId]
+      );
       if (!ct.rows.length) return json(res, 400, { error: 'Contrato inválido.' });
-      if (Number(ct.rows[0].cliente_id) !== clienteId) {
+      const contratoDoCliente =
+        Number(ct.rows[0].cliente_id) === clienteId ||
+        Number(ct.rows[0].projeto_cliente_id) === clienteId;
+      if (!contratoDoCliente) {
         return json(res, 400, { error: 'O contrato selecionado não pertence ao cliente escolhido.' });
       }
       if (projetoId && ct.rows[0].projeto_id && Number(ct.rows[0].projeto_id) !== projetoId) {
@@ -9399,7 +9455,7 @@ async function saveBanco() {
       if (pg) {
         contratos = (await pg.query(`SELECT ct.*, cl.nome_curto as cliente_nome, pr.nome as projeto_nome FROM contratos ct LEFT JOIN clientes cl ON ct.cliente_id=cl.id LEFT JOIN projetos pr ON ct.projeto_id=pr.id ORDER BY ct.status, ct.data_fim`)).rows;
         clientes  = (await pg.query('SELECT id, nome, nome_curto FROM clientes WHERE ativo=true ORDER BY nome')).rows;
-        projetos  = (await pg.query('SELECT id, codigo, nome FROM projetos WHERE ativo=true ORDER BY codigo')).rows;
+        projetos  = (await pg.query('SELECT id, codigo, nome, cliente_id FROM projetos WHERE ativo=true ORDER BY codigo')).rows;
       }
     } catch(e) { console.error('[contratos]', e.message); }
 
@@ -9427,7 +9483,7 @@ async function saveBanco() {
     }).join('') || '<p style="color:#808080;padding:1rem">Nenhum contrato cadastrado.</p>';
 
     const clienteOpts = clientes.map(c => `<option value='${c.id}'>${c.nome_curto||c.nome}</option>`).join('');
-    const projetoOpts = projetos.map(p => `<option value='${p.id}'>${p.codigo} — ${p.nome}</option>`).join('');
+    const projetosContratoJson = JSON.stringify(projetos).replace(/</g, '\\u003c');
 
     const totalAtivo = contratos.filter(c=>c.status==='ATIVO').reduce((a,c)=>a+Number(c.valor_total||0),0);
     const totalParcelas = contratos.filter(c=>c.status==='ATIVO').reduce((a,c)=>a+Number(c.valor_parcela||0),0);
@@ -9445,8 +9501,8 @@ async function saveBanco() {
   <h2>➕ Novo Contrato</h2>
   <div class='form-grid'>
     <label>Número / Referência <input id='ct-numero' placeholder='Ex: SEBRAE-TO-2025-001'></label>
-    <label>Cliente <select id='ct-cliente'><option value=''>-- Selecione --</option>${clienteOpts}</select></label>
-    <label>Projeto <select id='ct-projeto'><option value=''>-- Selecione --</option>${projetoOpts}</select></label>
+    <label>Cliente <select id='ct-cliente' onchange='filtrarProjetosContrato()'><option value=''>-- Selecione --</option>${clienteOpts}</select></label>
+    <label>Projeto <select id='ct-projeto'><option value=''>-- Selecione --</option></select></label>
     <label>Descrição <input id='ct-descricao' placeholder='Ex: PDI do BEM — Ciclo 2025'></label>
     <label>Valor Total (R$) <input id='ct-valor' type='number' step='0.01' placeholder='0,00'></label>
     <label>Valor da Parcela (R$) <input id='ct-parcela' type='number' step='0.01' placeholder='0,00'></label>
@@ -9479,6 +9535,20 @@ async function saveBanco() {
 </section>
 
 <script>
+const PROJETOS_CONTRATO = ${projetosContratoJson};
+
+function filtrarProjetosContrato() {
+  const clienteId = Number(document.getElementById('ct-cliente').value || 0);
+  const projeto = document.getElementById('ct-projeto');
+  const anterior = projeto.value;
+  const lista = clienteId
+    ? PROJETOS_CONTRATO.filter(p => !p.cliente_id || Number(p.cliente_id) === clienteId)
+    : [];
+  projeto.innerHTML = '<option value="">-- Selecione --</option>' +
+    lista.map(p => '<option value="'+p.id+'">'+p.codigo+' — '+p.nome+'</option>').join('');
+  if (lista.some(p => String(p.id) === anterior)) projeto.value = anterior;
+}
+
 async function saveContrato() {
   const payload = {
     numero: document.getElementById('ct-numero').value.trim()||null,
@@ -9502,6 +9572,8 @@ async function saveContrato() {
     else alert(d.error);
   } catch(e) { alert(e.message); }
 }
+
+window.addEventListener('pageshow', filtrarProjetosContrato);
 </script>`;
     const html = page('Contratos', body, user, '/contratos');
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
@@ -9515,9 +9587,18 @@ async function saveContrato() {
     if (!pg) return json(res, 503, { error: 'Banco não disponível' });
     const body = await new Promise((resolve) => { let d=''; req.on('data',c=>d+=c); req.on('end',()=>{try{resolve(JSON.parse(d));}catch{resolve({});}}); });
     try {
+      const clienteId = Number(body.cliente_id || 0) || null;
+      const projetoId = Number(body.projeto_id || 0) || null;
+      if (projetoId) {
+        const p = await pg.query('SELECT id, cliente_id FROM projetos WHERE id=$1 AND ativo=true', [projetoId]);
+        if (!p.rows.length) return json(res, 400, { error: 'Projeto inválido.' });
+        if (p.rows[0].cliente_id && Number(p.rows[0].cliente_id) !== Number(clienteId || 0)) {
+          return json(res, 400, { error: 'Este projeto está vinculado a outro cliente. Selecione um projeto do cliente escolhido.' });
+        }
+      }
       const r = await pg.query(
         'INSERT INTO contratos (numero,cliente_id,projeto_id,descricao,valor_total,valor_parcela,data_inicio,data_fim,periodicidade,status,observacoes) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id',
-        [body.numero||null, body.cliente_id||null, body.projeto_id||null, body.descricao||null, body.valor_total||0, body.valor_parcela||null, body.data_inicio, body.data_fim||null, body.periodicidade||'MENSAL', body.status||'ATIVO', body.observacoes||null]
+        [body.numero||null, clienteId, projetoId, body.descricao||null, body.valor_total||0, body.valor_parcela||null, body.data_inicio, body.data_fim||null, body.periodicidade||'MENSAL', body.status||'ATIVO', body.observacoes||null]
       );
       return json(res, 200, { ok: true, id: r.rows[0].id });
     } catch(e) { return json(res, 500, { error: e.message }); }
