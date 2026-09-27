@@ -3441,7 +3441,7 @@ const server = http.createServer(async (req, res) => {
         await client.query(
           `INSERT INTO portal_entrega_convidados
             (id, entrega_id, version_id, nome, email, can_comment, can_request_changes, can_validate, token_hash, status, invited_at, expires_at)
-           VALUES ($1,$2,$3,$4,$5,true,true,true,$6,'convidado',$7,$7 + INTERVAL '30 days')`,
+           VALUES ($1,$2,$3,$4,$5,true,true,true,$6,'convidado',$7::timestamptz,$7::timestamptz + INTERVAL '30 days')`,
           [convidadoId, entregaId, versionId, guest.nome, guest.email, tokenHash, now]
         );
         invitations.push({ ...guest, token, convidadoId });
