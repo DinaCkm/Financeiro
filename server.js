@@ -2788,6 +2788,11 @@ const server = http.createServer(async (req, res) => {
             FROM projetos p
             LEFT JOIN clientes c ON c.id = p.cliente_id
            WHERE p.ativo = true
+              OR EXISTS (
+                SELECT 1
+                  FROM contratos ct
+                 WHERE ct.projeto_id = p.id
+              )
            ORDER BY p.codigo
         `)).rows;
         contratos = (await pg.query(`
