@@ -150,6 +150,29 @@ function createPostgresStorage(databaseUrl) {
         created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
         sent_at TIMESTAMPTZ
       );
+      CREATE TABLE IF NOT EXISTS portal_entrega_lotes (
+        id TEXT PRIMARY KEY,
+        cliente_id INTEGER NOT NULL,
+        projeto_id INTEGER,
+        contrato_id INTEGER,
+        descricao TEXT,
+        responsavel_user_id TEXT NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
+      CREATE TABLE IF NOT EXISTS portal_lote_convidados (
+        id TEXT PRIMARY KEY,
+        lote_id TEXT NOT NULL,
+        nome TEXT NOT NULL,
+        email TEXT NOT NULL,
+        token_hash TEXT NOT NULL UNIQUE,
+        status TEXT NOT NULL DEFAULT 'convidado',
+        invited_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        first_access_at TIMESTAMPTZ,
+        last_access_at TIMESTAMPTZ,
+        expires_at TIMESTAMPTZ NOT NULL,
+        revoked_at TIMESTAMPTZ,
+        UNIQUE (lote_id, email)
+      );
       CREATE TABLE IF NOT EXISTS portal_entrega_versions (
         id TEXT PRIMARY KEY,
         entrega_id TEXT NOT NULL,
@@ -231,6 +254,7 @@ function createPostgresStorage(databaseUrl) {
     `);
 
     await pool.query("ALTER TABLE portal_entregas ADD COLUMN IF NOT EXISTS validation_mode TEXT NOT NULL DEFAULT 'all'");
+    await pool.query("ALTER TABLE portal_entregas ADD COLUMN IF NOT EXISTS lote_id TEXT");
     await pool.query("ALTER TABLE portal_entrega_convidados ADD COLUMN IF NOT EXISTS version_id TEXT");
     await pool.query("ALTER TABLE portal_entrega_convidados ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ");
     await pool.query("ALTER TABLE portal_entrega_convidados ADD COLUMN IF NOT EXISTS revoked_at TIMESTAMPTZ");
