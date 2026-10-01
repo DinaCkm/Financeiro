@@ -1985,6 +1985,405 @@ const server = http.createServer(async (req, res) => {
   }
 
   // ============================================================
+  // PORTAL EXTERNO DE VALIDAÇÃO EM LOTE — um link por validador
+  // ============================================================
+  const validarLoteMatch = url.pathname.match(/^\/validar-lote\/([a-f0-9]{64})(?:\/documento\/([0-9a-f-]{36})(?:\/(pdf|manifestacao|decisao))?)?$/i);
+  if (validarLoteMatch) {
+    const token = validarLoteMatch[1];
+    const entregaSelecionadaId = validarLoteMatch[2] || null;
+    const action = validarLoteMatch[3] || '';
+    const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
+    const pg = storage.getPool ? storage.getPool() : null;
+    if (!pg) return json(res, 503, { error: 'Serviço temporariamente indisponível.' });
+
+    const pacote = (await pg.query(
+      `SELECT lg.*, l.cliente_id, l.projeto_id, l.contrato_id, l.descricao,
+              c.nome AS cliente_nome, c.nome_curto AS cliente_nome_curto,
+              p.nome AS projeto_nome, ct.numero AS contrato_numero
+         FROM portal_lote_convidados lg
+         JOIN portal_entrega_lotes l ON l.id=lg.lote_id
+         LEFT JOIN clientes c ON c.id=l.cliente_id
+         LEFT JOIN projetos p ON p.id=l.projeto_id
+         LEFT JOIN contratos ct ON ct.id=l.contrato_id
+        WHERE lg.token_hash=$1
+        LIMIT 1`,
+      [tokenHash]
+    )).rows[0];
+
+    if (!pacote) {
+      res.writeHead(404, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end('<!doctype html><html lang="pt-BR"><meta charset="utf-8"><title>Link inválido</title><body style="font-family:Arial;padding:40px"><h2>Link inválido ou não disponível.</h2><p>Solicite um novo acesso à equipe CKM.</p></body></html>');
+      return;
+    }
+    if (pacote.revoked_at || !pacote.expires_at || new Date(pacote.expires_at).getTime() <= Date.now()) {
+      res.writeHead(403, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'private, no-store' });
+      res.end('<!doctype html><html lang="pt-BR"><meta charset="utf-8"><title>Link indisponível</title><body style="font-family:Arial;padding:40px"><h2>Este link expirou ou foi revogado.</h2><p>Solicite um novo acesso à equipe CKM.</p></body></html>');
+      return;
+    }
+
+    // Cadastro único para todo o lote.
+    if (!pacote.cadastro_em) {
+      const contato = (await pg.query(
+        'SELECT nome, cargo, telefone FROM portal_contatos_validacao WHERE cliente_id=$1 AND lower(email)=lower($2) AND ativo=true LIMIT 1',
+        [pacote.cliente_id, pacote.email]
+      )).rows[0];
+      if (contato) {
+        await pg.query(
+          'UPDATE portal_lote_convidados SET cadastro_em=NOW(), cargo=COALESCE(cargo,$2), telefone=COALESCE(telefone,$3) WHERE id=$1',
+          [pacote.id, contato.cargo || null, contato.telefone || null]
+        );
+        pacote.cadastro_em = new Date();
+        pacote.cargo = pacote.cargo || contato.cargo;
+        pacote.telefone = pacote.telefone || contato.telefone;
+      }
+    }
+
+    if (req.method === 'POST' && !entregaSelecionadaId && url.searchParams.get('acao') === 'cadastro') {
+      const form = new URLSearchParams(await readBody(req));
+      const nome = String(form.get('nome') || '').trim().slice(0,150);
+      const cargo = String(form.get('cargo') || '').trim().slice(0,120);
+      const telefone = String(form.get('telefone') || '').trim().slice(0,40);
+      const aceite = form.get('aceite') === 'on';
+      if (!nome || !cargo || !aceite) {
+        res.writeHead(302, { Location: `/validar-lote/${token}?erro=cadastro` });
+        res.end();
+        return;
+      }
+      try {
+        await pg.query(
+          'UPDATE portal_lote_convidados SET nome=$2, cargo=$3, telefone=$4, cadastro_em=NOW() WHERE id=$1',
+          [pacote.id, nome, cargo, telefone || null]
+        );
+        await pg.query(
+          `INSERT INTO portal_contatos_validacao (id, cliente_id, nome, email, cargo, telefone, ativo, created_by)
+           VALUES ($1,$2,$3,lower($4),$5,$6,true,$7)
+           ON CONFLICT (cliente_id, email) DO UPDATE
+             SET nome=EXCLUDED.nome, cargo=EXCLUDED.cargo, telefone=COALESCE(EXCLUDED.telefone, portal_contatos_validacao.telefone),
+                 ativo=true, updated_at=now()`,
+          [crypto.randomUUID(), pacote.cliente_id, nome, pacote.email, cargo, telefone || null, 'lote:' + pacote.id]
+        );
+      } catch (e) {
+        console.warn('[validar-lote] cadastro:', e.message);
+        res.writeHead(302, { Location: `/validar-lote/${token}?erro=cadastro_falhou` });
+        res.end();
+        return;
+      }
+      res.writeHead(302, { Location: `/validar-lote/${token}` });
+      res.end();
+      return;
+    }
+
+    if (!pacote.cadastro_em) {
+      const erroCad = url.searchParams.get('erro');
+      const html = `<!doctype html><html lang='pt-BR'><head>
+        <meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>
+        <title>Primeiro acesso — CKM Talents</title>
+        <style>
+          *{box-sizing:border-box}body{margin:0;font-family:Inter,Arial,sans-serif;background:#f8fafc;color:#1e293b}
+          header{background:#111827;color:#fff;padding:16px 24px}.wrap{max-width:580px;margin:32px auto;padding:0 16px}.card{background:#fff;border:1px solid #e2e8f0;border-radius:14px;padding:22px}
+          label{display:block;font-size:13px;font-weight:700;margin:12px 0 5px}input{width:100%;padding:10px;border:1px solid #cbd5e1;border-radius:8px;font:inherit}
+          .chk{display:flex;gap:8px;align-items:flex-start;font-weight:400;font-size:13px}.chk input{width:auto;margin-top:3px}
+          button{border:0;border-radius:9px;padding:12px 16px;font-weight:700;cursor:pointer;background:#0f766e;color:#fff;width:100%;margin-top:16px}
+          .error{background:#fef2f2;color:#991b1b;border:1px solid #fecaca;padding:10px;border-radius:8px;margin-bottom:10px}
+        </style></head><body>
+        <header><strong>CKM Talents — Entregas e Validações</strong></header>
+        <div class='wrap'><div class='card'>
+          <h2 style='margin-top:0'>Primeiro acesso</h2>
+          <p style='color:#475569;font-size:14px'>Você recebeu um conjunto de documentos para análise${pacote.cliente_nome ? ' — ' + escapeHtml(pacote.cliente_nome_curto || pacote.cliente_nome) : ''}. Confirme seus dados uma única vez para acessar todo o pacote.</p>
+          ${erroCad ? "<div class='error'>Revise os dados informados e tente novamente.</div>" : ''}
+          <form method='post' action='/validar-lote/${token}?acao=cadastro'>
+            <label>E-mail</label><input value='${escapeHtml(pacote.email)}' disabled>
+            <label>Nome completo *</label><input name='nome' required maxlength='150' value='${escapeHtml(pacote.nome || '')}'>
+            <label>Cargo / Função *</label><input name='cargo' required maxlength='120'>
+            <label>Telefone</label><input name='telefone' maxlength='40'>
+            <label class='chk'><input type='checkbox' name='aceite' required> Concordo que meus dados sejam usados pela CKM Talents exclusivamente para análise e validação das entregas, conforme a LGPD.</label>
+            <button type='submit'>Concluir cadastro e acessar documentos</button>
+          </form>
+        </div></div></body></html>`;
+      res.writeHead(200, { 'Content-Type':'text/html; charset=utf-8', 'Cache-Control':'private, no-store' });
+      res.end(html);
+      return;
+    }
+
+    await pg.query(
+      'UPDATE portal_lote_convidados SET first_access_at=COALESCE(first_access_at,NOW()), last_access_at=NOW(), status=\'acessou\' WHERE id=$1',
+      [pacote.id]
+    );
+
+    const documentos = (await pg.query(
+      `SELECT e.id, e.titulo, e.descricao, e.status, e.current_version,
+              v.id AS version_id, v.version_number, v.file_name, v.status AS version_status,
+              g.id AS convidado_id,
+              EXISTS(
+                SELECT 1 FROM portal_entrega_decisions d
+                 WHERE d.version_id=v.id AND d.convidado_id=g.id AND d.decision='validated'
+              ) AS validado_por_mim
+         FROM portal_entregas e
+         JOIN portal_entrega_versions v ON v.entrega_id=e.id AND v.version_number=e.current_version
+         JOIN portal_entrega_convidados g ON g.entrega_id=e.id AND g.version_id=v.id AND lower(g.email)=lower($2)
+        WHERE e.lote_id=$1
+        ORDER BY e.created_at, e.titulo`,
+      [pacote.lote_id, pacote.email]
+    )).rows;
+
+    const selected = entregaSelecionadaId
+      ? documentos.find(d => String(d.id) === String(entregaSelecionadaId))
+      : null;
+
+    if (entregaSelecionadaId && !selected) {
+      return json(res, 404, { error:'Documento não encontrado neste pacote.' });
+    }
+
+    if (selected && action === 'pdf' && req.method === 'GET') {
+      const version = (await pg.query(
+        'SELECT * FROM portal_entrega_versions WHERE id=$1 AND entrega_id=$2 LIMIT 1',
+        [selected.version_id, selected.id]
+      )).rows[0];
+      if (!version) return json(res, 404, { error:'Documento não encontrado.' });
+      let pdfBuffer;
+      try {
+        pdfBuffer = version.storage_key ? await getPrivateObjectBuffer(version.storage_key) : version.file_data;
+      } catch (e) {
+        return json(res, 503, { error:'Documento temporariamente indisponível.' });
+      }
+      res.writeHead(200, {
+        'Content-Type':'application/pdf',
+        'Content-Disposition':`inline; filename="${String(version.file_name || 'documento.pdf').replace(/[\r\n"]/g,'')}"`,
+        'Content-Length':Number(pdfBuffer.length),
+        'Cache-Control':'private, no-store',
+        'X-Content-Type-Options':'nosniff'
+      });
+      res.end(pdfBuffer);
+      return;
+    }
+
+    if (selected && action === 'manifestacao' && req.method === 'POST') {
+      const form = new URLSearchParams(await readBody(req));
+      const message = String(form.get('message') || '').trim();
+      const manifestationType = String(form.get('manifestationType') || '').trim();
+      if (!message || message.length > 5000) {
+        res.writeHead(302, { Location:`/validar-lote/${token}/documento/${selected.id}?erro=mensagem` });
+        res.end();
+        return;
+      }
+      if (selected.version_status === 'validated') return json(res,409,{error:'Este documento já foi validado.'});
+
+      if (manifestationType === 'contribution') {
+        await pg.query(
+          `INSERT INTO portal_entrega_messages
+            (id, entrega_id, version_id, actor_type, convidado_id, actor_name, actor_email, message, created_at)
+           VALUES ($1,$2,$3,'cliente',$4,$5,$6,$7,NOW())`,
+          [crypto.randomUUID(), selected.id, selected.version_id, selected.convidado_id, pacote.nome, pacote.email, `CONTRIBUIÇÃO: ${message}`]
+        );
+        notifyPortalResponsible(
+          db, req, {id:selected.id, responsavel_user_id:null},
+          `Nova contribuição — ${selected.titulo}`,
+          'Nova contribuição do cliente',
+          [`${pacote.nome} enviou uma contribuição sobre "${selected.titulo}".`, message]
+        );
+        res.writeHead(302, { Location:`/validar-lote/${token}/documento/${selected.id}?manifestacao=contribuicao#conversa` });
+        res.end();
+        return;
+      }
+
+      if (manifestationType === 'changes_requested') {
+        const client = await pg.connect();
+        try {
+          await client.query('BEGIN');
+          await client.query(
+            `INSERT INTO portal_entrega_decisions
+              (id, entrega_id, version_id, convidado_id, decision, decision_text, created_at)
+             VALUES ($1,$2,$3,$4,'changes_requested',$5,NOW())`,
+            [crypto.randomUUID(), selected.id, selected.version_id, selected.convidado_id, message]
+          );
+          await client.query(
+            `INSERT INTO portal_entrega_messages
+              (id, entrega_id, version_id, actor_type, convidado_id, actor_name, actor_email, message, created_at)
+             VALUES ($1,$2,$3,'cliente',$4,$5,$6,$7,NOW())`,
+            [crypto.randomUUID(), selected.id, selected.version_id, selected.convidado_id, pacote.nome, pacote.email, `ALTERAÇÃO SOLICITADA: ${message}`]
+          );
+          await client.query("UPDATE portal_entrega_versions SET status='ajustes_solicitados' WHERE id=$1",[selected.version_id]);
+          await client.query("UPDATE portal_entregas SET status='ajustes_solicitados' WHERE id=$1",[selected.id]);
+          await client.query('COMMIT');
+        } catch (e) {
+          await client.query('ROLLBACK');
+          return json(res,500,{error:'Não foi possível registrar a solicitação de alteração.'});
+        } finally {
+          client.release();
+        }
+        res.writeHead(302, { Location:`/validar-lote/${token}/documento/${selected.id}?manifestacao=alteracao#conversa` });
+        res.end();
+        return;
+      }
+      return json(res,400,{error:'Tipo de manifestação inválido.'});
+    }
+
+    if (selected && action === 'decisao' && req.method === 'POST') {
+      const form = new URLSearchParams(await readBody(req));
+      const decision = String(form.get('decision') || '').trim();
+      if (decision !== 'validated') return json(res,400,{error:'Decisão inválida.'});
+      if (selected.version_status === 'ajustes_solicitados' || selected.status === 'ajustes_solicitados') {
+        return json(res,409,{error:'Este documento possui alteração solicitada.'});
+      }
+
+      const existing = (await pg.query(
+        "SELECT id FROM portal_entrega_decisions WHERE version_id=$1 AND convidado_id=$2 AND decision='validated' LIMIT 1",
+        [selected.version_id, selected.convidado_id]
+      )).rows[0];
+      if (!existing) {
+        await pg.query(
+          `INSERT INTO portal_entrega_decisions
+            (id, entrega_id, version_id, convidado_id, decision, decision_text, created_at)
+           VALUES ($1,$2,$3,$4,'validated',$5,NOW())`,
+          [crypto.randomUUID(), selected.id, selected.version_id, selected.convidado_id, 'De acordo e validar entrega']
+        );
+      }
+
+      const totalRequired = Number((await pg.query(
+        'SELECT COUNT(*)::int AS c FROM portal_entrega_convidados WHERE entrega_id=$1 AND version_id=$2 AND can_validate=true',
+        [selected.id, selected.version_id]
+      )).rows[0].c || 0);
+      const totalApproved = Number((await pg.query(
+        "SELECT COUNT(DISTINCT convidado_id)::int AS c FROM portal_entrega_decisions WHERE version_id=$1 AND decision='validated'",
+        [selected.version_id]
+      )).rows[0].c || 0);
+
+      if (totalRequired > 0 && totalApproved >= totalRequired) {
+        const version = (await pg.query('SELECT * FROM portal_entrega_versions WHERE id=$1',[selected.version_id])).rows[0];
+        const existingValidation = (await pg.query('SELECT id FROM portal_entrega_validations WHERE version_id=$1 LIMIT 1',[selected.version_id])).rows[0];
+        if (!existingValidation) {
+          const protocol = `CKM-DOC-${new Date().getUTCFullYear()}-${crypto.randomUUID().split('-')[0].toUpperCase()}`;
+          await pg.query(
+            `INSERT INTO portal_entrega_validations
+              (id, entrega_id, version_id, convidado_id, protocol, file_hash, validator_name, validator_email, validator_cpf, declaration_text, validated_at)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,NULL,$9,NOW())`,
+            [crypto.randomUUID(), selected.id, selected.version_id, selected.convidado_id, protocol, version.file_hash, pacote.nome, pacote.email,
+             'Todos os validadores indicados para esta entrega registraram concordância com esta versão do documento.']
+          );
+          await pg.query("UPDATE portal_entrega_versions SET status='validated' WHERE id=$1",[selected.version_id]);
+          await pg.query("UPDATE portal_entregas SET status='validado' WHERE id=$1",[selected.id]);
+        }
+      }
+
+      res.writeHead(302, { Location:`/validar-lote/${token}/documento/${selected.id}?decisao=validado` });
+      res.end();
+      return;
+    }
+
+    const totalDocs = documentos.length;
+    const validados = documentos.filter(d => d.validado_por_mim).length;
+    const alteracoes = documentos.filter(d => d.status === 'ajustes_solicitados' || d.version_status === 'ajustes_solicitados').length;
+    const pendentes = Math.max(0, totalDocs - validados - alteracoes);
+    const progresso = totalDocs ? Math.round((validados / totalDocs) * 100) : 0;
+
+    const cards = documentos.map(d => {
+      const estado = d.validado_por_mim
+        ? ['Validado','#ecfdf5','#065f46']
+        : (d.status === 'ajustes_solicitados' || d.version_status === 'ajustes_solicitados')
+          ? ['Alteração solicitada','#fff7ed','#9a3412']
+          : ['Pendente de análise','#eff6ff','#1d4ed8'];
+      const ativo = selected && selected.id === d.id;
+      return `<a href='/validar-lote/${token}/documento/${d.id}' style='display:block;text-decoration:none;color:inherit;border:${ativo?'2px solid #4f46e5':'1px solid #e2e8f0'};border-radius:14px;padding:14px;background:#fff'>
+        <div style='font-size:12px;color:#64748b;margin-bottom:6px'>Documento · V${Number(d.version_number)}</div>
+        <strong style='display:block;line-height:1.35'>${escapeHtml(d.titulo)}</strong>
+        <span style='display:inline-block;margin-top:10px;padding:5px 8px;border-radius:999px;background:${estado[1]};color:${estado[2]};font-size:11px;font-weight:700'>${estado[0]}</span>
+      </a>`;
+    }).join('');
+
+    let detalhe = '';
+    if (selected) {
+      const messages = (await pg.query(
+        'SELECT * FROM portal_entrega_messages WHERE version_id=$1 ORDER BY created_at ASC',
+        [selected.version_id]
+      )).rows;
+      const validation = (await pg.query(
+        'SELECT * FROM portal_entrega_validations WHERE version_id=$1 ORDER BY validated_at DESC LIMIT 1',
+        [selected.version_id]
+      )).rows[0] || null;
+      const msgHtml = messages.map(m => {
+        const raw = String(m.message || '');
+        const tipo = raw.startsWith('ALTERAÇÃO SOLICITADA:') || raw.startsWith('AJUSTES SOLICITADOS:')
+          ? 'Solicitação de alteração'
+          : raw.startsWith('CONTRIBUIÇÃO:')
+            ? 'Contribuição' : '';
+        const clean = raw.replace(/^ALTERAÇÃO SOLICITADA:\s*/i,'').replace(/^AJUSTES SOLICITADOS:\s*/i,'').replace(/^CONTRIBUIÇÃO:\s*/i,'');
+        return `<div style='padding:12px;border:1px solid #e2e8f0;border-radius:10px;margin:8px 0;background:${m.actor_type==='cliente'?'#f8fafc':'#f0fdf4'}'>
+          <div style='font-size:12px;color:#64748b'><strong>${escapeHtml(m.actor_name)}</strong>${tipo ? " · "+escapeHtml(tipo) : ''} · ${escapeHtml(new Date(m.created_at).toLocaleString('pt-BR'))}</div>
+          <div style='white-space:pre-wrap;margin-top:4px'>${escapeHtml(clean)}</div>
+        </div>`;
+      }).join('');
+
+      const bloqueado = selected.status === 'ajustes_solicitados' || selected.version_status === 'ajustes_solicitados';
+      detalhe = `<section style='margin-top:22px'>
+        <div style='display:flex;justify-content:space-between;gap:12px;align-items:flex-start;flex-wrap:wrap'>
+          <div><a href='/validar-lote/${token}' style='font-size:13px'>← Voltar aos documentos</a>
+          <h2 style='margin:8px 0 4px'>${escapeHtml(selected.titulo)}</h2>
+          <div style='font-size:13px;color:#64748b'>Versão V${Number(selected.version_number)}</div></div>
+        </div>
+        <div style='margin-top:14px;background:#fff;border:1px solid #e2e8f0;border-radius:14px;padding:14px'>
+          <iframe src='/validar-lote/${token}/documento/${selected.id}/pdf' style='width:100%;height:70vh;border:0;border-radius:10px;background:#e2e8f0'></iframe>
+        </div>
+        <div id='conversa' style='margin-top:14px;background:#fff;border:1px solid #e2e8f0;border-radius:14px;padding:16px'>
+          <h3 style='margin-top:0'>Conversa sobre este documento</h3>
+          <div style='max-height:340px;overflow:auto'>${msgHtml || "<p style='font-size:13px;color:#64748b'>Nenhuma conversa registrada.</p>"}</div>
+          ${validation ? `<div style='margin-top:12px;padding:10px;border-radius:8px;background:#ecfdf5;color:#065f46'>Documento validado. Protocolo: <strong>${escapeHtml(validation.protocol)}</strong></div>` :
+            bloqueado ? "<div style='margin-top:12px;padding:10px;border-radius:8px;background:#fff7ed;color:#9a3412'>Há uma solicitação de alteração para esta versão. Aguarde a CKM disponibilizar uma nova versão.</div>" :
+            `<form method='post' action='/validar-lote/${token}/documento/${selected.id}/manifestacao' style='margin-top:12px'>
+              <label style='display:block;font-size:13px;font-weight:700;margin-bottom:5px'>Escreva sua mensagem</label>
+              <textarea name='message' rows='4' maxlength='5000' required style='width:100%;padding:10px;border:1px solid #cbd5e1;border-radius:8px;font:inherit'></textarea>
+              <div style='display:flex;gap:8px;flex-wrap:wrap;margin-top:8px'>
+                <button type='submit' name='manifestationType' value='changes_requested' style='border:1px solid #fdba74;background:#fff7ed;color:#9a3412;border-radius:9px;padding:10px 14px;font-weight:700;cursor:pointer'>Solicitar alteração</button>
+                <button type='submit' name='manifestationType' value='contribution' style='border:0;background:#0f766e;color:#fff;border-radius:9px;padding:10px 14px;font-weight:700;cursor:pointer'>Contribuição</button>
+              </div>
+            </form>
+            ${selected.validado_por_mim ? "<div style='margin-top:12px;padding:10px;border-radius:8px;background:#ecfdf5;color:#065f46'>Sua validação deste documento já foi registrada.</div>" :
+            `<form method='post' action='/validar-lote/${token}/documento/${selected.id}/decisao' style='margin-top:14px;border-top:1px solid #e2e8f0;padding-top:14px'>
+              <input type='hidden' name='decision' value='validated'>
+              <button type='submit' style='border:0;background:#1d4ed8;color:#fff;border-radius:9px;padding:11px 15px;font-weight:700;cursor:pointer'>De acordo e validar este documento</button>
+            </form>`}`}
+        </div>
+      </section>`;
+    }
+
+    const html = `<!doctype html><html lang='pt-BR'><head>
+      <meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>
+      <title>Documentos para análise — CKM Talents</title>
+      <style>
+        *{box-sizing:border-box}body{margin:0;font-family:Inter,Arial,sans-serif;background:#f8fafc;color:#1e293b}
+        header{background:#24116f;color:#fff;padding:16px 24px}.wrap{max-width:1450px;margin:0 auto;padding:22px}
+        .summary{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin:16px 0}.mini{background:#fff;border:1px solid #e2e8f0;border-radius:12px;padding:12px}
+        .docs{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:12px}
+        .bar{height:8px;background:#e2e8f0;border-radius:999px;overflow:hidden}.bar>span{display:block;height:100%;background:#4f46e5}
+        @media(max-width:800px){.wrap{padding:14px}}
+      </style></head><body>
+      <header><strong>CKM Talents — Documentos para análise</strong></header>
+      <div class='wrap'>
+        <div>
+          <h1 style='margin:0 0 6px;font-size:26px'>Documentos para sua análise</h1>
+          <div style='color:#64748b'>${escapeHtml(pacote.cliente_nome_curto || pacote.cliente_nome || '')}${pacote.projeto_nome ? ' · '+escapeHtml(pacote.projeto_nome) : ''}${pacote.contrato_numero ? ' · Contrato '+escapeHtml(pacote.contrato_numero) : ''}</div>
+        </div>
+        <div class='summary'>
+          <div class='mini'><div style='font-size:12px;color:#64748b'>Documentos</div><strong style='font-size:22px'>${totalDocs}</strong></div>
+          <div class='mini'><div style='font-size:12px;color:#64748b'>Validados</div><strong style='font-size:22px'>${validados}</strong></div>
+          <div class='mini'><div style='font-size:12px;color:#64748b'>Pendentes</div><strong style='font-size:22px'>${pendentes}</strong></div>
+          <div class='mini'><div style='font-size:12px;color:#64748b'>Alteração solicitada</div><strong style='font-size:22px'>${alteracoes}</strong></div>
+        </div>
+        <div style='margin:12px 0 18px'><div style='display:flex;justify-content:space-between;font-size:12px;color:#64748b;margin-bottom:5px'><span>Progresso da análise</span><strong>${progresso}%</strong></div><div class='bar'><span style='width:${progresso}%'></span></div></div>
+        <div class='docs'>${cards || "<p>Nenhum documento disponível.</p>"}</div>
+        ${detalhe}
+      </div></body></html>`;
+
+    res.writeHead(200, {
+      'Content-Type':'text/html; charset=utf-8',
+      'Cache-Control':'private, no-store',
+      'X-Frame-Options':'SAMEORIGIN',
+      'Referrer-Policy':'no-referrer'
+    });
+    res.end(html);
+    return;
+  }
+
+  // ============================================================
   // PORTAL EXTERNO DE VALIDAÇÃO — acesso somente por link individual
   // ============================================================
   const validarMatch = url.pathname.match(/^\/validar\/([a-f0-9]{64})(?:\/(pdf|mensagem|decisao|cadastro))?$/i);
