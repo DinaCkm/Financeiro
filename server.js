@@ -3816,9 +3816,9 @@ const server = http.createServer(async (req, res) => {
 
       function tituloDoArquivo(nome) {
         return String(nome || '')
-          .replace(/\.pdf$/i, '')
+          .replace(/\\.pdf$/i, '')
           .replace(/[_-]+/g, ' ')
-          .replace(/\s+/g, ' ')
+          .replace(/\\s+/g, ' ')
           .trim();
       }
 
