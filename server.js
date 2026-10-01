@@ -1033,6 +1033,10 @@ function conciliarPlanilha(allNewEntries, db) {
   };
 }
 
+function isOwnerUser(user) {
+  return String(user && user.role || '').trim().toLowerCase() === 'owner';
+}
+
 function requireAuth(req, res, db) {
 
   const user = currentUser(req, db);
@@ -1073,7 +1077,7 @@ function page(title, body, user, activePage) {
         ['/cadastros-mestres', '⚙ Cadastros', 'nav-cad'],
         ['/contratos', '📋 Contratos', ''],
         ['/entregas', 'Entregas e Validações', ''],
-        ['/acessos', 'Acessos', ''],
+        ...(isOwnerUser(user) ? [['/acessos', 'Usuários e Acessos', '']] : []),
         ['/contas', '💰 Contas', ''],
         ['/conciliacao', '🏦 Conciliação', ''],
         ['/ia', '🤖 IA', 'nav-ia'],
@@ -1805,7 +1809,7 @@ const server = http.createServer(async (req, res) => {
     user.passwordResetTokenHash = null;
     user.passwordResetExpiresAt = null;
     user.mustChangePassword = false;
-    if (isDeliveryConsultant(user) && user.status === 'pendente') {
+    if (user.status === 'pendente') {
       user.status = 'ativo';
     }
     user.failedLoginAttempts = 0;
@@ -3973,7 +3977,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method === 'GET' && url.pathname === '/acessos') {
-    if (!isFinancialAdmin(user)) {
+    if (!isOwnerUser(user)) {
       res.writeHead(403, { 'Content-Type': 'text/html; charset=utf-8' });
       res.end(page('Acesso negado', '<h2>Acesso não autorizado</h2>', user, ''));
       return;
@@ -3981,6 +3985,7 @@ const server = http.createServer(async (req, res) => {
 
     const pg = storage.getPool ? storage.getPool() : null;
     const consultores = (db.users || []).filter(u => isDeliveryConsultant(u));
+    const administradores = (db.users || []).filter(u => String(u.role || '').trim().toLowerCase() === 'admin');
     let clientes = [];
     let vinculos = [];
     if (pg) {
@@ -4051,9 +4056,42 @@ const server = http.createServer(async (req, res) => {
       `;
     }).join('');
 
+    const adminCards = administradores.map(u => `
+      <div style='border:1px solid #e2e8f0;border-radius:12px;padding:1rem;margin-bottom:1rem;background:#fff'>
+        <div style='display:flex;justify-content:space-between;gap:1rem;flex-wrap:wrap'>
+          <div>
+            <strong>${escapeHtml(u.name || '-')}</strong>
+            <div style='font-size:.82rem;color:#64748b'>${escapeHtml(u.email || '-')}</div>
+            <div style='margin-top:.3rem'>
+              ${u.status === 'ativo'
+                ? '<span class="badge badge-green">Ativo</span>'
+                : u.status === 'inativo'
+                  ? '<span class="badge" style="background:#fee2e2;color:#991b1b">Inativo</span>'
+                  : '<span class="badge badge-amber">Convite pendente</span>'}
+              <span class='badge' style='margin-left:.35rem;background:#e0e7ff;color:#3730a3'>Administrador</span>
+            </div>
+          </div>
+          <div style='font-size:.82rem;color:#64748b'>Último acesso: ${u.lastLoginAt ? escapeHtml(new Date(u.lastLoginAt).toLocaleString('pt-BR')) : '-'}</div>
+        </div>
+        <div style='display:flex;gap:.5rem;flex-wrap:wrap;margin-top:.8rem'>
+          <form method='post' action='/acessos/admin-status' style='margin:0'>
+            <input type='hidden' name='adminId' value='${escapeHtml(u.id)}'>
+            <input type='hidden' name='status' value='${u.status === 'ativo' ? 'inativo' : 'ativo'}'>
+            <button type='submit' class='btn-outline'>${u.status === 'ativo' ? 'Inativar acesso' : 'Ativar acesso'}</button>
+          </form>
+          ${u.status === 'pendente' ? `
+            <form method='post' action='/acessos/admin-reenviar-convite' style='margin:0'>
+              <input type='hidden' name='adminId' value='${escapeHtml(u.id)}'>
+              <button type='submit' class='btn-outline' ${!isSmtpConfigured() ? "disabled title='SMTP ainda não configurado'" : ''}>Reenviar convite</button>
+            </form>
+          ` : ''}
+        </div>
+      </div>
+    `).join('');
+
     const body = `
-      <h2 class='page-title'>Acessos</h2>
-      <p style='color:var(--gray-600);font-size:.9rem'>Cadastre consultores independentes com acesso exclusivo ao módulo Entregas e Validações e defina quais clientes cada um pode gerenciar.</p>
+      <h2 class='page-title'>Usuários e Acessos</h2>
+      <p style='color:var(--gray-600);font-size:.9rem'>Gerencie os acessos ao Sistema Financeiro e ao Portal de Entregas. Somente o perfil proprietário (owner) pode criar ou alterar administradores.</p>
       <div style='display:flex;gap:.75rem;flex-wrap:wrap;margin:1rem 0'>
         <span class='badge ${isSmtpConfigured() ? "badge-green" : "badge-amber"}'>SMTP: ${isSmtpConfigured() ? "configurado" : "pendente"}</span>
         <span class='badge ${isR2Configured() ? "badge-green" : "badge-amber"}'>R2 privado: ${isR2Configured() ? "configurado" : "pendente"}</span>
@@ -4075,6 +4113,23 @@ const server = http.createServer(async (req, res) => {
       ${emailTeste === 'ok' ? "<div style='margin:1rem 0;padding:.75rem;background:#ecfdf5;color:#065f46;border:1px solid #a7f3d0;border-radius:.5rem'>E-mail de teste enviado com sucesso.</div>" : ''}
       ${emailTeste === 'erro' ? "<div style='margin:1rem 0;padding:.75rem;background:#fef2f2;color:#991b1b;border:1px solid #fecaca;border-radius:.5rem'>O e-mail não foi enviado. Verifique SMTP_USER e SMTP_PASS no Railway.</div>" : ''}
       ${erro === 'email' ? "<div style='margin:1rem 0;padding:.75rem;background:#fef2f2;color:#991b1b;border:1px solid #fecaca;border-radius:.5rem'>Este e-mail já está cadastrado.</div>" : ''}
+      ${url.searchParams.get('adminCriado') ? "<div style='margin:1rem 0;padding:.75rem;background:#ecfdf5;color:#065f46;border:1px solid #a7f3d0;border-radius:.5rem'>Administrador cadastrado. O convite para criação da senha será enviado se o SMTP estiver configurado.</div>" : ''}
+      ${url.searchParams.get('adminStatus') ? "<div style='margin:1rem 0;padding:.75rem;background:#ecfdf5;color:#065f46;border:1px solid #a7f3d0;border-radius:.5rem'>Situação do administrador atualizada.</div>" : ''}
+      ${url.searchParams.get('adminConvite') === 'reenviado' ? "<div style='margin:1rem 0;padding:.75rem;background:#ecfdf5;color:#065f46;border:1px solid #a7f3d0;border-radius:.5rem'>Convite do administrador reenviado com novo link de ativação.</div>" : ''}
+      ${url.searchParams.get('adminConvite') === 'smtp' ? "<div style='margin:1rem 0;padding:.75rem;background:#fff7ed;color:#9a3412;border:1px solid #fdba74;border-radius:.5rem'>Não foi possível reenviar o convite do administrador: SMTP ainda não está configurado.</div>" : ''}
+      <section>
+        <h2>Novo administrador</h2>
+        <p style='color:#64748b;font-size:.84rem;margin-top:-.35rem'>O administrador terá acesso às áreas financeiras e ao Gerenciamento de Documentos. A gestão de usuários continuará exclusiva do proprietário.</p>
+        <form method='post' action='/acessos/admin' style='display:grid;grid-template-columns:1fr 1fr auto;gap:.75rem;align-items:end'>
+          <label>Nome<input name='name' required placeholder='Nome completo'></label>
+          <label>E-mail<input name='email' type='email' required placeholder='nome@email.com'></label>
+          <button type='submit' style='height:42px'>Criar administrador e enviar convite</button>
+        </form>
+      </section>
+      <section>
+        <h2>Administradores cadastrados</h2>
+        ${adminCards || "<p style='color:#64748b'>Nenhum administrador cadastrado.</p>"}
+      </section>
       <section>
         <h2>Novo consultor de entregas</h2>
         <form method='post' action='/acessos/consultor' style='display:grid;grid-template-columns:1fr 1fr auto;gap:.75rem;align-items:end'>
@@ -4095,7 +4150,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method === 'POST' && url.pathname === '/acessos/testar-email') {
-    if (!isFinancialAdmin(user)) return json(res, 403, { error: 'Acesso não autorizado.' });
+    if (!isOwnerUser(user)) return json(res, 403, { error: 'Acesso não autorizado.' });
     const form = new URLSearchParams(await readBody(req));
     const email = String(form.get('email') || '').trim().toLowerCase();
     if (!email || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
@@ -4108,7 +4163,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method === 'POST' && url.pathname === '/acessos/consultor-status') {
-    if (!isFinancialAdmin(user)) return json(res, 403, { error: 'Acesso não autorizado.' });
+    if (!isOwnerUser(user)) return json(res, 403, { error: 'Acesso não autorizado.' });
 
     const form = new URLSearchParams(await readBody(req));
     const consultantId = String(form.get('consultantId') || '').trim();
@@ -4142,7 +4197,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method === 'POST' && url.pathname === '/acessos/consultor-reenviar-convite') {
-    if (!isFinancialAdmin(user)) return json(res, 403, { error: 'Acesso não autorizado.' });
+    if (!isOwnerUser(user)) return json(res, 403, { error: 'Acesso não autorizado.' });
 
     if (!isSmtpConfigured()) {
       res.writeHead(302, { Location: '/acessos?convite=smtp' });
@@ -4177,7 +4232,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method === 'POST' && url.pathname === '/acessos/consultor-clientes') {
-    if (!isFinancialAdmin(user)) return json(res, 403, { error: 'Acesso não autorizado.' });
+    if (!isOwnerUser(user)) return json(res, 403, { error: 'Acesso não autorizado.' });
     const pg = storage.getPool ? storage.getPool() : null;
     if (!pg) return json(res, 503, { error: 'Banco não disponível.' });
 
@@ -4213,8 +4268,138 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  if (req.method === 'POST' && url.pathname === '/acessos/admin') {
+    if (!isOwnerUser(user)) return json(res, 403, { error: 'Acesso não autorizado.' });
+
+    const form = new URLSearchParams(await readBody(req));
+    const name = String(form.get('name') || '').trim();
+    const email = String(form.get('email') || '').trim().toLowerCase();
+    if (!name || !email || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
+      res.writeHead(302, { Location: '/acessos?erro=dados' });
+      res.end();
+      return;
+    }
+    if ((db.users || []).some(u => String(u.email || '').trim().toLowerCase() === email)) {
+      res.writeHead(302, { Location: '/acessos?erro=email' });
+      res.end();
+      return;
+    }
+
+    const { token, tokenHash, expiresAt } = generatePasswordResetToken();
+    const randomInitialSecret = crypto.randomBytes(48).toString('hex') + '!1';
+    const newUser = {
+      id: crypto.randomUUID(),
+      name,
+      email,
+      password: hashPassword(randomInitialSecret),
+      role: 'admin',
+      status: 'pendente',
+      failedLoginAttempts: 0,
+      loginBlockedUntil: null,
+      lastLoginAt: null,
+      mustChangePassword: true,
+      passwordResetTokenHash: tokenHash,
+      passwordResetExpiresAt: expiresAt,
+    };
+    if (!db.users) db.users = [];
+    db.users.push(newUser);
+    saveDb(db);
+
+    const activationLink = `${portalBaseUrl(req)}/reset-password?token=${encodeURIComponent(token)}`;
+    sendPortalNotificationEmail({
+      to: email,
+      subject: 'Acesso de administrador — Sistema Financeiro CKM',
+      title: 'Seu acesso ao Sistema Financeiro CKM',
+      lines: [
+        `Olá, ${name}.`,
+        'Você recebeu acesso como Administrador do Sistema Financeiro CKM.',
+        'Use o botão abaixo para cadastrar sua senha de acesso. Este link expira em 1 hora.'
+      ],
+      actionLabel: 'Cadastrar minha senha',
+      actionLink: activationLink,
+    }).catch(e => console.warn('[email] Erro ao enviar convite de administrador:', e && e.message ? e.message : e));
+
+    res.writeHead(302, { Location: '/acessos?adminCriado=1' });
+    res.end();
+    return;
+  }
+
+  if (req.method === 'POST' && url.pathname === '/acessos/admin-status') {
+    if (!isOwnerUser(user)) return json(res, 403, { error: 'Acesso não autorizado.' });
+
+    const form = new URLSearchParams(await readBody(req));
+    const adminId = String(form.get('adminId') || '').trim();
+    const newStatus = String(form.get('status') || '').trim();
+    if (!['ativo', 'inativo'].includes(newStatus)) {
+      return json(res, 400, { error: 'Situação inválida.' });
+    }
+    const admin = (db.users || []).find(u => u.id === adminId && String(u.role || '').trim().toLowerCase() === 'admin');
+    if (!admin) return json(res, 404, { error: 'Administrador não encontrado.' });
+
+    admin.status = newStatus;
+    admin.failedLoginAttempts = 0;
+    admin.loginBlockedUntil = null;
+    saveDb(db);
+
+    if (newStatus === 'inativo') {
+      for (const [sid, sessionData] of sessions.entries()) {
+        const sessionUserId = typeof sessionData === 'string' ? sessionData : sessionData.userId;
+        if (String(sessionUserId) === String(admin.id)) sessions.delete(sid);
+      }
+      if (storage.sessionDeleteByUser) {
+        await storage.sessionDeleteByUser(admin.id)
+          .catch(e => console.warn('[session] Erro ao invalidar sessões do administrador:', e.message));
+      }
+    }
+
+    res.writeHead(302, { Location: '/acessos?adminStatus=1' });
+    res.end();
+    return;
+  }
+
+  if (req.method === 'POST' && url.pathname === '/acessos/admin-reenviar-convite') {
+    if (!isOwnerUser(user)) return json(res, 403, { error: 'Acesso não autorizado.' });
+    if (!isSmtpConfigured()) {
+      res.writeHead(302, { Location: '/acessos?adminConvite=smtp' });
+      res.end();
+      return;
+    }
+
+    const form = new URLSearchParams(await readBody(req));
+    const adminId = String(form.get('adminId') || '').trim();
+    const admin = (db.users || []).find(u => u.id === adminId && String(u.role || '').trim().toLowerCase() === 'admin');
+    if (!admin) return json(res, 404, { error: 'Administrador não encontrado.' });
+    if (admin.status !== 'pendente') {
+      return json(res, 409, { error: 'O reenvio de convite é destinado apenas a acessos pendentes.' });
+    }
+
+    const { token, tokenHash, expiresAt } = generatePasswordResetToken();
+    admin.passwordResetTokenHash = tokenHash;
+    admin.passwordResetExpiresAt = expiresAt;
+    admin.mustChangePassword = true;
+    saveDb(db);
+
+    const activationLink = `${portalBaseUrl(req)}/reset-password?token=${encodeURIComponent(token)}`;
+    const ok = await sendPortalNotificationEmail({
+      to: admin.email,
+      subject: 'Acesso de administrador — Sistema Financeiro CKM',
+      title: 'Seu acesso ao Sistema Financeiro CKM',
+      lines: [
+        `Olá, ${admin.name || ''}.`,
+        'Você recebeu acesso como Administrador do Sistema Financeiro CKM.',
+        'Use o botão abaixo para cadastrar sua senha de acesso. Este link expira em 1 hora.'
+      ],
+      actionLabel: 'Cadastrar minha senha',
+      actionLink: activationLink,
+    });
+
+    res.writeHead(302, { Location: ok ? '/acessos?adminConvite=reenviado' : '/acessos?adminConvite=smtp' });
+    res.end();
+    return;
+  }
+
   if (req.method === 'POST' && url.pathname === '/acessos/consultor') {
-    if (!isFinancialAdmin(user)) return json(res, 403, { error: 'Acesso não autorizado.' });
+    if (!isOwnerUser(user)) return json(res, 403, { error: 'Acesso não autorizado.' });
 
     const form = new URLSearchParams(await readBody(req));
     const name = String(form.get('name') || '').trim();
