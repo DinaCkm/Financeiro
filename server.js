@@ -2781,8 +2781,10 @@ const server = http.createServer(async (req, res) => {
       `;
     }).join('');
 
+    const loteCriado = Number(url.searchParams.get('loteCriado') || 0);
     const html = page('Entregas e Validações', `
 <section>
+  ${loteCriado > 0 ? "<div style='margin-bottom:1rem;padding:.8rem;background:#ecfdf5;color:#065f46;border:1px solid #a7f3d0;border-radius:.6rem'><strong>Lote enviado com sucesso.</strong> " + loteCriado + " documento(s) foram cadastrados para validação.</div>" : ''}
   <div style='display:flex;justify-content:space-between;align-items:flex-start;gap:1rem;flex-wrap:wrap'>
     <div>
       <h2 class='page-title'>Entregas e Validações</h2>
@@ -3178,7 +3180,7 @@ const server = http.createServer(async (req, res) => {
       <div style='display:flex;justify-content:space-between;align-items:center;gap:1rem'>
         <div>
           <h2 class='page-title'>Nova Entrega</h2>
-          <p style='color:#64748b;font-size:.9rem'>Crie a entrega, anexe a primeira versão do documento e informe quem deverá analisar.</p>
+          <p style='color:#64748b;font-size:.9rem'>Crie uma ou várias entregas de uma só vez, selecione os PDFs e informe uma única vez quem deverá analisar.</p>
         </div>
         <a href='/entregas' style='font-size:.85rem'>Voltar</a>
       </div>
@@ -3207,15 +3209,13 @@ const server = http.createServer(async (req, res) => {
           </label>
         </div>
 
-        <label style='margin-top:.75rem'>Nome do documento *
-          <input id='ent-titulo' maxlength='255' placeholder='Ex: Relatório Final do Projeto' required>
-        </label>
         <label style='margin-top:.75rem'>Descrição da entrega *
-          <textarea id='ent-descricao' rows='4' placeholder='Explique o que está sendo entregue e o que o cliente deve analisar.' required></textarea>
+          <textarea id='ent-descricao' rows='4' placeholder='Explique o que está sendo entregue e o que o cliente deve analisar. Esta descrição será aplicada aos documentos selecionados.' required></textarea>
         </label>
-        <label style='margin-top:.75rem'>Arquivo da versão 1 (PDF) *
-          <input id='ent-arquivo' type='file' accept='application/pdf,.pdf' required>
+        <label style='margin-top:.75rem'>Arquivos da versão 1 (PDF) *
+          <input id='ent-arquivo' type='file' accept='application/pdf,.pdf' multiple required onchange='renderizarArquivosSelecionados()'>
         </label>
+        <div id='ent-arquivos-lista' style='margin-top:.75rem'></div>
       </section>
 
       <section>
@@ -3395,12 +3395,48 @@ const server = http.createServer(async (req, res) => {
         wrap.appendChild(row);
       }
 
+      function tituloDoArquivo(nome) {
+        return String(nome || '')
+          .replace(/\.pdf$/i, '')
+          .replace(/[_-]+/g, ' ')
+          .replace(/\s+/g, ' ')
+          .trim();
+      }
+
+      function renderizarArquivosSelecionados() {
+        const input = document.getElementById('ent-arquivo');
+        const lista = document.getElementById('ent-arquivos-lista');
+        const files = [...(input.files || [])];
+        if (!files.length) {
+          lista.innerHTML = '';
+          return;
+        }
+        lista.innerHTML =
+          "<div style='font-size:.78rem;font-weight:700;color:#475569;margin-bottom:.45rem'>" +
+          files.length + (files.length === 1 ? " documento selecionado" : " documentos selecionados") +
+          "</div>" +
+          files.map((file, idx) =>
+            "<div class='arquivo-lote-row' data-index='"+idx+"' style='display:grid;grid-template-columns:minmax(220px,1fr) minmax(260px,2fr);gap:.65rem;align-items:end;margin:.45rem 0;padding:.65rem;border:1px solid #e2e8f0;border-radius:10px;background:#f8fafc'>" +
+              "<div><div style='font-size:.72rem;color:#64748b'>Arquivo</div><strong style='font-size:.82rem;word-break:break-word'>"+escapeHtmlClient(file.name)+"</strong><div style='font-size:.7rem;color:#94a3b8'>"+(file.size/1024/1024).toFixed(2)+" MB</div></div>" +
+              "<label style='margin:0'>Nome do documento *<input class='arquivo-titulo' maxlength='255' value='"+escapeHtmlAttr(tituloDoArquivo(file.name))+"' required></label>" +
+            "</div>"
+          ).join('');
+      }
+
+      function escapeHtmlClient(value) {
+        return String(value || '').replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
+      }
+
+      function escapeHtmlAttr(value) {
+        return escapeHtmlClient(value);
+      }
+
       async function enviarEntrega() {
         const msg = document.getElementById('ent-msg');
         const clienteId = Number(document.getElementById('ent-cliente').value || 0);
-        const titulo = document.getElementById('ent-titulo').value.trim();
         const descricao = document.getElementById('ent-descricao').value.trim();
-        const file = document.getElementById('ent-arquivo').files[0];
+        const files = [...document.getElementById('ent-arquivo').files];
+        const titleInputs = [...document.querySelectorAll('.arquivo-lote-row .arquivo-titulo')];
         const rows = [...document.querySelectorAll('.validador-row')];
         const convidados = rows.map(r => ({
           nome: r.querySelector('.val-nome').value.trim(),
@@ -3409,10 +3445,10 @@ const server = http.createServer(async (req, res) => {
 
         const faltando = [];
         if (!clienteId) faltando.push(['ent-cliente', 'Cliente']);
-        if (!titulo) faltando.push(['ent-titulo', 'Nome do documento']);
         if (!descricao) faltando.push(['ent-descricao', 'Descrição da entrega']);
-        if (!file) faltando.push(['ent-arquivo', 'Arquivo da versão 1 (PDF)']);
-        ['ent-cliente','ent-titulo','ent-descricao','ent-arquivo'].forEach(id => {
+        if (!files.length) faltando.push(['ent-arquivo', 'Arquivos da versão 1 (PDF)']);
+        if (titleInputs.some(input => !input.value.trim())) faltando.push(['ent-arquivo', 'Nome de todos os documentos']);
+        ['ent-cliente','ent-descricao','ent-arquivo'].forEach(id => {
           const el = document.getElementById(id);
           if (el) { el.style.border = ''; el.style.background = ''; }
         });
@@ -3427,8 +3463,8 @@ const server = http.createServer(async (req, res) => {
           if (primeiro) { primeiro.scrollIntoView({ behavior: 'smooth', block: 'center' }); primeiro.focus(); }
           return;
         }
-        if (file.type !== 'application/pdf' && !file.name.toLowerCase().endsWith('.pdf')) {
-          msg.textContent = 'A versão 1 deve ser um arquivo PDF.';
+        if (files.some(file => file.type !== 'application/pdf' && !file.name.toLowerCase().endsWith('.pdf'))) {
+          msg.textContent = 'Todos os arquivos da versão 1 devem ser PDFs.';
           msg.style.color = '#991b1b';
           return;
         }
@@ -3437,45 +3473,56 @@ const server = http.createServer(async (req, res) => {
           msg.style.color = '#991b1b';
           return;
         }
-        if (file.size > 15 * 1024 * 1024) {
-          msg.textContent = 'O PDF deve ter no máximo 15 MB nesta fase.';
+        if (files.some(file => file.size > 15 * 1024 * 1024)) {
+          msg.textContent = 'Cada PDF deve ter no máximo 15 MB nesta fase.';
           msg.style.color = '#991b1b';
           return;
         }
 
         const btn = document.getElementById('btn-enviar');
         btn.disabled = true;
-        btn.textContent = 'Enviando...';
-        msg.textContent = 'Salvando documento e preparando convites...';
+        btn.textContent = files.length > 1 ? 'Enviando lote...' : 'Enviando...';
+        msg.textContent = files.length > 1
+          ? 'Salvando ' + files.length + ' documentos e preparando os convites...'
+          : 'Salvando documento e preparando convites...';
         msg.style.color = '#475569';
 
         try {
-          const buffer = await file.arrayBuffer();
-          const bytes = new Uint8Array(buffer);
-          let binary = '';
-          const chunk = 0x8000;
-          for (let i=0;i<bytes.length;i+=chunk) {
-            binary += String.fromCharCode(...bytes.subarray(i, i+chunk));
+          const documentos = [];
+          for (let index = 0; index < files.length; index++) {
+            const file = files[index];
+            msg.textContent = 'Preparando documento ' + (index + 1) + ' de ' + files.length + ': ' + file.name;
+            const buffer = await file.arrayBuffer();
+            const bytes = new Uint8Array(buffer);
+            let binary = '';
+            const chunk = 0x8000;
+            for (let i=0;i<bytes.length;i+=chunk) {
+              binary += String.fromCharCode(...bytes.subarray(i, i+chunk));
+            }
+            documentos.push({
+              titulo: titleInputs[index].value.trim(),
+              fileName: file.name,
+              fileType: file.type || 'application/pdf',
+              fileBase64: btoa(binary)
+            });
           }
-          const fileBase64 = btoa(binary);
-          const r = await fetch('/api/entregas', {
+
+          msg.textContent = 'Enviando lote para o servidor...';
+          const r = await fetch('/api/entregas/lote', {
             method: 'POST',
             headers: {'content-type':'application/json'},
             body: JSON.stringify({
               clienteId,
               projetoId: Number(document.getElementById('ent-projeto').value || 0) || null,
               contratoId: Number(document.getElementById('ent-contrato').value || 0) || null,
-              titulo,
               descricao,
-              fileName: file.name,
-              fileType: file.type || 'application/pdf',
-              fileBase64,
+              documentos,
               convidados
             })
           });
           const data = await r.json();
-          if (!r.ok || data.error) throw new Error(data.error || 'Erro ao criar entrega.');
-          window.location.href = '/entregas?criada=1';
+          if (!r.ok || data.error) throw new Error(data.error || 'Erro ao criar lote de entregas.');
+          window.location.href = '/entregas?loteCriado=' + encodeURIComponent(data.criados || documentos.length);
         } catch (e) {
           msg.textContent = 'Erro: ' + e.message;
           msg.style.color = '#991b1b';
@@ -3494,6 +3541,268 @@ const server = http.createServer(async (req, res) => {
     res.end(html);
     return;
   }
+
+  if (req.method === 'POST' && url.pathname === '/api/entregas/lote') {
+    const pg = storage.getPool ? storage.getPool() : null;
+    if (!pg) return json(res, 503, { error: 'Banco não disponível.' });
+
+    let body;
+    try {
+      body = JSON.parse(await readBody(req) || '{}');
+    } catch {
+      return json(res, 400, { error: 'Dados inválidos.' });
+    }
+
+    const clienteId = Number(body.clienteId || 0);
+    const projetoId = body.projetoId ? Number(body.projetoId) : null;
+    const contratoId = body.contratoId ? Number(body.contratoId) : null;
+    const descricao = String(body.descricao || '').trim();
+    const documentos = Array.isArray(body.documentos) ? body.documentos : [];
+    const convidados = Array.isArray(body.convidados) ? body.convidados : [];
+
+    if (!clienteId || !descricao || !documentos.length) {
+      return json(res, 400, { error: 'Cliente, descrição e pelo menos um PDF são obrigatórios.' });
+    }
+    if (documentos.length > 20) {
+      return json(res, 400, { error: 'Envie no máximo 20 documentos por lote.' });
+    }
+    if (!(await userCanAccessPortalClient(user, clienteId))) {
+      return json(res, 403, { error: 'Você não possui acesso a este cliente.' });
+    }
+    if (!convidados.length) {
+      return json(res, 400, { error: 'Informe pelo menos uma pessoa para validação.' });
+    }
+
+    const validGuests = [];
+    for (const g of convidados) {
+      const nome = String(g.nome || '').trim();
+      const email = String(g.email || '').trim().toLowerCase();
+      if (!nome || !email || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
+        return json(res, 400, { error: 'Todos os validadores precisam ter nome e e-mail válido.' });
+      }
+      validGuests.push({ nome, email });
+    }
+
+    const prepared = [];
+    let totalBytes = 0;
+    for (const doc of documentos) {
+      const titulo = String(doc.titulo || '').trim();
+      const fileName = String(doc.fileName || '').trim();
+      const fileType = String(doc.fileType || 'application/pdf').trim();
+      if (!titulo || !fileName || !doc.fileBase64) {
+        return json(res, 400, { error: 'Todos os documentos precisam ter nome e arquivo PDF.' });
+      }
+      if (!fileName.toLowerCase().endsWith('.pdf') && fileType !== 'application/pdf') {
+        return json(res, 400, { error: 'Todos os documentos do lote devem ser PDFs.' });
+      }
+      let fileBuffer;
+      try {
+        fileBuffer = Buffer.from(String(doc.fileBase64), 'base64');
+      } catch {
+        return json(res, 400, { error: 'Um dos arquivos enviados é inválido.' });
+      }
+      if (!fileBuffer.length || fileBuffer.length > 15 * 1024 * 1024) {
+        return json(res, 400, { error: 'Cada PDF deve ter entre 1 byte e 15 MB.' });
+      }
+      if (fileBuffer.subarray(0, 4).toString() !== '%PDF') {
+        return json(res, 400, { error: `O arquivo "${fileName}" não parece ser um PDF válido.` });
+      }
+      totalBytes += fileBuffer.length;
+      prepared.push({ titulo, fileName, fileBuffer });
+    }
+    if (totalBytes > 60 * 1024 * 1024) {
+      return json(res, 400, { error: 'O lote completo deve ter no máximo 60 MB.' });
+    }
+
+    // Reutiliza as validações de vínculo já existentes na rota unitária.
+    const clientesEquivalentes = async (idA, idB) => {
+      const a = Number(idA || 0), b = Number(idB || 0);
+      if (!a || !b) return false;
+      if (a === b) return true;
+      const rows = (await pg.query(
+        'SELECT id, codigo, nome, nome_curto FROM clientes WHERE id=ANY($1::int[])',
+        [[a, b]]
+      )).rows;
+      if (rows.length < 2) return false;
+      const normalizar = valor => String(valor || '')
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .toUpperCase()
+        .replace(/[^A-Z0-9]/g, '');
+      const ca = rows.find(c => Number(c.id) === a);
+      const cb = rows.find(c => Number(c.id) === b);
+      if (!ca || !cb) return false;
+      const codA = normalizar(ca.codigo), codB = normalizar(cb.codigo);
+      if (codA && codB && codA === codB) return true;
+      const nomesA = [ca.nome, ca.nome_curto].map(normalizar).filter(Boolean);
+      const nomesB = [cb.nome, cb.nome_curto].map(normalizar).filter(Boolean);
+      return nomesA.some(n => nomesB.includes(n));
+    };
+
+    if (projetoId) {
+      const p = await pg.query('SELECT id, cliente_id, ativo FROM projetos WHERE id=$1', [projetoId]);
+      if (!p.rows.length) return json(res, 400, { error: 'Projeto inválido.' });
+      if (
+        p.rows[0].cliente_id &&
+        Number(p.rows[0].cliente_id) !== clienteId &&
+        !(await clientesEquivalentes(p.rows[0].cliente_id, clienteId))
+      ) {
+        const vinculos = (await pg.query('SELECT cliente_id FROM contratos WHERE projeto_id=$1', [projetoId])).rows;
+        const vinculoValido = (await Promise.all(
+          vinculos.map(v => clientesEquivalentes(v.cliente_id, clienteId))
+        )).some(Boolean);
+        if (!vinculoValido) {
+          return json(res, 400, { error: 'O projeto selecionado não pertence ao cliente escolhido.' });
+        }
+      }
+    }
+
+    if (contratoId) {
+      const ct = await pg.query(
+        `SELECT ct.id, ct.cliente_id, ct.projeto_id, p.cliente_id AS projeto_cliente_id
+           FROM contratos ct
+           LEFT JOIN projetos p ON p.id=ct.projeto_id
+          WHERE ct.id=$1`,
+        [contratoId]
+      );
+      if (!ct.rows.length) return json(res, 400, { error: 'Contrato inválido.' });
+      const contratoDoCliente =
+        Number(ct.rows[0].cliente_id) === clienteId ||
+        Number(ct.rows[0].projeto_cliente_id) === clienteId ||
+        (ct.rows[0].cliente_id && await clientesEquivalentes(ct.rows[0].cliente_id, clienteId)) ||
+        (ct.rows[0].projeto_cliente_id && await clientesEquivalentes(ct.rows[0].projeto_cliente_id, clienteId));
+      if (!contratoDoCliente) {
+        return json(res, 400, { error: 'O contrato selecionado não pertence ao cliente escolhido.' });
+      }
+      if (projetoId && ct.rows[0].projeto_id && Number(ct.rows[0].projeto_id) !== projetoId) {
+        return json(res, 400, { error: 'O contrato selecionado não pertence ao projeto escolhido.' });
+      }
+    }
+
+    if (!isR2Configured()) {
+      return json(res, 503, { error: 'Armazenamento seguro de documentos ainda não está configurado.' });
+    }
+
+    const loteId = crypto.randomUUID();
+    const now = new Date().toISOString();
+    const created = [];
+    const uploadedKeys = [];
+
+    try {
+      for (const doc of prepared) {
+        const entregaId = crypto.randomUUID();
+        const versionId = crypto.randomUUID();
+        const fileHash = crypto.createHash('sha256').update(doc.fileBuffer).digest('hex');
+        const storageKey = `portal-entregas/${entregaId}/v1-${versionId}.pdf`;
+        await putPrivateObject(storageKey, doc.fileBuffer, 'application/pdf');
+        uploadedKeys.push(storageKey);
+        created.push({ ...doc, entregaId, versionId, fileHash, storageKey });
+      }
+    } catch (e) {
+      for (const key of uploadedKeys) deletePrivateObject(key).catch(() => {});
+      return json(res, 503, { error: 'Não foi possível armazenar todos os documentos do lote com segurança.' });
+    }
+
+    const invitationsByEmail = new Map();
+    const client = await pg.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS portal_entrega_lotes (
+          id TEXT PRIMARY KEY,
+          cliente_id INTEGER NOT NULL,
+          projeto_id INTEGER,
+          contrato_id INTEGER,
+          descricao TEXT,
+          responsavel_user_id TEXT NOT NULL,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+        )
+      `);
+      await client.query("ALTER TABLE portal_entregas ADD COLUMN IF NOT EXISTS lote_id TEXT");
+      await client.query(
+        `INSERT INTO portal_entrega_lotes
+          (id, cliente_id, projeto_id, contrato_id, descricao, responsavel_user_id, created_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+        [loteId, clienteId, projetoId, contratoId, descricao, user.id, now]
+      );
+
+      for (const doc of created) {
+        await client.query(
+          `INSERT INTO portal_entregas
+            (id, cliente_id, projeto_id, contrato_id, titulo, descricao, responsavel_user_id, status, current_version, created_at, sent_at, lote_id)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,'aguardando_cliente',1,$8,$8,$9)`,
+          [doc.entregaId, clienteId, projetoId, contratoId, doc.titulo, descricao, user.id, now, loteId]
+        );
+        await client.query(
+          `INSERT INTO portal_entrega_versions
+            (id, entrega_id, version_number, file_name, mime_type, file_size, file_hash, storage_key, file_data, uploaded_by, uploaded_at, status)
+           VALUES ($1,$2,1,$3,'application/pdf',$4,$5,$6,$7,$8,$9,'aguardando_cliente')`,
+          [doc.versionId, doc.entregaId, doc.fileName, doc.fileBuffer.length, doc.fileHash, doc.storageKey, Buffer.alloc(0), user.id, now]
+        );
+
+        for (const guest of validGuests) {
+          const { token, tokenHash } = createGuestToken();
+          const convidadoId = crypto.randomUUID();
+          await client.query(
+            `INSERT INTO portal_entrega_convidados
+              (id, entrega_id, version_id, nome, email, can_comment, can_request_changes, can_validate, token_hash, status, invited_at, expires_at)
+             VALUES ($1,$2,$3,$4,$5,true,true,true,$6,'convidado',$7::timestamptz,$7::timestamptz + INTERVAL '30 days')`,
+            [convidadoId, doc.entregaId, doc.versionId, guest.nome, guest.email, tokenHash, now]
+          );
+          if (!invitationsByEmail.has(guest.email)) invitationsByEmail.set(guest.email, []);
+          invitationsByEmail.get(guest.email).push({
+            nome: guest.nome,
+            titulo: doc.titulo,
+            token
+          });
+        }
+      }
+      await client.query('COMMIT');
+    } catch (e) {
+      await client.query('ROLLBACK');
+      for (const key of uploadedKeys) deletePrivateObject(key).catch(() => {});
+      return json(res, 500, { error: 'Não foi possível criar o lote: ' + e.message });
+    } finally {
+      client.release();
+    }
+
+    for (const doc of created) {
+      await recordPortalAudit(pg, req, {
+        entregaId: doc.entregaId,
+        versionId: doc.versionId,
+        actorType:'ckm',
+        actorId:user.id,
+        action:'entrega_criada_em_lote',
+        details:{ loteId, fileHash: doc.fileHash }
+      });
+    }
+
+    // Por enquanto cada documento mantém seu próprio link individual para preservar
+    // a validação e o protocolo de cada arquivo, mas o cadastro dos validadores é feito uma só vez.
+    const baseUrl = portalBaseUrl(req);
+    for (const [email, docs] of invitationsByEmail.entries()) {
+      const name = docs[0] && docs[0].nome;
+      const lines = [
+        `Você recebeu ${docs.length} documento(s) da CKM Talents para análise e validação.`,
+        'Cada documento possui validação e protocolo próprios.',
+        ...docs.map((d, i) => `${i + 1}. ${d.titulo}: ${baseUrl}/validar/${encodeURIComponent(d.token)}`)
+      ];
+      sendPortalNotificationEmail({
+        to: email,
+        subject: `Documentos para análise — ${docs.length} entrega(s)`,
+        title: 'Documentos para análise e validação',
+        lines,
+      }).catch(e => console.warn('[entregas] Erro ao enviar convite do lote:', e && e.message ? e.message : e));
+    }
+
+    return json(res, 200, {
+      ok: true,
+      loteId,
+      criados: created.length,
+      convidados: validGuests.length
+    });
+  }
+
 
   if (req.method === 'POST' && url.pathname === '/api/entregas') {
     const pg = storage.getPool ? storage.getPool() : null;
