@@ -2155,6 +2155,148 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    if (req.method === 'POST' && action === 'manifestacao') {
+      const form = new URLSearchParams(await readBody(req));
+      const message = String(form.get('message') || '').trim();
+      const manifestationType = String(form.get('manifestationType') || '').trim();
+
+      if (!message) {
+        res.writeHead(302, { Location: `/validar/${token}?erro=mensagem#conversa` });
+        res.end();
+        return;
+      }
+      if (message.length > 5000) {
+        res.writeHead(302, { Location: `/validar/${token}?erro=mensagem_longa#conversa` });
+        res.end();
+        return;
+      }
+
+      if (manifestationType === 'contribution') {
+        if (!guest.can_comment) return json(res, 403, { error: 'Você não possui permissão para enviar contribuições nesta entrega.' });
+        if (version.status === 'validated') {
+          return json(res, 409, { error: 'Esta versão já foi validada e não aceita novas contribuições.' });
+        }
+
+        await pg.query(
+          `INSERT INTO portal_entrega_messages
+            (id, entrega_id, version_id, actor_type, convidado_id, actor_name, actor_email, message, created_at)
+           VALUES ($1,$2,$3,'cliente',$4,$5,$6,$7,NOW())`,
+          [crypto.randomUUID(), guest.entrega_id, version.id, guest.id, guest.nome, guest.email, `CONTRIBUIÇÃO: ${message}`]
+        );
+
+        await recordPortalAudit(pg, req, {
+          entregaId: guest.entrega_id,
+          versionId: version.id,
+          actorType: 'cliente',
+          actorId: guest.id,
+          action: 'contribuicao_enviada'
+        });
+
+        notifyPortalResponsible(
+          db,
+          req,
+          { id: guest.entrega_id, responsavel_user_id: guest.responsavel_user_id },
+          `Nova contribuição — ${guest.titulo}`,
+          'Nova contribuição do cliente',
+          [
+            `${guest.nome} enviou uma contribuição sobre "${guest.titulo}" — V${version.version_number}.`,
+            message.length > 350 ? message.slice(0, 350) + '…' : message
+          ]
+        );
+
+        res.writeHead(302, { Location: `/validar/${token}?manifestacao=contribuicao#conversa` });
+        res.end();
+        return;
+      }
+
+      if (manifestationType === 'changes_requested') {
+        if (!guest.can_request_changes) return json(res, 403, { error: 'Você não possui permissão para solicitar alterações.' });
+        if (Number(version.version_number) !== Number(guest.current_version || 1)) {
+          return json(res, 409, { error: 'Este link pertence a uma versão anterior. Use o convite da versão atual.' });
+        }
+        if (version.status === 'validated') {
+          return json(res, 409, { error: 'Esta versão já foi validada e não pode ser alterada.' });
+        }
+        if (version.status === 'ajustes_solicitados' || guest.entrega_status === 'ajustes_solicitados') {
+          return json(res, 409, { error: 'Já existe uma solicitação de alteração para esta versão.' });
+        }
+
+        const client = await pg.connect();
+        try {
+          await client.query('BEGIN');
+          await client.query(
+            `INSERT INTO portal_entrega_decisions
+              (id, entrega_id, version_id, convidado_id, decision, decision_text, created_at)
+             VALUES ($1,$2,$3,$4,'changes_requested',$5,NOW())`,
+            [crypto.randomUUID(), guest.entrega_id, version.id, guest.id, message]
+          );
+          await client.query(
+            `INSERT INTO portal_entrega_messages
+              (id, entrega_id, version_id, actor_type, convidado_id, actor_name, actor_email, message, created_at)
+             VALUES ($1,$2,$3,'cliente',$4,$5,$6,$7,NOW())`,
+            [crypto.randomUUID(), guest.entrega_id, version.id, guest.id, guest.nome, guest.email, `ALTERAÇÃO SOLICITADA: ${message}`]
+          );
+          await client.query(
+            "UPDATE portal_entrega_versions SET status='ajustes_solicitados' WHERE id=$1",
+            [version.id]
+          );
+          await client.query(
+            "UPDATE portal_entregas SET status='ajustes_solicitados' WHERE id=$1",
+            [guest.entrega_id]
+          );
+          await client.query('COMMIT');
+        } catch (e) {
+          await client.query('ROLLBACK');
+          return json(res, 500, { error: 'Não foi possível registrar a solicitação de alteração.' });
+        } finally {
+          client.release();
+        }
+
+        await recordPortalAudit(pg, req, {
+          entregaId: guest.entrega_id,
+          versionId: version.id,
+          actorType: 'cliente',
+          actorId: guest.id,
+          action: 'ajustes_solicitados'
+        });
+
+        notifyPortalResponsible(
+          db,
+          req,
+          { id: guest.entrega_id, responsavel_user_id: guest.responsavel_user_id },
+          `Alteração solicitada — ${guest.titulo}`,
+          'Cliente solicitou alteração',
+          [
+            `${guest.nome} solicitou alteração na versão V${version.version_number} de "${guest.titulo}".`,
+            message.length > 500 ? message.slice(0, 500) + '…' : message
+          ]
+        );
+
+        const otherGuests = (await pg.query(
+          `SELECT email, nome FROM portal_entrega_convidados
+            WHERE entrega_id=$1 AND version_id=$2 AND id<>$3`,
+          [guest.entrega_id, version.id, guest.id]
+        )).rows;
+        for (const other of otherGuests) {
+          sendPortalNotificationEmail({
+            to: other.email,
+            subject: `Alteração solicitada — ${guest.titulo}`,
+            title: 'A análise desta versão foi interrompida para alteração',
+            lines: [
+              `${guest.nome} solicitou alteração na versão V${version.version_number} de "${guest.titulo}".`,
+              'Aguarde a CKM disponibilizar uma nova versão para continuar a análise.'
+            ]
+          }).catch(e => console.warn('[email] Aviso aos demais validadores não enviado:', e && e.message ? e.message : e));
+        }
+
+        res.writeHead(302, { Location: `/validar/${token}?manifestacao=alteracao#conversa` });
+        res.end();
+        return;
+      }
+
+      return json(res, 400, { error: 'Tipo de manifestação inválido.' });
+    }
+
     if (req.method === 'POST' && action === 'mensagem') {
       if (!guest.can_comment) return json(res, 403, { error: 'Você não possui permissão para conversar nesta entrega.' });
       const form = new URLSearchParams(await readBody(req));
@@ -2247,7 +2389,7 @@ const server = http.createServer(async (req, res) => {
           db,
           req,
           { id: guest.entrega_id, responsavel_user_id: guest.responsavel_user_id },
-          `Ajustes solicitados — ${guest.titulo}`,
+          `Alteração solicitada — ${guest.titulo}`,
           'Cliente solicitou ajustes',
           [
             `${guest.nome} solicitou ajustes na versão V${version.version_number} de "${guest.titulo}".`,
@@ -2263,7 +2405,7 @@ const server = http.createServer(async (req, res) => {
         for (const other of otherGuests) {
           sendPortalNotificationEmail({
             to: other.email,
-            subject: `Ajustes solicitados — ${guest.titulo}`,
+            subject: `Alteração solicitada — ${guest.titulo}`,
             title: 'A análise desta versão foi interrompida para ajustes',
             lines: [
               `${guest.nome} solicitou ajustes na versão V${version.version_number} de "${guest.titulo}".`,
@@ -2280,7 +2422,7 @@ const server = http.createServer(async (req, res) => {
       if (decision === 'validated') {
         if (!guest.can_validate) return json(res, 403, { error: 'Você não possui permissão para validar esta entrega.' });
         if (version.status === 'ajustes_solicitados' || guest.entrega_status === 'ajustes_solicitados') {
-          return json(res, 409, { error: 'Esta versão possui ajustes solicitados. Aguarde a CKM enviar uma nova versão.' });
+          return json(res, 409, { error: 'Esta versão possui alteração solicitada. Aguarde a CKM enviar uma nova versão.' });
         }
 
         const existing = await pg.query(
@@ -2437,18 +2579,33 @@ const server = http.createServer(async (req, res) => {
       const alreadyApproved = approvedIds.has(guest.id);
       const erro = url.searchParams.get('erro');
       const decisao = url.searchParams.get('decisao');
+      const manifestacao = url.searchParams.get('manifestacao');
 
-      const messageHtml = messages.map(m => `
-        <div style='padding:.75rem;border:1px solid #e2e8f0;border-radius:10px;margin:.5rem 0;background:${m.actor_type === 'cliente' ? '#f8fafc' : '#f0fdf4'}'>
-          <div style='font-size:.76rem;color:#64748b;margin-bottom:.25rem'><strong>${escapeHtml(m.actor_name)}</strong> · ${escapeHtml(new Date(m.created_at).toLocaleString('pt-BR'))}</div>
-          <div style='white-space:pre-wrap'>${escapeHtml(m.message)}</div>
-        </div>
-      `).join('');
+      const messageHtml = messages.map(m => {
+        const rawMessage = String(m.message || '');
+        const isChange = rawMessage.startsWith('ALTERAÇÃO SOLICITADA:') || rawMessage.startsWith('AJUSTES SOLICITADOS:');
+        const isContribution = rawMessage.startsWith('CONTRIBUIÇÃO:');
+        const cleanMessage = rawMessage
+          .replace(/^ALTERAÇÃO SOLICITADA:\s*/i, '')
+          .replace(/^AJUSTES SOLICITADOS:\s*/i, '')
+          .replace(/^CONTRIBUIÇÃO:\s*/i, '');
+        const typeBadge = isChange
+          ? "<span style='display:inline-block;margin-left:6px;padding:2px 6px;border-radius:999px;background:#fff7ed;color:#9a3412;font-size:10px;font-weight:700'>Solicitação de alteração</span>"
+          : isContribution
+            ? "<span style='display:inline-block;margin-left:6px;padding:2px 6px;border-radius:999px;background:#e0f2fe;color:#075985;font-size:10px;font-weight:700'>Contribuição</span>"
+            : '';
+        return `
+          <div style='padding:.75rem;border:1px solid #e2e8f0;border-radius:10px;margin:.5rem 0;background:${m.actor_type === 'cliente' ? '#f8fafc' : '#f0fdf4'}'>
+            <div style='font-size:.76rem;color:#64748b;margin-bottom:.25rem'><strong>${escapeHtml(m.actor_name)}</strong>${typeBadge} · ${escapeHtml(new Date(m.created_at).toLocaleString('pt-BR'))}</div>
+            <div style='white-space:pre-wrap'>${escapeHtml(cleanMessage)}</div>
+          </div>
+        `;
+      }).join('');
 
       const statusText = validation
         ? `Validado / Entregue — Protocolo ${escapeHtml(validation.protocol)}`
         : version.status === 'ajustes_solicitados'
-          ? 'Ajustes solicitados'
+          ? 'Alteração solicitada'
           : alreadyApproved
             ? 'Sua validação foi registrada. Aguardando os demais validadores.'
             : 'Aguardando análise';
@@ -2473,8 +2630,10 @@ const server = http.createServer(async (req, res) => {
             <h1 style='margin:0 0 6px;font-size:24px'>${escapeHtml(guest.titulo)}</h1>
             <div class='badge'>${statusText}</div>
           </div>
-          ${decisao === 'ajustes' ? "<div class='success'>Sua solicitação de ajustes foi registrada.</div>" : ''}
+          ${decisao === 'ajustes' ? "<div class='success'>Sua solicitação de alteração foi registrada.</div>" : ''}
           ${decisao === 'validado' ? "<div class='success'>Sua concordância foi registrada.</div>" : ''}
+          ${manifestacao === 'alteracao' ? "<div class='success'>Sua solicitação de alteração foi registrada e encaminhada à CKM.</div>" : ''}
+          ${manifestacao === 'contribuicao' ? "<div class='success'>Sua contribuição foi registrada na conversa.</div>" : ''}
           ${erro ? "<div class='error'>Revise os dados informados e tente novamente.</div>" : ''}
           <div class='grid'>
             <div class='card'>
@@ -2495,11 +2654,22 @@ const server = http.createServer(async (req, res) => {
               <div class='card' id='conversa' style='margin-top:14px'>
                 <h3 style='margin-top:0'>Conversa</h3>
                 <div style='max-height:330px;overflow:auto'>${messageHtml || "<p style='color:#64748b;font-size:13px'>Nenhuma mensagem ainda.</p>"}</div>
-                ${guest.can_comment && !validation ? `
-                  <form method='post' action='/validar/${token}/mensagem'>
-                    <label>Escrever mensagem</label>
-                    <textarea name='message' rows='3' maxlength='5000' required></textarea>
-                    <button class='primary' type='submit' style='margin-top:8px'>Enviar mensagem</button>
+                ${(guest.can_comment || guest.can_request_changes) && !validation ? `
+                  <form method='post' action='/validar/${token}/manifestacao'>
+                    <label>Escreva sua mensagem</label>
+                    <textarea name='message' rows='4' maxlength='5000' required placeholder='Descreva sua contribuição ou a alteração necessária...'></textarea>
+                    <div style='display:flex;gap:8px;flex-wrap:wrap;margin-top:8px'>
+                      ${guest.can_request_changes && version.status !== 'ajustes_solicitados' ? `
+                        <button class='warn' type='submit' name='manifestationType' value='changes_requested'>Solicitar alteração</button>
+                      ` : ''}
+                      ${guest.can_comment ? `
+                        <button class='primary' type='submit' name='manifestationType' value='contribution'>Contribuição</button>
+                      ` : ''}
+                    </div>
+                    <div style='font-size:12px;color:#64748b;margin-top:8px;line-height:1.45'>
+                      <strong>Solicitar alteração</strong> interrompe a validação desta versão para que a CKM faça o ajuste.
+                      <strong>Contribuição</strong> registra a observação na conversa sem interromper a validação.
+                    </div>
                   </form>` : ''}
                 ${historicoConversasHtml}
               </div>
@@ -2508,15 +2678,8 @@ const server = http.createServer(async (req, res) => {
                 ${validation ? `
                   <div class='success'><strong>Entrega validada.</strong><br>Protocolo: ${escapeHtml(validation.protocol)}<br>Data: ${escapeHtml(new Date(validation.validated_at).toLocaleString('pt-BR'))}</div>
                 ` : version.status === 'ajustes_solicitados' ? `
-                  <div class='error'>Esta versão possui ajustes solicitados. Aguarde a CKM enviar uma nova versão.</div>
+                  <div class='error'>Esta versão possui alteração solicitada. Aguarde a CKM enviar uma nova versão.</div>
                 ` : `
-                  ${guest.can_request_changes ? `
-                    <form method='post' action='/validar/${token}/decisao' style='margin-bottom:14px'>
-                      <input type='hidden' name='decision' value='changes_requested'>
-                      <label>Se precisar de alterações, descreva exatamente o que deve ser ajustado</label>
-                      <textarea name='decisionText' rows='3' required></textarea>
-                      <button class='warn' type='submit' style='margin-top:8px'>Solicitar ajustes</button>
-                    </form>` : ''}
                   ${guest.can_validate ? (alreadyApproved ? `
                     <div class='success'>Você já registrou sua concordância com esta versão. A entrega será concluída quando todos os validadores indicados tiverem concordado.</div>
                   ` : `
@@ -2599,7 +2762,7 @@ const server = http.createServer(async (req, res) => {
       const statusLabel = e.status === 'validado'
         ? 'Validado'
         : e.status === 'ajustes_solicitados'
-          ? 'Ajustes solicitados'
+          ? 'Alteração solicitada'
           : 'Aguardando cliente';
       const statusClass = e.status === 'validado'
         ? 'badge-green'
@@ -2669,7 +2832,7 @@ const server = http.createServer(async (req, res) => {
   </section>
   <div class='cards' style='margin-top:1.25rem'>
     <div class='card'><strong>Aguardando cliente</strong><span>${counts.aguardando_cliente}</span></div>
-    <div class='card'><strong>Ajustes solicitados</strong><span>${counts.ajustes_solicitados}</span></div>
+    <div class='card'><strong>Alteração solicitada</strong><span>${counts.ajustes_solicitados}</span></div>
     <div class='card'><strong>Validados</strong><span>${counts.validado}</span></div>
   </div>
   <section style='margin-top:1rem'>
@@ -3658,7 +3821,7 @@ const server = http.createServer(async (req, res) => {
 
     const versionRows = versions.map(v => {
       const label = v.status === 'validated' ? 'Validada'
-        : v.status === 'ajustes_solicitados' ? 'Ajustes solicitados'
+        : v.status === 'ajustes_solicitados' ? 'Alteração solicitada'
         : 'Aguardando cliente';
       return `<tr>
         <td>V${Number(v.version_number)}</td>
@@ -3702,7 +3865,7 @@ const server = http.createServer(async (req, res) => {
         </div>
         <div style='text-align:right'>
           <div style='font-size:.82rem;color:#64748b'>Status</div>
-          <strong>${entrega.status === 'validado' ? 'Validado / Entregue' : entrega.status === 'ajustes_solicitados' ? 'Ajustes solicitados' : 'Aguardando cliente'}</strong>
+          <strong>${entrega.status === 'validado' ? 'Validado / Entregue' : entrega.status === 'ajustes_solicitados' ? 'Alteração solicitada' : 'Aguardando cliente'}</strong>
           ${validation ? `<div style='font-size:.78rem;color:#065f46;margin-top:.3rem'>Protocolo: ${escapeHtml(validation.protocol)}</div>` : ''}
         </div>
       </div>
@@ -3872,7 +4035,7 @@ const server = http.createServer(async (req, res) => {
     const entrega = entregaResult.rows[0];
     if (!(await userCanAccessPortalDelivery(user, entrega))) return json(res, 403, { error: 'Acesso não autorizado.' });
     if (entrega.status !== 'ajustes_solicitados') {
-      return json(res, 409, { error: 'Uma nova versão só pode ser enviada quando houver ajustes solicitados.' });
+      return json(res, 409, { error: 'Uma nova versão só pode ser enviada quando houver alteração solicitada.' });
     }
 
     let body;
