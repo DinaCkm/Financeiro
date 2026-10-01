@@ -255,6 +255,9 @@ function createPostgresStorage(databaseUrl) {
 
     await pool.query("ALTER TABLE portal_entregas ADD COLUMN IF NOT EXISTS validation_mode TEXT NOT NULL DEFAULT 'all'");
     await pool.query("ALTER TABLE portal_entregas ADD COLUMN IF NOT EXISTS lote_id TEXT");
+    await pool.query("ALTER TABLE portal_lote_convidados ADD COLUMN IF NOT EXISTS cargo TEXT");
+    await pool.query("ALTER TABLE portal_lote_convidados ADD COLUMN IF NOT EXISTS telefone TEXT");
+    await pool.query("ALTER TABLE portal_lote_convidados ADD COLUMN IF NOT EXISTS cadastro_em TIMESTAMPTZ");
     await pool.query("ALTER TABLE portal_entrega_convidados ADD COLUMN IF NOT EXISTS version_id TEXT");
     await pool.query("ALTER TABLE portal_entrega_convidados ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ");
     await pool.query("ALTER TABLE portal_entrega_convidados ADD COLUMN IF NOT EXISTS revoked_at TIMESTAMPTZ");
