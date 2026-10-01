@@ -2112,7 +2112,7 @@ const server = http.createServer(async (req, res) => {
 
     const documentos = (await pg.query(
       `SELECT e.id, e.titulo, e.descricao, e.status, e.current_version,
-              v.id AS version_id, v.version_number, v.file_name, v.status AS version_status,
+              v.id AS version_id, v.version_number, v.file_name, v.status AS version_status, e.cancelled_at, e.cancelled_reason,
               g.id AS convidado_id,
               EXISTS(
                 SELECT 1 FROM portal_entrega_decisions d
@@ -2132,6 +2132,11 @@ const server = http.createServer(async (req, res) => {
 
     if (entregaSelecionadaId && !selected) {
       return json(res, 404, { error:'Documento não encontrado neste pacote.' });
+    }
+
+    if (selected && selected.status === 'cancelado') {
+      if (action === 'pdf') return json(res, 410, { error:'Este documento foi cancelado.' });
+      if (req.method === 'POST') return json(res, 410, { error:'Este documento foi cancelado e não aceita novas ações.' });
     }
 
     if (selected && action === 'pdf' && req.method === 'GET') {
@@ -2271,15 +2276,18 @@ const server = http.createServer(async (req, res) => {
     }
 
     const totalDocs = documentos.length;
-    const validados = documentos.filter(d => d.validado_por_mim).length;
+    const cancelados = documentos.filter(d => d.status === 'cancelado').length;
+    const validados = documentos.filter(d => d.validado_por_mim && d.status !== 'cancelado').length;
     const alteracoes = documentos.filter(d => d.status === 'ajustes_solicitados' || d.version_status === 'ajustes_solicitados').length;
-    const pendentes = Math.max(0, totalDocs - validados - alteracoes);
+    const pendentes = Math.max(0, totalDocs - validados - alteracoes - cancelados);
     const progresso = totalDocs ? Math.round((validados / totalDocs) * 100) : 0;
 
     const cards = documentos.map(d => {
-      const estado = d.validado_por_mim
-        ? ['Validado','#ecfdf5','#065f46']
-        : (d.status === 'ajustes_solicitados' || d.version_status === 'ajustes_solicitados')
+      const estado = d.status === 'cancelado'
+        ? ['Cancelado','#fee2e2','#991b1b']
+        : d.validado_por_mim
+          ? ['Validado','#ecfdf5','#065f46']
+          : (d.status === 'ajustes_solicitados' || d.version_status === 'ajustes_solicitados')
           ? ['Alteração solicitada','#fff7ed','#9a3412']
           : ['Pendente de análise','#eff6ff','#1d4ed8'];
       const ativo = selected && selected.id === d.id;
@@ -2313,7 +2321,8 @@ const server = http.createServer(async (req, res) => {
         </div>`;
       }).join('');
 
-      const bloqueado = selected.status === 'ajustes_solicitados' || selected.version_status === 'ajustes_solicitados';
+      const cancelado = selected.status === 'cancelado';
+      const bloqueado = cancelado || selected.status === 'ajustes_solicitados' || selected.version_status === 'ajustes_solicitados';
       detalhe = `<section style='margin-top:22px'>
         <div style='display:flex;justify-content:space-between;gap:12px;align-items:flex-start;flex-wrap:wrap'>
           <div><a href='/validar-lote/${token}' style='font-size:13px'>← Voltar aos documentos</a>
@@ -2326,7 +2335,8 @@ const server = http.createServer(async (req, res) => {
         <div id='conversa' style='margin-top:14px;background:#fff;border:1px solid #e2e8f0;border-radius:14px;padding:16px'>
           <h3 style='margin-top:0'>Conversa sobre este documento</h3>
           <div style='max-height:340px;overflow:auto'>${msgHtml || "<p style='font-size:13px;color:#64748b'>Nenhuma conversa registrada.</p>"}</div>
-          ${validation ? `<div style='margin-top:12px;padding:10px;border-radius:8px;background:#ecfdf5;color:#065f46'>Documento validado. Protocolo: <strong>${escapeHtml(validation.protocol)}</strong></div>` :
+          ${cancelado ? `<div style='margin-top:12px;padding:10px;border-radius:8px;background:#fee2e2;color:#991b1b'><strong>Documento cancelado.</strong><br>${escapeHtml(selected.cancelled_reason || 'Este envio foi cancelado pela CKM Talents.')}</div>` :
+            validation ? `<div style='margin-top:12px;padding:10px;border-radius:8px;background:#ecfdf5;color:#065f46'>Documento validado. Protocolo: <strong>${escapeHtml(validation.protocol)}</strong></div>` :
             bloqueado ? "<div style='margin-top:12px;padding:10px;border-radius:8px;background:#fff7ed;color:#9a3412'>Há uma solicitação de alteração para esta versão. Aguarde a CKM disponibilizar uma nova versão.</div>" :
             `<form method='post' action='/validar-lote/${token}/documento/${selected.id}/manifestacao' style='margin-top:12px'>
               <label style='display:block;font-size:13px;font-weight:700;margin-bottom:5px'>Escreva sua mensagem</label>
@@ -2367,6 +2377,7 @@ const server = http.createServer(async (req, res) => {
           <div class='mini'><div style='font-size:12px;color:#64748b'>Validados</div><strong style='font-size:22px'>${validados}</strong></div>
           <div class='mini'><div style='font-size:12px;color:#64748b'>Pendentes</div><strong style='font-size:22px'>${pendentes}</strong></div>
           <div class='mini'><div style='font-size:12px;color:#64748b'>Alteração solicitada</div><strong style='font-size:22px'>${alteracoes}</strong></div>
+          <div class='mini'><div style='font-size:12px;color:#64748b'>Cancelados</div><strong style='font-size:22px'>${cancelados}</strong></div>
         </div>
         <div style='margin:12px 0 18px'><div style='display:flex;justify-content:space-between;font-size:12px;color:#64748b;margin-bottom:5px'><span>Progresso da análise</span><strong>${progresso}%</strong></div><div class='bar'><span style='width:${progresso}%'></span></div></div>
         <div class='docs'>${cards || "<p>Nenhum documento disponível.</p>"}</div>
@@ -2420,6 +2431,11 @@ const server = http.createServer(async (req, res) => {
     }
 
     const guest = guestResult.rows[0];
+    if (guest.entrega_status === 'cancelado') {
+      res.writeHead(410, { 'Content-Type':'text/html; charset=utf-8', 'Cache-Control':'private, no-store' });
+      res.end('<!doctype html><html lang="pt-BR"><meta charset="utf-8"><title>Documento cancelado</title><body style="font-family:Arial;padding:40px"><h2>Este documento foi cancelado pela CKM Talents.</h2><p>Este envio não está mais disponível para análise ou validação.</p></body></html>');
+      return;
+    }
     if (guest.revoked_at || !guest.expires_at || new Date(guest.expires_at).getTime() <= Date.now()) {
       res.writeHead(403, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'private, no-store' });
       res.end('<!doctype html><html lang="pt-BR"><meta charset="utf-8"><title>Link indisponível</title><body style="font-family:Arial;padding:40px"><h2>Este link expirou ou foi revogado.</h2><p>Solicite um novo acesso à equipe CKM.</p></body></html>');
@@ -3160,14 +3176,18 @@ const server = http.createServer(async (req, res) => {
     const rows = entregas.map(e => {
       const statusLabel = e.status === 'validado'
         ? 'Validado'
-        : e.status === 'ajustes_solicitados'
-          ? 'Alteração solicitada'
-          : 'Aguardando cliente';
+        : e.status === 'cancelado'
+          ? 'Cancelado'
+          : e.status === 'ajustes_solicitados'
+            ? 'Alteração solicitada'
+            : 'Aguardando cliente';
       const statusClass = e.status === 'validado'
         ? 'badge-green'
-        : e.status === 'ajustes_solicitados'
-          ? 'badge-amber'
-          : '';
+        : e.status === 'cancelado'
+          ? 'badge-red'
+          : e.status === 'ajustes_solicitados'
+            ? 'badge-amber'
+            : '';
       return `
         <tr>
           <td><a href='/entregas/${encodeURIComponent(e.id)}' style='color:inherit;text-decoration:none'><strong>${escapeHtml(e.titulo)}</strong><div style='font-size:.75rem;color:#64748b'>V${Number(e.current_version || 1)}</div></a></td>
@@ -4513,6 +4533,94 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  const entregaCancelMatch = url.pathname.match(/^\/entregas\/([0-9a-f-]{36})\/cancelar$/i);
+  if (req.method === 'POST' && entregaCancelMatch) {
+    const entregaId = entregaCancelMatch[1];
+    const pg = storage.getPool ? storage.getPool() : null;
+    if (!pg) return json(res, 503, { error: 'Banco não disponível.' });
+
+    const entrega = (await pg.query('SELECT * FROM portal_entregas WHERE id=$1 LIMIT 1', [entregaId])).rows[0];
+    if (!entrega) return json(res, 404, { error: 'Entrega não encontrada.' });
+    if (!(await userCanAccessPortalDelivery(user, entrega))) return json(res, 403, { error: 'Acesso não autorizado.' });
+    if (entrega.status === 'validado') return json(res, 409, { error: 'Uma entrega já validada e protocolada não pode ser cancelada.' });
+    if (entrega.status === 'cancelado') {
+      res.writeHead(302, { Location: `/entregas/${entregaId}` });
+      res.end();
+      return;
+    }
+
+    const form = new URLSearchParams(await readBody(req));
+    const reason = String(form.get('reason') || '').trim();
+    if (!reason) return json(res, 400, { error: 'Informe o motivo do cancelamento.' });
+
+    const currentVersion = (await pg.query(
+      'SELECT id FROM portal_entrega_versions WHERE entrega_id=$1 AND version_number=$2 LIMIT 1',
+      [entregaId, Number(entrega.current_version || 1)]
+    )).rows[0];
+
+    const client = await pg.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query(
+        `UPDATE portal_entregas
+            SET status='cancelado', cancelled_at=NOW(), cancelled_by=$2, cancelled_reason=$3
+          WHERE id=$1`,
+        [entregaId, user.id, reason]
+      );
+      if (currentVersion) {
+        await client.query(
+          "UPDATE portal_entrega_versions SET status='cancelado' WHERE id=$1",
+          [currentVersion.id]
+        );
+        await client.query(
+          'UPDATE portal_entrega_convidados SET revoked_at=NOW() WHERE entrega_id=$1 AND version_id=$2 AND revoked_at IS NULL',
+          [entregaId, currentVersion.id]
+        );
+      } else {
+        await client.query(
+          'UPDATE portal_entrega_convidados SET revoked_at=NOW() WHERE entrega_id=$1 AND revoked_at IS NULL',
+          [entregaId]
+        );
+      }
+      await client.query('COMMIT');
+    } catch (e) {
+      await client.query('ROLLBACK');
+      return json(res, 500, { error: 'Não foi possível cancelar a entrega: ' + e.message });
+    } finally {
+      client.release();
+    }
+
+    await recordPortalAudit(pg, req, {
+      entregaId,
+      versionId: currentVersion ? currentVersion.id : null,
+      actorType:'ckm',
+      actorId:user.id,
+      action:'entrega_cancelada',
+      details:{ reason }
+    });
+
+    const recipients = (await pg.query(
+      'SELECT DISTINCT email, nome FROM portal_entrega_convidados WHERE entrega_id=$1',
+      [entregaId]
+    )).rows;
+    for (const recipient of recipients) {
+      sendPortalNotificationEmail({
+        to: recipient.email,
+        subject: `Envio cancelado — ${entrega.titulo}`,
+        title: 'Este documento foi cancelado',
+        lines: [
+          `O envio do documento "${entrega.titulo}" foi cancelado pela CKM Talents.`,
+          `Motivo: ${reason}`,
+          'O link de acesso anterior não está mais disponível.'
+        ]
+      }).catch(e => console.warn('[email] Aviso de cancelamento não enviado:', e && e.message ? e.message : e));
+    }
+
+    res.writeHead(302, { Location: `/entregas/${entregaId}?cancelado=1` });
+    res.end();
+    return;
+  }
+
   const entregaDetailMatch = url.pathname.match(/^\/entregas\/([0-9a-f-]{36})$/i);
   if (req.method === 'GET' && entregaDetailMatch) {
     const entregaId = entregaDetailMatch[1];
@@ -4566,6 +4674,7 @@ const server = http.createServer(async (req, res) => {
 
     const versionRows = versions.map(v => {
       const label = v.status === 'validated' ? 'Validada'
+        : v.status === 'cancelado' ? 'Cancelada'
         : v.status === 'ajustes_solicitados' ? 'Alteração solicitada'
         : 'Aguardando cliente';
       return `<tr>
@@ -4610,8 +4719,9 @@ const server = http.createServer(async (req, res) => {
         </div>
         <div style='text-align:right'>
           <div style='font-size:.82rem;color:#64748b'>Status</div>
-          <strong>${entrega.status === 'validado' ? 'Validado / Entregue' : entrega.status === 'ajustes_solicitados' ? 'Alteração solicitada' : 'Aguardando cliente'}</strong>
+          <strong>${entrega.status === 'validado' ? 'Validado / Entregue' : entrega.status === 'cancelado' ? 'Cancelado' : entrega.status === 'ajustes_solicitados' ? 'Alteração solicitada' : 'Aguardando cliente'}</strong>
           ${validation ? `<div style='font-size:.78rem;color:#065f46;margin-top:.3rem'>Protocolo: ${escapeHtml(validation.protocol)}</div>` : ''}
+          ${entrega.status === 'cancelado' ? `<div style='font-size:.78rem;color:#991b1b;margin-top:.3rem'>Cancelado em ${entrega.cancelled_at ? escapeHtml(new Date(entrega.cancelled_at).toLocaleString('pt-BR')) : '-'}<br>Motivo: ${escapeHtml(entrega.cancelled_reason || '-')}</div>` : ''}
         </div>
       </div>
 
@@ -4624,6 +4734,18 @@ const server = http.createServer(async (req, res) => {
           <div><strong>Versão atual</strong><div>V${Number(entrega.current_version)}</div></div>
         </div>
       </section>
+
+      ${entrega.status !== 'validado' && entrega.status !== 'cancelado' ? `
+      <section style='border:1px solid #fecaca;background:#fff7f7'>
+        <h2 style='color:#991b1b'>Cancelar envio deste documento</h2>
+        <p style='font-size:.85rem;color:#7f1d1d'>Use esta opção apenas quando o documento foi enviado por engano. O arquivo será preservado no histórico, mas os links dos validadores serão revogados e nenhuma nova validação será aceita.</p>
+        <form method='post' action='/entregas/${entregaId}/cancelar' onsubmit="return confirm('Tem certeza que deseja cancelar este documento? Esta ação bloqueará o acesso dos validadores.');">
+          <label>Motivo do cancelamento *
+            <textarea name='reason' rows='3' maxlength='1000' required placeholder='Ex: Documento enviado por engano.'></textarea>
+          </label>
+          <button type='submit' style='background:#b91c1c;color:#fff'>Cancelar envio</button>
+        </form>
+      </section>` : ''}
 
       <section>
         <h2>Pessoas responsáveis pela validação — versão atual</h2>
@@ -4646,7 +4768,7 @@ const server = http.createServer(async (req, res) => {
       <section id='conversa'>
         <h2>Conversa da versão atual</h2>
         <div style='max-height:420px;overflow:auto'>${msgHtml || "<p style='color:#64748b'>Nenhuma mensagem nesta versão.</p>"}</div>
-        ${currentVersion && entrega.status !== 'validado' ? `
+        ${currentVersion && entrega.status !== 'validado' && entrega.status !== 'cancelado' ? `
           <form method='post' action='/api/entregas/${entregaId}/mensagem' style='margin-top:.75rem'>
             <label>Responder ao cliente<textarea name='message' rows='3' maxlength='5000' required></textarea></label>
             <button type='submit'>Enviar mensagem</button>
@@ -4779,6 +4901,9 @@ const server = http.createServer(async (req, res) => {
     if (!entregaResult.rows.length) return json(res, 404, { error: 'Entrega não encontrada.' });
     const entrega = entregaResult.rows[0];
     if (!(await userCanAccessPortalDelivery(user, entrega))) return json(res, 403, { error: 'Acesso não autorizado.' });
+    if (entrega.status === 'cancelado') {
+      return json(res, 409, { error: 'Esta entrega foi cancelada e não aceita novas versões.' });
+    }
     if (entrega.status !== 'ajustes_solicitados') {
       return json(res, 409, { error: 'Uma nova versão só pode ser enviada quando houver alteração solicitada.' });
     }
