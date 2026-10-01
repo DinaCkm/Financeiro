@@ -3204,6 +3204,7 @@ const server = http.createServer(async (req, res) => {
     const html = page('Entregas e Validações', `
 <section>
   ${loteCriado > 0 ? "<div style='margin-bottom:1rem;padding:.8rem;background:#ecfdf5;color:#065f46;border:1px solid #a7f3d0;border-radius:.6rem'><strong>Lote enviado com sucesso.</strong> " + loteCriado + " documento(s) foram cadastrados para validação.</div>" : ''}
+  ${url.searchParams.get('excluida') ? "<div style='margin-bottom:1rem;padding:.8rem;background:#ecfdf5;color:#065f46;border:1px solid #a7f3d0;border-radius:.6rem'><strong>Documento excluído.</strong> A entrega foi removida e seus links deixaram de funcionar.</div>" : ''}
   <div style='display:flex;justify-content:space-between;align-items:flex-start;gap:1rem;flex-wrap:wrap'>
     <div>
       <h2 class='page-title'>Entregas e Validações</h2>
@@ -4533,90 +4534,101 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  const entregaCancelMatch = url.pathname.match(/^\/entregas\/([0-9a-f-]{36})\/cancelar$/i);
-  if (req.method === 'POST' && entregaCancelMatch) {
-    const entregaId = entregaCancelMatch[1];
+  const entregaDeleteMatch = url.pathname.match(/^\/entregas\/([0-9a-f-]{36})\/excluir$/i);
+  if (req.method === 'POST' && entregaDeleteMatch) {
+    const entregaId = entregaDeleteMatch[1];
     const pg = storage.getPool ? storage.getPool() : null;
     if (!pg) return json(res, 503, { error: 'Banco não disponível.' });
 
     const entrega = (await pg.query('SELECT * FROM portal_entregas WHERE id=$1 LIMIT 1', [entregaId])).rows[0];
     if (!entrega) return json(res, 404, { error: 'Entrega não encontrada.' });
     if (!(await userCanAccessPortalDelivery(user, entrega))) return json(res, 403, { error: 'Acesso não autorizado.' });
-    if (entrega.status === 'validado') return json(res, 409, { error: 'Uma entrega já validada e protocolada não pode ser cancelada.' });
-    if (entrega.status === 'cancelado') {
-      res.writeHead(302, { Location: `/entregas/${entregaId}` });
-      res.end();
-      return;
-    }
 
-    const form = new URLSearchParams(await readBody(req));
-    const reason = String(form.get('reason') || '').trim();
-    if (!reason) return json(res, 400, { error: 'Informe o motivo do cancelamento.' });
+    const versions = (await pg.query(
+      'SELECT id, version_number, file_name, file_hash, storage_key FROM portal_entrega_versions WHERE entrega_id=$1 ORDER BY version_number',
+      [entregaId]
+    )).rows;
+    const recipients = (await pg.query(
+      'SELECT DISTINCT lower(email) AS email, nome FROM portal_entrega_convidados WHERE entrega_id=$1 AND email IS NOT NULL',
+      [entregaId]
+    )).rows;
+    const loteId = entrega.lote_id || null;
 
-    const currentVersion = (await pg.query(
-      'SELECT id FROM portal_entrega_versions WHERE entrega_id=$1 AND version_number=$2 LIMIT 1',
-      [entregaId, Number(entrega.current_version || 1)]
-    )).rows[0];
+    const auditDetails = {
+      titulo: entrega.titulo,
+      clienteId: entrega.cliente_id,
+      projetoId: entrega.projeto_id,
+      contratoId: entrega.contrato_id,
+      loteId,
+      statusAnterior: entrega.status,
+      currentVersion: entrega.current_version,
+      arquivos: versions.map(v => ({
+        version: v.version_number,
+        fileName: v.file_name,
+        fileHash: v.file_hash
+      }))
+    };
 
     const client = await pg.connect();
     try {
       await client.query('BEGIN');
-      await client.query(
-        `UPDATE portal_entregas
-            SET status='cancelado', cancelled_at=NOW(), cancelled_by=$2, cancelled_reason=$3
-          WHERE id=$1`,
-        [entregaId, user.id, reason]
-      );
-      if (currentVersion) {
-        await client.query(
-          "UPDATE portal_entrega_versions SET status='cancelado' WHERE id=$1",
-          [currentVersion.id]
-        );
-        await client.query(
-          'UPDATE portal_entrega_convidados SET revoked_at=NOW() WHERE entrega_id=$1 AND version_id=$2 AND revoked_at IS NULL',
-          [entregaId, currentVersion.id]
-        );
-      } else {
-        await client.query(
-          'UPDATE portal_entrega_convidados SET revoked_at=NOW() WHERE entrega_id=$1 AND revoked_at IS NULL',
-          [entregaId]
-        );
+      await client.query('DELETE FROM portal_entrega_validations WHERE entrega_id=$1', [entregaId]);
+      await client.query('DELETE FROM portal_entrega_decisions WHERE entrega_id=$1', [entregaId]);
+      await client.query('DELETE FROM portal_entrega_messages WHERE entrega_id=$1', [entregaId]);
+      await client.query('DELETE FROM portal_entrega_convidados WHERE entrega_id=$1', [entregaId]);
+      await client.query('DELETE FROM portal_entrega_versions WHERE entrega_id=$1', [entregaId]);
+      await client.query('DELETE FROM portal_entregas WHERE id=$1', [entregaId]);
+
+      if (loteId) {
+        const remaining = Number((await client.query(
+          'SELECT COUNT(*)::int AS c FROM portal_entregas WHERE lote_id=$1',
+          [loteId]
+        )).rows[0].c || 0);
+        if (remaining === 0) {
+          await client.query('DELETE FROM portal_lote_convidados WHERE lote_id=$1', [loteId]);
+          await client.query('DELETE FROM portal_entrega_lotes WHERE id=$1', [loteId]);
+        }
       }
       await client.query('COMMIT');
     } catch (e) {
       await client.query('ROLLBACK');
-      return json(res, 500, { error: 'Não foi possível cancelar a entrega: ' + e.message });
+      return json(res, 500, { error: 'Não foi possível excluir o documento: ' + e.message });
     } finally {
       client.release();
     }
 
+    // Preserva somente o registro de auditoria da exclusão, sem manter a entrega operacional.
     await recordPortalAudit(pg, req, {
       entregaId,
-      versionId: currentVersion ? currentVersion.id : null,
+      versionId:null,
       actorType:'ckm',
       actorId:user.id,
-      action:'entrega_cancelada',
-      details:{ reason }
+      action:'entrega_excluida',
+      details:auditDetails
     });
 
-    const recipients = (await pg.query(
-      'SELECT DISTINCT email, nome FROM portal_entrega_convidados WHERE entrega_id=$1',
-      [entregaId]
-    )).rows;
+    // Remove os PDFs do armazenamento depois do commit. Se houver falha aqui,
+    // o documento já não fica acessível pela aplicação e o objeto órfão pode ser limpo depois.
+    for (const version of versions) {
+      if (version.storage_key) {
+        deletePrivateObject(version.storage_key)
+          .catch(e => console.warn('[entregas] Falha ao remover objeto excluído:', version.storage_key, e && e.message ? e.message : e));
+      }
+    }
+
     for (const recipient of recipients) {
       sendPortalNotificationEmail({
         to: recipient.email,
-        subject: `Envio cancelado — ${entrega.titulo}`,
-        title: 'Este documento foi cancelado',
+        subject: `Documento removido — ${entrega.titulo}`,
+        title: 'Documento removido da análise',
         lines: [
-          `O envio do documento "${entrega.titulo}" foi cancelado pela CKM Talents.`,
-          `Motivo: ${reason}`,
-          'O link de acesso anterior não está mais disponível.'
+          `O documento "${entrega.titulo}" foi removido pela CKM Talents e não faz mais parte das entregas disponíveis para análise.`,
+          loteId ? 'Os demais documentos do pacote permanecem disponíveis normalmente.' : 'O link anterior deste documento não está mais disponível.'
         ]
-      }).catch(e => console.warn('[email] Aviso de cancelamento não enviado:', e && e.message ? e.message : e));
+      }).catch(e => console.warn('[email] Aviso de exclusão não enviado:', e && e.message ? e.message : e));
     }
 
-    res.writeHead(302, { Location: `/entregas/${entregaId}?cancelado=1` });
+    res.writeHead(302, { Location: '/entregas?excluida=1' });
     res.end();
     return;
   }
@@ -4735,17 +4747,13 @@ const server = http.createServer(async (req, res) => {
         </div>
       </section>
 
-      ${entrega.status !== 'validado' && entrega.status !== 'cancelado' ? `
       <section style='border:1px solid #fecaca;background:#fff7f7'>
-        <h2 style='color:#991b1b'>Cancelar envio deste documento</h2>
-        <p style='font-size:.85rem;color:#7f1d1d'>Use esta opção apenas quando o documento foi enviado por engano. O arquivo será preservado no histórico, mas os links dos validadores serão revogados e nenhuma nova validação será aceita.</p>
-        <form method='post' action='/entregas/${entregaId}/cancelar' onsubmit="return confirm('Tem certeza que deseja cancelar este documento? Esta ação bloqueará o acesso dos validadores.');">
-          <label>Motivo do cancelamento *
-            <textarea name='reason' rows='3' maxlength='1000' required placeholder='Ex: Documento enviado por engano.'></textarea>
-          </label>
-          <button type='submit' style='background:#b91c1c;color:#fff'>Cancelar envio</button>
+        <h2 style='color:#991b1b'>Excluir documento</h2>
+        <p style='font-size:.85rem;color:#7f1d1d'>Use esta opção quando o documento foi cadastrado ou enviado por engano. A entrega, suas versões, conversas e validações serão removidas da área operacional. Se o cliente apenas pediu ajustes no conteúdo, não exclua: envie uma nova versão na seção de ajuste.</p>
+        <form method='post' action='/entregas/${entregaId}/excluir' onsubmit="return confirm('Excluir definitivamente este documento? Se ele fizer parte de um lote, somente este documento será removido. Esta ação não pode ser desfeita.');">
+          <button type='submit' style='background:#b91c1c;color:#fff'>Excluir documento</button>
         </form>
-      </section>` : ''}
+      </section>
 
       <section>
         <h2>Pessoas responsáveis pela validação — versão atual</h2>
