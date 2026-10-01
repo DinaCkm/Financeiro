@@ -4103,6 +4103,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     const invitationsByEmail = new Map();
+    const packageInvites = new Map();
     const client = await pg.connect();
     try {
       await client.query('BEGIN');
@@ -4117,6 +4118,25 @@ const server = http.createServer(async (req, res) => {
           created_at TIMESTAMPTZ NOT NULL DEFAULT now()
         )
       `);
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS portal_lote_convidados (
+          id TEXT PRIMARY KEY,
+          lote_id TEXT NOT NULL,
+          nome TEXT NOT NULL,
+          email TEXT NOT NULL,
+          token_hash TEXT NOT NULL UNIQUE,
+          status TEXT NOT NULL DEFAULT 'convidado',
+          invited_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+          first_access_at TIMESTAMPTZ,
+          last_access_at TIMESTAMPTZ,
+          expires_at TIMESTAMPTZ NOT NULL,
+          revoked_at TIMESTAMPTZ,
+          cargo TEXT,
+          telefone TEXT,
+          cadastro_em TIMESTAMPTZ,
+          UNIQUE (lote_id, email)
+        )
+      `);
       await client.query("ALTER TABLE portal_entregas ADD COLUMN IF NOT EXISTS lote_id TEXT");
       await client.query(
         `INSERT INTO portal_entrega_lotes
@@ -4124,6 +4144,22 @@ const server = http.createServer(async (req, res) => {
          VALUES ($1,$2,$3,$4,$5,$6,$7)`,
         [loteId, clienteId, projetoId, contratoId, descricao, user.id, now]
       );
+
+      for (const guest of validGuests) {
+        const { token: packageToken, tokenHash: packageTokenHash } = createGuestToken();
+        const packageGuestId = crypto.randomUUID();
+        await client.query(
+          `INSERT INTO portal_lote_convidados
+            (id, lote_id, nome, email, token_hash, status, invited_at, expires_at)
+           VALUES ($1,$2,$3,$4,$5,'convidado',$6::timestamptz,$6::timestamptz + INTERVAL '30 days')`,
+          [packageGuestId, loteId, guest.nome, guest.email, packageTokenHash, now]
+        );
+        packageInvites.set(guest.email, {
+          nome: guest.nome,
+          token: packageToken,
+          id: packageGuestId
+        });
+      }
 
       for (const doc of created) {
         await client.query(
@@ -4176,21 +4212,21 @@ const server = http.createServer(async (req, res) => {
       });
     }
 
-    // Por enquanto cada documento mantém seu próprio link individual para preservar
-    // a validação e o protocolo de cada arquivo, mas o cadastro dos validadores é feito uma só vez.
     const baseUrl = portalBaseUrl(req);
     for (const [email, docs] of invitationsByEmail.entries()) {
-      const name = docs[0] && docs[0].nome;
-      const lines = [
-        `Você recebeu ${docs.length} documento(s) da CKM Talents para análise e validação.`,
-        'Cada documento possui validação e protocolo próprios.',
-        ...docs.map((d, i) => `${i + 1}. ${d.titulo}: ${baseUrl}/validar/${encodeURIComponent(d.token)}`)
-      ];
+      const packageInvite = packageInvites.get(email);
+      if (!packageInvite) continue;
       sendPortalNotificationEmail({
         to: email,
         subject: `Documentos para análise — ${docs.length} entrega(s)`,
         title: 'Documentos para análise e validação',
-        lines,
+        lines: [
+          `Olá, ${packageInvite.nome}.`,
+          `Você recebeu ${docs.length} documento(s) da CKM Talents para análise.`,
+          'Acesse o pacote para visualizar cada documento, registrar contribuições, solicitar alterações e validar.'
+        ],
+        actionLabel: 'Acessar documentos',
+        actionLink: `${baseUrl}/validar-lote/${encodeURIComponent(packageInvite.token)}`,
       }).catch(e => console.warn('[entregas] Erro ao enviar convite do lote:', e && e.message ? e.message : e));
     }
 
@@ -4198,7 +4234,8 @@ const server = http.createServer(async (req, res) => {
       ok: true,
       loteId,
       criados: created.length,
-      convidados: validGuests.length
+      convidados: validGuests.length,
+      acesso: 'pacote'
     });
   }
 
