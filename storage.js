@@ -272,16 +272,36 @@ function createPostgresStorage(databaseUrl) {
     await pool.query("UPDATE portal_entrega_convidados SET expires_at=NOW()+INTERVAL '30 days' WHERE expires_at IS NULL");
     await pool.query("ALTER TABLE portal_entrega_versions ADD COLUMN IF NOT EXISTS storage_key TEXT");
 
-    // Corrige somente títulos gerados pelo bug de conversão do nome do arquivo,
-    // preservando títulos editados manualmente. O padrão defeituoso substituía
-    // letras "s" minúsculas por espaços.
-    await pool.query(`
-      WITH atuais AS (
-        SELECT e.id,
-               e.titulo,
-               regexp_replace(
-                 regexp_replace(
-                   regexp_replace(v.file_name, '\\.pdf
+    // Corrige somente títulos gerados pelo bug de conversão do nome do arquivo.
+    // A correção é conservadora: só altera quando o título atual coincide exatamente
+    // com o padrão defeituoso que removia letras "s" minúsculas.
+    try {
+      const titleRows = (await pool.query(
+        `SELECT e.id, e.titulo, v.file_name
+           FROM portal_entregas e
+           JOIN portal_entrega_versions v
+             ON v.entrega_id=e.id
+            AND v.version_number=e.current_version
+          WHERE e.lote_id IS NOT NULL`
+      )).rows;
+      for (const row of titleRows) {
+        const correctTitle = String(row.file_name || '')
+          .replace(/\.pdf$/i, '')
+          .replace(/[_-]+/g, ' ')
+          .replace(/\s+/g, ' ')
+          .trim();
+        const buggyTitle = correctTitle
+          .replace(/s+/g, ' ')
+          .replace(/\s+/g, ' ')
+          .trim();
+        const currentTitle = String(row.titulo || '').replace(/\s+/g, ' ').trim();
+        if (correctTitle && currentTitle === buggyTitle && currentTitle !== correctTitle) {
+          await pool.query('UPDATE portal_entregas SET titulo=$2 WHERE id=$1', [row.id, correctTitle]);
+        }
+      }
+    } catch (e) {
+      console.warn('[storage] Não foi possível corrigir títulos históricos:', e.message);
+    }
 
     // Migração aditiva e idempotente para instalações que já possuem a tabela users.
     await pool.query(`
