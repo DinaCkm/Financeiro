@@ -391,6 +391,40 @@ function escapeHtml(value) {
     .replace(/'/g, '&#39;');
 }
 
+function normalizeCpf(value) {
+  return String(value || '').replace(/\D/g, '');
+}
+
+function isValidCpf(value) {
+  const cpf = normalizeCpf(value);
+  if (!/^\d{11}$/.test(cpf) || /^(\d)\1{10}$/.test(cpf)) return false;
+  const calc = (base, factor) => {
+    let total = 0;
+    for (const digit of base) total += Number(digit) * factor--;
+    const mod = (total * 10) % 11;
+    return mod === 10 ? 0 : mod;
+  };
+  const d1 = calc(cpf.slice(0, 9), 10);
+  const d2 = calc(cpf.slice(0, 10), 11);
+  return d1 === Number(cpf[9]) && d2 === Number(cpf[10]);
+}
+
+function maskCpf(value) {
+  const cpf = normalizeCpf(value);
+  if (cpf.length !== 11) return '***.***.***-**';
+  return `***.${cpf.slice(3,6)}.${cpf.slice(6,9)}-**`;
+}
+
+function createValidationSignature({ entregaId, versionId, convidadoId, fileHash, validatorName, validatorEmail, validatorCpf }) {
+  const securityCode = `CKM-VAL-${new Date().getUTCFullYear()}-${crypto.randomBytes(5).toString('hex').toUpperCase()}`;
+  const signedAt = new Date().toISOString();
+  const nonce = crypto.randomBytes(16).toString('hex');
+  const signatureHash = crypto.createHash('sha256')
+    .update([entregaId, versionId, convidadoId, fileHash, validatorName, validatorEmail, validatorCpf, signedAt, nonce].join('|'))
+    .digest('hex');
+  return { securityCode, signatureHash, signedAt };
+}
+
 async function getPortalAllowedClientIds(user) {
   if (!isDeliveryConsultant(user)) return null;
   const pg = storage.getPool ? storage.getPool() : null;
@@ -2167,6 +2201,7 @@ const server = http.createServer(async (req, res) => {
       `SELECT e.id, e.titulo, e.descricao, e.status, e.current_version,
               v.id AS version_id, v.version_number, v.file_name, v.status AS version_status, e.cancelled_at, e.cancelled_reason,
               g.id AS convidado_id,
+              s.security_code, s.validator_name AS signature_name, s.validator_cpf AS signature_cpf, s.signed_at,
               EXISTS(
                 SELECT 1 FROM portal_entrega_decisions d
                  WHERE d.version_id=v.id AND d.convidado_id=g.id AND d.decision='validated'
@@ -2174,6 +2209,7 @@ const server = http.createServer(async (req, res) => {
          FROM portal_entregas e
          JOIN portal_entrega_versions v ON v.entrega_id=e.id AND v.version_number=e.current_version
          JOIN portal_entrega_convidados g ON g.entrega_id=e.id AND g.version_id=v.id AND lower(g.email)=lower($2)
+         LEFT JOIN portal_entrega_signatures s ON s.version_id=v.id AND s.convidado_id=g.id
         WHERE e.lote_id=$1
         ORDER BY e.created_at, e.titulo`,
       [pacote.lote_id, pacote.email]
@@ -2279,9 +2315,48 @@ const server = http.createServer(async (req, res) => {
     if (selected && action === 'decisao' && req.method === 'POST') {
       const form = new URLSearchParams(await readBody(req));
       const decision = String(form.get('decision') || '').trim();
+      const validatorName = String(form.get('validatorName') || '').trim().replace(/\s+/g, ' ').slice(0,150);
+      const validatorCpf = normalizeCpf(form.get('validatorCpf'));
+      const acknowledgement = form.get('acknowledgement') === 'on';
+      const noMoreAdjustments = form.get('noMoreAdjustments') === 'on';
       if (decision !== 'validated') return json(res,400,{error:'Decisão inválida.'});
+      if (validatorName.split(' ').filter(Boolean).length < 2 || !isValidCpf(validatorCpf) || !acknowledgement || !noMoreAdjustments) {
+        res.writeHead(302, { Location:`/validar-lote/${token}/documento/${selected.id}?erro=identificacao#validacao` });
+        res.end();
+        return;
+      }
       if (selected.version_status === 'ajustes_solicitados' || selected.status === 'ajustes_solicitados') {
         return json(res,409,{error:'Este documento possui alteração solicitada.'});
+      }
+
+      const versionForSignature = (await pg.query('SELECT file_hash FROM portal_entrega_versions WHERE id=$1 LIMIT 1',[selected.version_id])).rows[0];
+      if (!versionForSignature) return json(res,404,{error:'Versão não encontrada.'});
+      const existingSignature = (await pg.query(
+        'SELECT * FROM portal_entrega_signatures WHERE version_id=$1 AND convidado_id=$2 LIMIT 1',
+        [selected.version_id, selected.convidado_id]
+      )).rows[0];
+      if (!existingSignature) {
+        const sig = createValidationSignature({
+          entregaId:selected.id,
+          versionId:selected.version_id,
+          convidadoId:selected.convidado_id,
+          fileHash:versionForSignature.file_hash,
+          validatorName,
+          validatorEmail:pacote.email,
+          validatorCpf
+        });
+        await pg.query(
+          `INSERT INTO portal_entrega_signatures
+            (id, entrega_id, version_id, convidado_id, security_code, signature_hash, file_hash, validator_name, validator_email, validator_cpf, declaration_text, ip_address, user_agent, signed_at)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
+          [crypto.randomUUID(), selected.id, selected.version_id, selected.convidado_id, sig.securityCode, sig.signatureHash,
+           versionForSignature.file_hash, validatorName, pacote.email, validatorCpf,
+           'Declaro que li a versão apresentada, estou ciente da validação e confirmo que não há outros ajustes necessários.',
+           String(req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').split(',')[0].trim().slice(0,64),
+           String(req.headers['user-agent'] || '').slice(0,500), sig.signedAt]
+        );
+        await pg.query('UPDATE portal_lote_convidados SET nome=$2 WHERE id=$1',[pacote.id, validatorName]);
+        await pg.query('UPDATE portal_entrega_convidados SET nome=$2 WHERE id=$1',[selected.convidado_id, validatorName]);
       }
 
       const existing = (await pg.query(
@@ -2348,6 +2423,12 @@ const server = http.createServer(async (req, res) => {
         <div style='font-size:12px;color:#64748b;margin-bottom:6px'>Documento · V${Number(d.version_number)}</div>
         <strong style='display:block;line-height:1.35'>${escapeHtml(d.titulo)}</strong>
         <span style='display:inline-block;margin-top:10px;padding:5px 8px;border-radius:999px;background:${estado[1]};color:${estado[2]};font-size:11px;font-weight:700'>${estado[0]}</span>
+        ${d.security_code ? `<div style='margin-top:9px;padding-top:8px;border-top:1px solid #e2e8f0;font-size:11px;line-height:1.5;color:#475569'>
+          <strong>Validado por:</strong> ${escapeHtml(d.signature_name || '')}<br>
+          <strong>CPF:</strong> ${escapeHtml(maskCpf(d.signature_cpf))}<br>
+          <strong>Registro:</strong> ${escapeHtml(d.security_code)}<br>
+          <strong>Data:</strong> ${escapeHtml(new Date(d.signed_at).toLocaleString('pt-BR'))}
+        </div>` : d.validado_por_mim ? `<div style='margin-top:8px;font-size:11px;color:#92400e'>Validação anterior sem identificação reforçada.</div>` : ''}
       </a>`;
     }).join('');
 
@@ -2399,10 +2480,26 @@ const server = http.createServer(async (req, res) => {
                 <button type='submit' name='manifestationType' value='contribution' style='border:0;background:#0f766e;color:#fff;border-radius:9px;padding:10px 14px;font-weight:700;cursor:pointer'>Contribuição</button>
               </div>
             </form>
-            ${selected.validado_por_mim ? "<div style='margin-top:12px;padding:10px;border-radius:8px;background:#ecfdf5;color:#065f46'>Sua validação deste documento já foi registrada.</div>" :
-            `<form method='post' action='/validar-lote/${token}/documento/${selected.id}/decisao' style='margin-top:14px;border-top:1px solid #e2e8f0;padding-top:14px'>
+            ${selected.security_code ? `<div style='margin-top:12px;padding:12px;border-radius:8px;background:#ecfdf5;color:#065f46'>
+              <strong>Validação registrada.</strong><br>
+              Validador: ${escapeHtml(selected.signature_name || '')}<br>
+              CPF: ${escapeHtml(maskCpf(selected.signature_cpf))}<br>
+              Registro: <strong>${escapeHtml(selected.security_code)}</strong><br>
+              Data: ${escapeHtml(new Date(selected.signed_at).toLocaleString('pt-BR'))}
+            </div>` :
+            `<form id='validacao' method='post' action='/validar-lote/${token}/documento/${selected.id}/decisao' style='margin-top:14px;border-top:1px solid #e2e8f0;padding-top:14px'>
               <input type='hidden' name='decision' value='validated'>
-              <button type='submit' style='border:0;background:#1d4ed8;color:#fff;border-radius:9px;padding:11px 15px;font-weight:700;cursor:pointer'>De acordo e validar este documento</button>
+              <div style='margin-bottom:10px;padding:10px 12px;border-radius:8px;background:#eff6ff;border:1px solid #bfdbfe;color:#1e3a8a;font-size:13px;line-height:1.5'>
+                <strong>Importante:</strong> valide somente se o documento não tiver mais nenhum ajuste necessário. Caso contrário, registre primeiro a solicitação de alteração acima.
+              </div>
+              ${url.searchParams.get('erro') === 'identificacao' ? "<div style='margin-bottom:10px;padding:10px;border-radius:8px;background:#fef2f2;color:#991b1b'>Informe seu nome completo, um CPF válido e confirme as duas declarações.</div>" : ''}
+              <label style='display:block;font-size:13px;font-weight:700;margin:8px 0 4px'>Nome completo *</label>
+              <input name='validatorName' required maxlength='150' value='${escapeHtml(pacote.nome || '')}' style='width:100%;padding:10px;border:1px solid #cbd5e1;border-radius:8px'>
+              <label style='display:block;font-size:13px;font-weight:700;margin:8px 0 4px'>CPF *</label>
+              <input name='validatorCpf' required inputmode='numeric' maxlength='14' placeholder='000.000.000-00' style='width:100%;padding:10px;border:1px solid #cbd5e1;border-radius:8px'>
+              <label style='display:flex;gap:8px;align-items:flex-start;font-size:12px;margin-top:10px'><input type='checkbox' name='noMoreAdjustments' required style='width:auto;margin-top:3px'> Confirmo que revisei o documento e não há mais ajustes necessários.</label>
+              <label style='display:flex;gap:8px;align-items:flex-start;font-size:12px;margin-top:8px'><input type='checkbox' name='acknowledgement' required style='width:auto;margin-top:3px'> Estou ciente de que esta confirmação registra minha validação eletrônica desta versão do documento.</label>
+              <button type='submit' style='margin-top:12px;border:0;background:#1d4ed8;color:#fff;border-radius:9px;padding:11px 15px;font-weight:700;cursor:pointer'>Confirmar e registrar validação</button>
             </form>`}`}
         </div>
       </section>`;
@@ -2809,6 +2906,10 @@ const server = http.createServer(async (req, res) => {
       const form = new URLSearchParams(await readBody(req));
       const decision = String(form.get('decision') || '').trim();
       const decisionText = String(form.get('decisionText') || '').trim();
+      const validatorName = String(form.get('validatorName') || '').trim().replace(/\s+/g, ' ').slice(0,150);
+      const validatorCpf = normalizeCpf(form.get('validatorCpf'));
+      const acknowledgement = form.get('acknowledgement') === 'on';
+      const noMoreAdjustments = form.get('noMoreAdjustments') === 'on';
 
       if (decision === 'changes_requested') {
         if (!guest.can_request_changes) return json(res, 403, { error: 'Você não possui permissão para solicitar ajustes.' });
@@ -2889,8 +2990,40 @@ const server = http.createServer(async (req, res) => {
 
       if (decision === 'validated') {
         if (!guest.can_validate) return json(res, 403, { error: 'Você não possui permissão para validar esta entrega.' });
+        if (validatorName.split(' ').filter(Boolean).length < 2 || !isValidCpf(validatorCpf) || !acknowledgement || !noMoreAdjustments) {
+          res.writeHead(302, { Location: `/validar/${token}?erro=identificacao#validacao` });
+          res.end();
+          return;
+        }
         if (version.status === 'ajustes_solicitados' || guest.entrega_status === 'ajustes_solicitados') {
           return json(res, 409, { error: 'Esta versão possui alteração solicitada. Aguarde a CKM enviar uma nova versão.' });
+        }
+
+        const existingSignature = (await pg.query(
+          'SELECT * FROM portal_entrega_signatures WHERE version_id=$1 AND convidado_id=$2 LIMIT 1',
+          [version.id, guest.id]
+        )).rows[0];
+        if (!existingSignature) {
+          const sig = createValidationSignature({
+            entregaId:guest.entrega_id,
+            versionId:version.id,
+            convidadoId:guest.id,
+            fileHash:version.file_hash,
+            validatorName,
+            validatorEmail:guest.email,
+            validatorCpf
+          });
+          await pg.query(
+            `INSERT INTO portal_entrega_signatures
+              (id, entrega_id, version_id, convidado_id, security_code, signature_hash, file_hash, validator_name, validator_email, validator_cpf, declaration_text, ip_address, user_agent, signed_at)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
+            [crypto.randomUUID(), guest.entrega_id, version.id, guest.id, sig.securityCode, sig.signatureHash, version.file_hash,
+             validatorName, guest.email, validatorCpf,
+             'Declaro que li a versão apresentada, estou ciente da validação e confirmo que não há outros ajustes necessários.',
+             String(req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').split(',')[0].trim().slice(0,64),
+             String(req.headers['user-agent'] || '').slice(0,500), sig.signedAt]
+          );
+          await pg.query('UPDATE portal_entrega_convidados SET nome=$2 WHERE id=$1',[guest.id, validatorName]);
         }
 
         const existing = await pg.query(
@@ -2940,7 +3073,7 @@ const server = http.createServer(async (req, res) => {
                 `INSERT INTO portal_entrega_validations
                   (id, entrega_id, version_id, convidado_id, protocol, file_hash, validator_name, validator_email, validator_cpf, declaration_text, validated_at)
                  VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,NOW())`,
-                [crypto.randomUUID(), guest.entrega_id, version.id, guest.id, protocol, version.file_hash, guest.nome, guest.email, null, declaration]
+                [crypto.randomUUID(), guest.entrega_id, version.id, guest.id, protocol, version.file_hash, validatorName, guest.email, validatorCpf, declaration]
               );
               await client.query("UPDATE portal_entrega_versions SET status='validated' WHERE id=$1", [version.id]);
               await client.query("UPDATE portal_entregas SET status='validado' WHERE id=$1", [guest.entrega_id]);
@@ -3041,6 +3174,10 @@ const server = http.createServer(async (req, res) => {
           ORDER BY validated_at DESC
           LIMIT 1`,
         [version.id]
+      )).rows[0] || null;
+      const mySignature = (await pg.query(
+        'SELECT * FROM portal_entrega_signatures WHERE version_id=$1 AND convidado_id=$2 LIMIT 1',
+        [version.id, guest.id]
       )).rows[0] || null;
 
       const approvedIds = new Set(decisions.filter(d => d.decision === 'validated').map(d => d.convidado_id));
@@ -3148,13 +3285,27 @@ const server = http.createServer(async (req, res) => {
                 ` : version.status === 'ajustes_solicitados' ? `
                   <div class='error'>Esta versão possui alteração solicitada. Aguarde a CKM enviar uma nova versão.</div>
                 ` : `
-                  ${guest.can_validate ? (alreadyApproved ? `
-                    <div class='success'>Você já registrou sua concordância com esta versão. A entrega será concluída quando todos os validadores indicados tiverem concordado.</div>
+                  ${guest.can_validate ? (mySignature ? `
+                    <div class='success'><strong>Sua validação está registrada.</strong><br>
+                      Validador: ${escapeHtml(mySignature.validator_name)}<br>
+                      CPF: ${escapeHtml(maskCpf(mySignature.validator_cpf))}<br>
+                      Registro: <strong>${escapeHtml(mySignature.security_code)}</strong><br>
+                      Data: ${escapeHtml(new Date(mySignature.signed_at).toLocaleString('pt-BR'))}
+                    </div>
                   ` : `
-                    <form method='post' action='/validar/${token}/decisao'>
+                    <form id='validacao' method='post' action='/validar/${token}/decisao'>
                       <input type='hidden' name='decision' value='validated'>
-                      <p style='font-size:13px;line-height:1.5'>Ao confirmar, você declara estar de acordo com a versão V${Number(version.version_number)} deste documento.</p>
-                      <button class='primary' type='submit' style='margin-top:10px'>De acordo e validar entrega</button>
+                      <div style='margin-bottom:10px;padding:10px 12px;border-radius:8px;background:#eff6ff;border:1px solid #bfdbfe;color:#1e3a8a;font-size:13px;line-height:1.5'>
+                        <strong>Importante:</strong> valide somente se o documento não tiver mais nenhum ajuste necessário. Caso contrário, registre primeiro a solicitação de alteração acima.
+                      </div>
+                      ${erro === 'identificacao' ? "<div class='error'>Informe seu nome completo, um CPF válido e confirme as duas declarações.</div>" : ''}
+                      <label>Nome completo *</label>
+                      <input name='validatorName' maxlength='150' required value='${escapeHtml(guest.nome || '')}'>
+                      <label>CPF *</label>
+                      <input name='validatorCpf' maxlength='14' inputmode='numeric' required placeholder='000.000.000-00'>
+                      <label style='display:flex;flex-direction:row;gap:8px;align-items:flex-start;font-size:12px;font-weight:400'><input type='checkbox' name='noMoreAdjustments' required style='width:auto;margin-top:3px'> Confirmo que revisei o documento e não há mais ajustes necessários.</label>
+                      <label style='display:flex;flex-direction:row;gap:8px;align-items:flex-start;font-size:12px;font-weight:400'><input type='checkbox' name='acknowledgement' required style='width:auto;margin-top:3px'> Estou ciente de que esta confirmação registra minha validação eletrônica desta versão.</label>
+                      <button class='primary' type='submit' style='margin-top:10px'>Confirmar e registrar validação</button>
                     </form>`) : ''}
                 `}
               </div>
@@ -4647,6 +4798,7 @@ const server = http.createServer(async (req, res) => {
     const client = await pg.connect();
     try {
       await client.query('BEGIN');
+      await client.query('DELETE FROM portal_entrega_signatures WHERE entrega_id=$1', [entregaId]);
       await client.query('DELETE FROM portal_entrega_validations WHERE entrega_id=$1', [entregaId]);
       await client.query('DELETE FROM portal_entrega_decisions WHERE entrega_id=$1', [entregaId]);
       await client.query('DELETE FROM portal_entrega_messages WHERE entrega_id=$1', [entregaId]);
@@ -4758,6 +4910,10 @@ const server = http.createServer(async (req, res) => {
       'SELECT * FROM portal_entrega_validations WHERE version_id=$1 ORDER BY validated_at DESC LIMIT 1',
       [currentVersion.id]
     )).rows[0] || null : null;
+    const signatures = currentVersion ? (await pg.query(
+      'SELECT * FROM portal_entrega_signatures WHERE version_id=$1 ORDER BY signed_at ASC',
+      [currentVersion.id]
+    )).rows : [];
 
     const versionRows = versions.map(v => {
       const label = v.status === 'validated' ? 'Validada'
@@ -4774,7 +4930,9 @@ const server = http.createServer(async (req, res) => {
     }).join('');
 
     const guestRows = convidados.map(g => {
-      const state = g.validated_current ? 'De acordo'
+      const sig = signatures.find(s => String(s.convidado_id) === String(g.id));
+      const state = sig ? 'Validado — ' + sig.security_code
+        : g.validated_current ? 'De acordo (registro anterior)'
         : g.status === 'acessou' ? 'Acessou'
         : 'Convite enviado';
       return `<tr>
@@ -4836,6 +4994,21 @@ const server = http.createServer(async (req, res) => {
           ${guestRows || "<tr><td colspan='6'>Nenhum convidado nesta versão.</td></tr>"}
         </tbody></table></div>
       </section>
+
+      ${signatures.length ? `
+      <section>
+        <h2>Registros de validação eletrônica</h2>
+        <div style='overflow-x:auto'><table>
+          <thead><tr><th>Validador</th><th>CPF</th><th>Registro</th><th>Data/hora</th><th>Versão</th></tr></thead>
+          <tbody>${signatures.map(s => `<tr>
+            <td><strong>${escapeHtml(s.validator_name)}</strong><div style='font-size:.72rem;color:#64748b'>${escapeHtml(s.validator_email)}</div></td>
+            <td>${escapeHtml(maskCpf(s.validator_cpf))}</td>
+            <td style='font-family:monospace;font-weight:700'>${escapeHtml(s.security_code)}</td>
+            <td>${escapeHtml(new Date(s.signed_at).toLocaleString('pt-BR'))}</td>
+            <td>V${Number(currentVersion.version_number)}</td>
+          </tr>`).join('')}</tbody>
+        </table></div>
+      </section>` : ''}
 
       ${currentVersion ? `
       <section id='documento'>
