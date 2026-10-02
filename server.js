@@ -408,11 +408,30 @@ async function userCanAccessPortalClient(user, clienteId) {
   return allowed.includes(Number(clienteId));
 }
 
+async function getPortalAllowedProjectIds(user) {
+  if (!isDeliveryConsultant(user)) return null;
+  const pg = storage.getPool ? storage.getPool() : null;
+  if (!pg) return [];
+  const r = await pg.query(
+    'SELECT projeto_id FROM portal_consultor_projetos WHERE consultant_user_id=$1 ORDER BY projeto_id',
+    [user.id]
+  );
+  return r.rows.map(row => Number(row.projeto_id));
+}
+
+async function userCanAccessPortalProject(user, projetoId) {
+  if (!isDeliveryConsultant(user)) return true;
+  if (!projetoId) return false;
+  const allowed = await getPortalAllowedProjectIds(user);
+  return allowed.includes(Number(projetoId));
+}
+
 async function userCanAccessPortalDelivery(user, delivery) {
   if (!delivery) return false;
   if (!isDeliveryConsultant(user)) return true;
-  if (String(delivery.responsavel_user_id) !== String(user.id)) return false;
-  return userCanAccessPortalClient(user, Number(delivery.cliente_id));
+  const clientOk = await userCanAccessPortalClient(user, Number(delivery.cliente_id));
+  const projectOk = await userCanAccessPortalProject(user, Number(delivery.projeto_id || 0));
+  return clientOk && projectOk;
 }
 
 function createGuestToken() {
@@ -3149,8 +3168,14 @@ const server = http.createServer(async (req, res) => {
         const params = [];
         let where = '';
         if (isDeliveryConsultant(user)) {
-          params.push(user.id);
-          where = 'WHERE e.responsavel_user_id=$1';
+          const allowedClients = await getPortalAllowedClientIds(user);
+          const allowedProjects = await getPortalAllowedProjectIds(user);
+          if (!allowedClients.length || !allowedProjects.length) {
+            where = 'WHERE 1=0';
+          } else {
+            params.push(allowedClients, allowedProjects);
+            where = 'WHERE e.cliente_id = ANY($1::int[]) AND e.projeto_id = ANY($2::int[])';
+          }
         }
         entregas = (await pg.query(`
           SELECT e.*, c.nome as cliente_nome, c.nome_curto as cliente_nome_curto,
@@ -3227,7 +3252,7 @@ const server = http.createServer(async (req, res) => {
     ${!r2Ready ? "<div style='margin-top:1rem;padding:.8rem;background:#fff7ed;color:#9a3412;border:1px solid #fdba74;border-radius:.6rem'>Novas entregas estão temporariamente indisponíveis. O administrador está concluindo a configuração de segurança do módulo.</div>" : ""}
   `}
   <section style='margin-top:1.25rem'>
-    <h2 style='margin-bottom:.7rem'>Fluxo do administrador</h2>
+    <h2 style='margin-bottom:.7rem'>Fluxo de Entregas</h2>
     <div style='display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:.9rem'>
       <a href='/entregas/contratos' style='display:block;text-decoration:none;color:inherit;border:1px solid #e2e8f0;border-radius:12px;padding:1rem;background:#fff'>
         <div style='font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase'>Passo 1</div>
@@ -3509,6 +3534,7 @@ const server = http.createServer(async (req, res) => {
     let clientes = [], projetos = [], contratos = [], contatos = [];
     try {
       const allowed = await getPortalAllowedClientIds(user);
+      const allowedProjects = await getPortalAllowedProjectIds(user);
       if (allowed === null) {
         clientes = (await pg.query('SELECT id, codigo, nome, nome_curto FROM clientes WHERE ativo=true ORDER BY nome')).rows;
       } else if (allowed.length) {
@@ -3586,6 +3612,11 @@ const server = http.createServer(async (req, res) => {
           'SELECT id, cliente_id, nome, email FROM portal_contatos_validacao WHERE ativo=true AND cliente_id=ANY($1::int[]) ORDER BY nome',
           [allowed]
         )).rows;
+      }
+      if (isDeliveryConsultant(user)) {
+        const projectSet = new Set((allowedProjects || []).map(Number));
+        projetos = projetos.filter(p => projectSet.has(Number(p.id)));
+        contratos = contratos.filter(ct => ct.projeto_id && projectSet.has(Number(ct.projeto_id)));
       }
     } catch (e) {
       return json(res, 500, { error: e.message });
@@ -3989,6 +4020,11 @@ const server = http.createServer(async (req, res) => {
     if (!(await userCanAccessPortalClient(user, clienteId))) {
       return json(res, 403, { error: 'Você não possui acesso a este cliente.' });
     }
+    if (isDeliveryConsultant(user)) {
+      if (!projetoId || !(await userCanAccessPortalProject(user, projetoId))) {
+        return json(res, 403, { error: 'Você não possui acesso a este projeto.' });
+      }
+    }
     if (!convidados.length) {
       return json(res, 400, { error: 'Informe pelo menos uma pessoa para validação.' });
     }
@@ -4286,6 +4322,11 @@ const server = http.createServer(async (req, res) => {
     }
     if (!(await userCanAccessPortalClient(user, clienteId))) {
       return json(res, 403, { error: 'Você não possui acesso a este cliente.' });
+    }
+    if (isDeliveryConsultant(user)) {
+      if (!projetoId || !(await userCanAccessPortalProject(user, projetoId))) {
+        return json(res, 403, { error: 'Você não possui acesso a este projeto.' });
+      }
     }
     if (!fileName.toLowerCase().endsWith('.pdf') && fileType !== 'application/pdf') {
       return json(res, 400, { error: 'A entrega deve ser enviada em PDF.' });
@@ -5028,11 +5069,15 @@ const server = http.createServer(async (req, res) => {
     const consultores = (db.users || []).filter(u => isDeliveryConsultant(u));
     const administradores = (db.users || []).filter(u => String(u.role || '').trim().toLowerCase() === 'admin');
     let clientes = [];
+    let projetos = [];
     let vinculos = [];
+    let vinculosProjetos = [];
     if (pg) {
       try {
         clientes = (await pg.query('SELECT id, nome, nome_curto FROM clientes WHERE ativo=true ORDER BY nome')).rows;
+        projetos = (await pg.query('SELECT id, codigo, nome, cliente_id FROM projetos WHERE ativo=true ORDER BY codigo, nome')).rows;
         vinculos = (await pg.query('SELECT consultant_user_id, cliente_id FROM portal_consultor_clientes')).rows;
+        vinculosProjetos = (await pg.query('SELECT consultant_user_id, projeto_id FROM portal_consultor_projetos')).rows;
       } catch (e) {
         console.warn('[acessos] Não foi possível carregar clientes autorizados:', e.message);
       }
@@ -5043,6 +5088,11 @@ const server = http.createServer(async (req, res) => {
       if (!byConsultant.has(v.consultant_user_id)) byConsultant.set(v.consultant_user_id, new Set());
       byConsultant.get(v.consultant_user_id).add(Number(v.cliente_id));
     }
+    const projectsByConsultant = new Map();
+    for (const v of vinculosProjetos) {
+      if (!projectsByConsultant.has(v.consultant_user_id)) projectsByConsultant.set(v.consultant_user_id, new Set());
+      projectsByConsultant.get(v.consultant_user_id).add(Number(v.projeto_id));
+    }
 
     const criado = url.searchParams.get('criado');
     const salvo = url.searchParams.get('salvo');
@@ -5050,12 +5100,21 @@ const server = http.createServer(async (req, res) => {
     const emailTeste = url.searchParams.get('emailTeste');
     const cards = consultores.map(u => {
       const selected = byConsultant.get(u.id) || new Set();
+      const selectedProjects = projectsByConsultant.get(u.id) || new Set();
       const checks = clientes.map(cl => `
         <label style='display:flex;align-items:center;gap:.45rem;margin:.2rem 0;font-weight:400'>
           <input type='checkbox' name='clienteId' value='${cl.id}' ${selected.has(Number(cl.id)) ? 'checked' : ''}>
           <span>${escapeHtml(cl.nome_curto || cl.nome)}</span>
         </label>
       `).join('');
+      const projectChecks = projetos.map(p => {
+        const cliente = clientes.find(cl => Number(cl.id) === Number(p.cliente_id));
+        return `
+          <label style='display:flex;align-items:center;gap:.45rem;margin:.2rem 0;font-weight:400'>
+            <input type='checkbox' name='projetoId' value='${p.id}' ${selectedProjects.has(Number(p.id)) ? 'checked' : ''}>
+            <span>${escapeHtml((p.codigo ? p.codigo + ' — ' : '') + p.nome)}${cliente ? ' · ' + escapeHtml(cliente.nome_curto || cliente.nome) : ''}</span>
+          </label>`;
+      }).join('');
       return `
         <div style='border:1px solid #e2e8f0;border-radius:12px;padding:1rem;margin-bottom:1rem;background:#fff'>
           <div style='display:flex;justify-content:space-between;gap:1rem;flex-wrap:wrap'>
@@ -5091,7 +5150,11 @@ const server = http.createServer(async (req, res) => {
             <div style='display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:.15rem .75rem'>
               ${checks || "<span style='color:#64748b;font-size:.82rem'>Nenhum cliente ativo cadastrado.</span>"}
             </div>
-            <button type='submit' style='margin-top:.75rem'>Salvar clientes autorizados</button>
+            <div style='font-size:.8rem;font-weight:700;color:#475569;margin:1rem 0 .35rem'>Projetos autorizados</div>
+            <div style='display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:.15rem .75rem'>
+              ${projectChecks || "<span style='color:#64748b;font-size:.82rem'>Nenhum projeto ativo cadastrado.</span>"}
+            </div>
+            <button type='submit' style='margin-top:.75rem'>Salvar clientes e projetos autorizados</button>
           </form>
         </div>
       `;
@@ -5282,6 +5345,9 @@ const server = http.createServer(async (req, res) => {
     const clienteIds = form.getAll('clienteId')
       .map(v => Number(v))
       .filter(v => Number.isInteger(v) && v > 0);
+    const projetoIds = form.getAll('projetoId')
+      .map(v => Number(v))
+      .filter(v => Number.isInteger(v) && v > 0);
 
     const consultant = (db.users || []).find(u => u.id === consultantId && isDeliveryConsultant(u));
     if (!consultant) return json(res, 404, { error: 'Consultor não encontrado.' });
@@ -5290,10 +5356,20 @@ const server = http.createServer(async (req, res) => {
     try {
       await client.query('BEGIN');
       await client.query('DELETE FROM portal_consultor_clientes WHERE consultant_user_id=$1', [consultantId]);
+      await client.query('DELETE FROM portal_consultor_projetos WHERE consultant_user_id=$1', [consultantId]);
       for (const clienteId of [...new Set(clienteIds)]) {
         await client.query(
           'INSERT INTO portal_consultor_clientes (consultant_user_id, cliente_id) VALUES ($1,$2) ON CONFLICT DO NOTHING',
           [consultantId, clienteId]
+        );
+      }
+      for (const projetoId of [...new Set(projetoIds)]) {
+        const p = (await client.query('SELECT cliente_id FROM projetos WHERE id=$1 AND ativo=true LIMIT 1', [projetoId])).rows[0];
+        if (!p) continue;
+        if (p.cliente_id && !clienteIds.includes(Number(p.cliente_id))) continue;
+        await client.query(
+          'INSERT INTO portal_consultor_projetos (consultant_user_id, projeto_id) VALUES ($1,$2) ON CONFLICT DO NOTHING',
+          [consultantId, projetoId]
         );
       }
       await client.query('COMMIT');
