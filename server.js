@@ -2456,7 +2456,8 @@ const server = http.createServer(async (req, res) => {
       }).join('');
 
       const cancelado = selected.status === 'cancelado';
-      const bloqueado = cancelado || selected.status === 'ajustes_solicitados' || selected.version_status === 'ajustes_solicitados';
+      const possuiAjustes = selected.status === 'ajustes_solicitados' || selected.version_status === 'ajustes_solicitados';
+      const bloqueado = cancelado;
       detalhe = `<section style='margin-top:22px'>
         <div style='display:flex;justify-content:space-between;gap:12px;align-items:flex-start;flex-wrap:wrap'>
           <div><a href='/validar-lote/${token}' style='font-size:13px'>← Voltar aos documentos</a>
@@ -2471,7 +2472,7 @@ const server = http.createServer(async (req, res) => {
           <div style='max-height:340px;overflow:auto'>${msgHtml || "<p style='font-size:13px;color:#64748b'>Nenhuma conversa registrada.</p>"}</div>
           ${cancelado ? `<div style='margin-top:12px;padding:10px;border-radius:8px;background:#fee2e2;color:#991b1b'><strong>Documento cancelado.</strong><br>${escapeHtml(selected.cancelled_reason || 'Este envio foi cancelado pela CKM Talents.')}</div>` :
             validation ? `<div style='margin-top:12px;padding:10px;border-radius:8px;background:#ecfdf5;color:#065f46'>Documento validado. Protocolo: <strong>${escapeHtml(validation.protocol)}</strong></div>` :
-            bloqueado ? "<div style='margin-top:12px;padding:10px;border-radius:8px;background:#fff7ed;color:#9a3412'>Há uma solicitação de alteração para esta versão. Aguarde a CKM disponibilizar uma nova versão.</div>" :
+            bloqueado ? "<div style='margin-top:12px;padding:10px;border-radius:8px;background:#fff7ed;color:#9a3412'>Esta versão já possui solicitação de alteração. Você pode continuar registrando outras solicitações e contribuições enquanto a CKM prepara a nova versão.</div>" :
             `<form method='post' action='/validar-lote/${token}/documento/${selected.id}/manifestacao' style='margin-top:12px'>
               <label style='display:block;font-size:13px;font-weight:700;margin-bottom:5px'>Escreva sua mensagem</label>
               <textarea name='message' rows='4' maxlength='5000' required style='width:100%;padding:10px;border:1px solid #cbd5e1;border-radius:8px;font:inherit'></textarea>
@@ -2480,7 +2481,8 @@ const server = http.createServer(async (req, res) => {
                 <button type='submit' name='manifestationType' value='contribution' style='border:0;background:#0f766e;color:#fff;border-radius:9px;padding:10px 14px;font-weight:700;cursor:pointer'>Contribuição</button>
               </div>
             </form>
-            ${selected.security_code ? `<div style='margin-top:12px;padding:12px;border-radius:8px;background:#ecfdf5;color:#065f46'>
+            ${possuiAjustes ? "<div style='margin-top:12px;padding:10px;border-radius:8px;background:#fff7ed;color:#9a3412'><strong>Esta versão já possui solicitação(ões) de alteração.</strong><br>Você ainda pode registrar outras solicitações ou contribuições acima. A validação ficará disponível novamente quando a CKM publicar a nova versão.</div>" :
+            selected.security_code ? `<div style='margin-top:12px;padding:12px;border-radius:8px;background:#ecfdf5;color:#065f46'>
               <strong>Validação registrada.</strong><br>
               Validador: ${escapeHtml(selected.signature_name || '')}<br>
               CPF: ${escapeHtml(maskCpf(selected.signature_cpf))}<br>
@@ -2520,7 +2522,11 @@ const server = http.createServer(async (req, res) => {
       <div class='wrap'>
         <div>
           <h1 style='margin:0 0 6px;font-size:26px'>Documentos para sua análise</h1>
-          <div style='color:#64748b'>${escapeHtml(pacote.cliente_nome_curto || pacote.cliente_nome || '')}${pacote.projeto_nome ? ' · '+escapeHtml(pacote.projeto_nome) : ''}${pacote.contrato_numero ? ' · Contrato '+escapeHtml(pacote.contrato_numero) : ''}</div>
+          <div style='margin-top:10px;display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;background:#fff;border:1px solid #e2e8f0;border-radius:12px;padding:12px 14px'>
+            <div><div style='font-size:11px;color:#64748b;text-transform:uppercase;font-weight:700'>Validador</div><strong>${escapeHtml(pacote.nome || pacote.email || '-')}</strong></div>
+            <div><div style='font-size:11px;color:#64748b;text-transform:uppercase;font-weight:700'>Empresa</div><strong>${escapeHtml(pacote.cliente_nome_curto || pacote.cliente_nome || '-')}</strong></div>
+            <div><div style='font-size:11px;color:#64748b;text-transform:uppercase;font-weight:700'>Projeto</div><strong>${escapeHtml(pacote.projeto_nome || '-')}</strong></div>
+          </div>
         </div>
         <div class='summary'>
           <div class='mini'><div style='font-size:12px;color:#64748b'>Documentos</div><strong style='font-size:22px'>${totalDocs}</strong></div>
@@ -2782,10 +2788,6 @@ const server = http.createServer(async (req, res) => {
         if (version.status === 'validated') {
           return json(res, 409, { error: 'Esta versão já foi validada e não pode ser alterada.' });
         }
-        if (version.status === 'ajustes_solicitados' || guest.entrega_status === 'ajustes_solicitados') {
-          return json(res, 409, { error: 'Já existe uma solicitação de alteração para esta versão.' });
-        }
-
         const client = await pg.connect();
         try {
           await client.query('BEGIN');
@@ -3232,6 +3234,11 @@ const server = http.createServer(async (req, res) => {
         <header><strong>CKM Talents — Entregas e Validações</strong></header>
         <div class='wrap'>
           <div style='margin-bottom:14px'>
+            <div style='display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:10px;background:#fff;border:1px solid #e2e8f0;border-radius:12px;padding:12px 14px;margin-bottom:12px'>
+              <div><div style='font-size:11px;color:#64748b;text-transform:uppercase;font-weight:700'>Validador</div><strong>${escapeHtml(guest.nome || guest.email || '-')}</strong></div>
+              <div><div style='font-size:11px;color:#64748b;text-transform:uppercase;font-weight:700'>Empresa</div><strong>${escapeHtml(guest.cliente_nome_curto || guest.cliente_nome || '-')}</strong></div>
+              <div><div style='font-size:11px;color:#64748b;text-transform:uppercase;font-weight:700'>Projeto</div><strong>${escapeHtml(guest.projeto_nome || '-')}</strong></div>
+            </div>
             <h1 style='margin:0 0 6px;font-size:24px'>${escapeHtml(guest.titulo)}</h1>
             <div class='badge'>${statusText}</div>
           </div>
@@ -3264,7 +3271,7 @@ const server = http.createServer(async (req, res) => {
                     <label>Escreva sua mensagem</label>
                     <textarea name='message' rows='4' maxlength='5000' required placeholder='Descreva sua contribuição ou a alteração necessária...'></textarea>
                     <div style='display:flex;gap:8px;flex-wrap:wrap;margin-top:8px'>
-                      ${guest.can_request_changes && version.status !== 'ajustes_solicitados' ? `
+                      ${guest.can_request_changes ? `
                         <button class='warn' type='submit' name='manifestationType' value='changes_requested'>Solicitar alteração</button>
                       ` : ''}
                       ${guest.can_comment ? `
@@ -3272,8 +3279,8 @@ const server = http.createServer(async (req, res) => {
                       ` : ''}
                     </div>
                     <div style='font-size:12px;color:#64748b;margin-top:8px;line-height:1.45'>
-                      <strong>Solicitar alteração</strong> interrompe a validação desta versão para que a CKM faça o ajuste.
-                      <strong>Contribuição</strong> registra a observação na conversa sem interromper a validação.
+                      <strong>Solicitar alteração</strong> marca esta versão para correção, mas os demais validadores continuam podendo registrar suas próprias solicitações e contribuições.
+                      <strong>Contribuição</strong> registra a observação na conversa. A validação desta versão fica bloqueada até a CKM publicar a nova versão.
                     </div>
                   </form>` : ''}
                 ${historicoConversasHtml}
