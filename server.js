@@ -4888,15 +4888,45 @@ const server = http.createServer(async (req, res) => {
       return json(res, 409, { error: 'Este validador não pertence à versão atual.' });
     }
 
-    const { token, tokenHash } = createGuestToken();
-    await pg.query(
-      `UPDATE portal_entrega_convidados
-          SET token_hash=$2, revoked_at=NULL, expires_at=NOW()+INTERVAL '30 days', invited_at=NOW()
-        WHERE id=$1`,
-      [guest.id, tokenHash]
-    );
+    let accessLink = '';
+    let accessType = 'documento';
 
-    const accessLink = `${portalBaseUrl(req)}/validar/${token}`;
+    if (delivery.lote_id) {
+      const packageToken = createGuestToken();
+      const existingPackage = (await pg.query(
+        'SELECT id FROM portal_lote_convidados WHERE lote_id=$1 AND lower(email)=lower($2) LIMIT 1',
+        [delivery.lote_id, guest.email]
+      )).rows[0];
+
+      if (existingPackage) {
+        await pg.query(
+          `UPDATE portal_lote_convidados
+              SET nome=$2, token_hash=$3, revoked_at=NULL, status='convidado',
+                  expires_at=NOW()+INTERVAL '30 days', invited_at=NOW()
+            WHERE id=$1`,
+          [existingPackage.id, guest.nome, packageToken.tokenHash]
+        );
+      } else {
+        await pg.query(
+          `INSERT INTO portal_lote_convidados
+            (id, lote_id, nome, email, token_hash, status, invited_at, expires_at)
+           VALUES ($1,$2,$3,$4,$5,'convidado',NOW(),NOW()+INTERVAL '30 days')`,
+          [crypto.randomUUID(), delivery.lote_id, guest.nome, guest.email, packageToken.tokenHash]
+        );
+      }
+
+      accessLink = `${portalBaseUrl(req)}/validar-lote/${packageToken.token}`;
+      accessType = 'lote';
+    } else {
+      const { token, tokenHash } = createGuestToken();
+      await pg.query(
+        `UPDATE portal_entrega_convidados
+            SET token_hash=$2, revoked_at=NULL, expires_at=NOW()+INTERVAL '30 days', invited_at=NOW()
+          WHERE id=$1`,
+        [guest.id, tokenHash]
+      );
+      accessLink = `${portalBaseUrl(req)}/validar/${token}`;
+    }
 
     await recordPortalAudit(pg, req, {
       entregaId,
@@ -4904,7 +4934,7 @@ const server = http.createServer(async (req, res) => {
       actorType:'ckm',
       actorId:user.id,
       action:'link_manual_gerado',
-      details:{ convidadoId:guest.id, email:guest.email }
+      details:{ convidadoId:guest.id, email:guest.email, accessType, loteId:delivery.lote_id || null }
     });
 
     return json(res, 200, {
@@ -4912,6 +4942,7 @@ const server = http.createServer(async (req, res) => {
       link:accessLink,
       nome:guest.nome,
       email:guest.email,
+      accessType,
       expiresAt:new Date(Date.now() + 30*24*60*60*1000).toISOString()
     });
   }
@@ -5321,14 +5352,14 @@ const server = http.createServer(async (req, res) => {
           area.style.display = 'block';
           area.innerHTML =
             '<div style="padding:.55rem;border:1px solid #c7d2fe;background:#f8faff;border-radius:8px">' +
-              '<div style="font-size:.7rem;font-weight:700;margin-bottom:.3rem">LINK INDIVIDUAL GERADO</div>' +
+              '<div style="font-size:.7rem;font-weight:700;margin-bottom:.3rem">' + (data.accessType === 'lote' ? 'LINK DO PACOTE GERADO' : 'LINK INDIVIDUAL GERADO') + '</div>' +
               '<input class="manual-link-input" readonly value="' + data.link.replace(/&/g,'&amp;').replace(/"/g,'&quot;') + '" style="width:100%;font-size:.72rem;margin-bottom:.4rem">' +
               '<div style="display:flex;gap:.35rem;flex-wrap:wrap">' +
                 '<button type="button" class="btn-outline btn-copy">Copiar link</button>' +
                 '<a class="btn-outline btn-whatsapp" target="_blank" rel="noopener" style="text-decoration:none">WhatsApp</a>' +
                 '<a class="btn-outline btn-email" style="text-decoration:none">E-mail</a>' +
               '</div>' +
-              '<div style="font-size:.68rem;color:#64748b;margin-top:.35rem">Este novo link substitui qualquer link anterior deste validador.</div>' +
+              '<div style="font-size:.68rem;color:#64748b;margin-top:.35rem">' + (data.accessType === 'lote' ? 'Este link abre todos os documentos do lote disponíveis para este validador.' : 'Este novo link substitui qualquer link anterior deste validador.') + '</div>' +
             '</div>';
 
           const input = area.querySelector('.manual-link-input');
