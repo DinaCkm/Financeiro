@@ -4695,6 +4695,176 @@ const server = http.createServer(async (req, res) => {
   }
 
 
+  const addValidatorMatch = url.pathname.match(/^\/entregas\/([0-9a-f-]{36})\/adicionar-validador$/i);
+  if (req.method === 'POST' && addValidatorMatch) {
+    const entregaId = addValidatorMatch[1];
+    const pg = storage.getPool ? storage.getPool() : null;
+    if (!pg) return json(res, 503, { error: 'Banco não disponível.' });
+
+    const entrega = (await pg.query('SELECT * FROM portal_entregas WHERE id=$1 LIMIT 1', [entregaId])).rows[0];
+    if (!entrega) return json(res, 404, { error: 'Entrega não encontrada.' });
+    if (!(await userCanAccessPortalDelivery(user, entrega))) return json(res, 403, { error: 'Acesso não autorizado.' });
+
+    const form = new URLSearchParams(await readBody(req));
+    const nome = String(form.get('nome') || '').trim().replace(/\s+/g, ' ').slice(0,150);
+    const email = String(form.get('email') || '').trim().toLowerCase().slice(0,254);
+    const scope = String(form.get('scope') || 'current').trim();
+
+    if (!nome || !email || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
+      res.writeHead(302, { Location: `/entregas/${entregaId}?erro=validador#validadores` });
+      res.end();
+      return;
+    }
+
+    let targets = [];
+    if (scope === 'all') {
+      if (entrega.lote_id) {
+        targets = (await pg.query(
+          `SELECT e.*, v.id AS version_id, v.version_number
+             FROM portal_entregas e
+             JOIN portal_entrega_versions v ON v.entrega_id=e.id AND v.version_number=e.current_version
+            WHERE e.lote_id=$1
+              AND e.status NOT IN ('validado','cancelado')
+            ORDER BY e.created_at`,
+          [entrega.lote_id]
+        )).rows;
+      } else if (entrega.projeto_id) {
+        targets = (await pg.query(
+          `SELECT e.*, v.id AS version_id, v.version_number
+             FROM portal_entregas e
+             JOIN portal_entrega_versions v ON v.entrega_id=e.id AND v.version_number=e.current_version
+            WHERE e.cliente_id=$1 AND e.projeto_id=$2
+              AND e.status NOT IN ('validado','cancelado')
+            ORDER BY e.created_at`,
+          [entrega.cliente_id, entrega.projeto_id]
+        )).rows;
+      }
+    }
+
+    if (!targets.length) {
+      const currentVersion = (await pg.query(
+        'SELECT id AS version_id, version_number FROM portal_entrega_versions WHERE entrega_id=$1 AND version_number=$2 LIMIT 1',
+        [entregaId, Number(entrega.current_version || 1)]
+      )).rows[0];
+      if (!currentVersion) return json(res,404,{error:'Versão atual não encontrada.'});
+      targets = [{...entrega, ...currentVersion}];
+    }
+
+    // Restrição de segurança para consultor: todos os alvos precisam estar no seu escopo.
+    for (const target of targets) {
+      if (!(await userCanAccessPortalDelivery(user, target))) {
+        return json(res, 403, { error: 'Há documento fora do seu escopo autorizado.' });
+      }
+    }
+
+    const baseUrl = portalBaseUrl(req);
+    let accessLink = '';
+    let accessType = 'individual';
+    let addedCount = 0;
+    const client = await pg.connect();
+    try {
+      await client.query('BEGIN');
+
+      for (const target of targets) {
+        const existing = (await client.query(
+          `SELECT id FROM portal_entrega_convidados
+            WHERE entrega_id=$1 AND version_id=$2 AND lower(email)=lower($3)
+            ORDER BY invited_at DESC LIMIT 1`,
+          [target.id, target.version_id, email]
+        )).rows[0];
+
+        const individualToken = createGuestToken();
+        if (existing) {
+          await client.query(
+            `UPDATE portal_entrega_convidados
+                SET nome=$2, token_hash=$3, status='convidado', invited_at=NOW(),
+                    expires_at=NOW()+INTERVAL '30 days', revoked_at=NULL
+              WHERE id=$1`,
+            [existing.id, nome, individualToken.tokenHash]
+          );
+        } else {
+          await client.query(
+            `INSERT INTO portal_entrega_convidados
+              (id, entrega_id, version_id, nome, email, can_comment, can_request_changes, can_validate, token_hash, status, invited_at, expires_at)
+             VALUES ($1,$2,$3,$4,$5,true,true,true,$6,'convidado',NOW(),NOW()+INTERVAL '30 days')`,
+            [crypto.randomUUID(), target.id, target.version_id, nome, email, individualToken.tokenHash]
+          );
+          addedCount++;
+        }
+        if (targets.length === 1) accessLink = `${baseUrl}/validar/${encodeURIComponent(individualToken.token)}`;
+      }
+
+      if (targets.length > 1 && entrega.lote_id) {
+        const packageToken = createGuestToken();
+        const existingPackage = (await client.query(
+          'SELECT id FROM portal_lote_convidados WHERE lote_id=$1 AND lower(email)=lower($2) LIMIT 1',
+          [entrega.lote_id, email]
+        )).rows[0];
+        if (existingPackage) {
+          await client.query(
+            `UPDATE portal_lote_convidados
+                SET nome=$2, token_hash=$3, status='convidado', invited_at=NOW(),
+                    expires_at=NOW()+INTERVAL '30 days', revoked_at=NULL
+              WHERE id=$1`,
+            [existingPackage.id, nome, packageToken.tokenHash]
+          );
+        } else {
+          await client.query(
+            `INSERT INTO portal_lote_convidados
+              (id, lote_id, nome, email, token_hash, status, invited_at, expires_at)
+             VALUES ($1,$2,$3,$4,$5,'convidado',NOW(),NOW()+INTERVAL '30 days')`,
+            [crypto.randomUUID(), entrega.lote_id, nome, email, packageToken.tokenHash]
+          );
+        }
+        accessLink = `${baseUrl}/validar-lote/${encodeURIComponent(packageToken.token)}`;
+        accessType = 'pacote';
+      }
+
+      await client.query('COMMIT');
+    } catch (e) {
+      await client.query('ROLLBACK');
+      return json(res,500,{error:'Não foi possível adicionar o validador: '+e.message});
+    } finally {
+      client.release();
+    }
+
+    await recordPortalAudit(pg, req, {
+      entregaId,
+      versionId:null,
+      actorType:'ckm',
+      actorId:user.id,
+      action:'validador_adicionado',
+      details:{ nome, email, scope, documentos:targets.map(t=>t.id) }
+    });
+
+    if (accessType === 'pacote') {
+      sendPortalNotificationEmail({
+        to: email,
+        subject: `Documentos adicionados para análise — ${targets.length} entrega(s)`,
+        title: 'Novos documentos para sua análise',
+        lines: [
+          `Olá, ${nome}.`,
+          `Você foi incluído(a) como validador(a) de ${targets.length} documento(s) da CKM Talents.`,
+          'Use o link abaixo para acessar os documentos, registrar contribuições, solicitar alterações e validar.'
+        ],
+        actionLabel:'Acessar documentos',
+        actionLink:accessLink
+      }).catch(e => console.warn('[entregas] Falha ao enviar convite adicional:', e.message));
+    } else {
+      sendDeliveryInviteEmail({
+        to:email,
+        name:nome,
+        documentTitle: targets[0] ? targets[0].titulo : entrega.titulo,
+        accessLink,
+        senderName:user.name || user.email || 'Equipe CKM Talents'
+      }).catch(e => console.warn('[entregas] Falha ao enviar convite adicional:', e.message));
+    }
+
+    res.writeHead(302, { Location: `/entregas/${entregaId}?validadorAdicionado=${targets.length}#validadores` });
+    res.end();
+    return;
+  }
+
   const guestAccessMatch = url.pathname.match(/^\/entregas\/([0-9a-f-]{36})\/convidados\/([0-9a-f-]{36})\/(reemitir|revogar)$/i);
   if (req.method === 'POST' && guestAccessMatch) {
     const [, entregaId, convidadoId, action] = guestAccessMatch;
@@ -4995,9 +5165,40 @@ const server = http.createServer(async (req, res) => {
         </form>
       </section>
 
-      <section>
-        <h2>Pessoas responsáveis pela validação — versão atual</h2>
-        <div style='overflow-x:auto'><table><thead><tr><th>Nome</th><th>E-mail</th><th>Situação</th><th>Último acesso</th><th>Link</th><th>Ações</th></tr></thead><tbody>
+      <section id='validadores'>
+        <div style='display:flex;justify-content:space-between;align-items:center;gap:1rem;flex-wrap:wrap'>
+          <div>
+            <h2 style='margin-bottom:.25rem'>Pessoas responsáveis pela validação — versão atual</h2>
+            <p style='margin:.2rem 0 0;color:#64748b;font-size:.78rem'>Você pode incluir novos validadores sem alterar os acessos já existentes.</p>
+          </div>
+          <button type='button' class='btn-outline' onclick='const el=document.getElementById("novo-validador");el.style.display=el.style.display==="none"?"block":"none"'>+ Adicionar validador</button>
+        </div>
+        ${url.searchParams.get('validadorAdicionado') ? `<div style='margin:.8rem 0;padding:.7rem .8rem;border-radius:8px;background:#ecfdf5;color:#065f46;border:1px solid #a7f3d0'>Validador incluído em ${escapeHtml(url.searchParams.get('validadorAdicionado'))} documento(s). O convite foi enviado por e-mail.</div>` : ''}
+        ${url.searchParams.get('erro') === 'validador' ? "<div style='margin:.8rem 0;padding:.7rem .8rem;border-radius:8px;background:#fef2f2;color:#991b1b;border:1px solid #fecaca'>Informe nome e e-mail válido para o novo validador.</div>" : ''}
+        <div id='novo-validador' style='display:none;margin:.9rem 0;padding:1rem;border:1px solid #c7d2fe;border-radius:10px;background:#f8faff'>
+          <form method='post' action='/entregas/${entregaId}/adicionar-validador'>
+            <div class='form-grid'>
+              <label>Nome completo *
+                <input name='nome' maxlength='150' required>
+              </label>
+              <label>E-mail *
+                <input name='email' type='email' maxlength='254' required>
+              </label>
+            </div>
+            <div style='font-size:.78rem;font-weight:700;margin:.65rem 0 .4rem'>Adicionar em:</div>
+            <label style='display:flex;gap:.45rem;align-items:flex-start;font-weight:400;margin:.3rem 0'>
+              <input type='radio' name='scope' value='current' checked style='width:auto;margin-top:3px'>
+              <span>Somente este documento — V${Number(entrega.current_version)}</span>
+            </label>
+            <label style='display:flex;gap:.45rem;align-items:flex-start;font-weight:400;margin:.3rem 0'>
+              <input type='radio' name='scope' value='all' style='width:auto;margin-top:3px'>
+              <span>${entrega.lote_id ? 'Todos os documentos ainda em análise deste lote' : 'Todos os documentos ainda em análise deste projeto'}</span>
+            </label>
+            <div style='font-size:.72rem;color:#64748b;margin-top:.5rem'>Documentos já validados/protocolados não serão reabertos automaticamente.</div>
+            <button type='submit' style='margin-top:.75rem'>Adicionar e enviar convite</button>
+          </form>
+        </div>
+        <div style='overflow-x:auto;margin-top:.9rem'><table><thead><tr><th>Nome</th><th>E-mail</th><th>Situação</th><th>Último acesso</th><th>Link</th><th>Ações</th></tr></thead><tbody>
           ${guestRows || "<tr><td colspan='6'>Nenhum convidado nesta versão.</td></tr>"}
         </tbody></table></div>
       </section>
