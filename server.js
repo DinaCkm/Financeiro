@@ -4865,6 +4865,57 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  const manualLinkMatch = url.pathname.match(/^\/entregas\/([0-9a-f-]{36})\/convidados\/([0-9a-f-]{36})\/gerar-link$/i);
+  if (req.method === 'POST' && manualLinkMatch) {
+    const [, entregaId, convidadoId] = manualLinkMatch;
+    const pg = storage.getPool ? storage.getPool() : null;
+    if (!pg) return json(res, 503, { error: 'Banco não disponível.' });
+
+    const delivery = (await pg.query('SELECT * FROM portal_entregas WHERE id=$1 LIMIT 1', [entregaId])).rows[0];
+    if (!delivery) return json(res, 404, { error: 'Entrega não encontrada.' });
+    if (!(await userCanAccessPortalDelivery(user, delivery))) return json(res, 403, { error: 'Acesso não autorizado.' });
+
+    const guest = (await pg.query(
+      `SELECT g.*, v.version_number
+         FROM portal_entrega_convidados g
+         JOIN portal_entrega_versions v ON v.id=g.version_id
+        WHERE g.id=$1 AND g.entrega_id=$2
+        LIMIT 1`,
+      [convidadoId, entregaId]
+    )).rows[0];
+
+    if (!guest || Number(guest.version_number) !== Number(delivery.current_version)) {
+      return json(res, 409, { error: 'Este validador não pertence à versão atual.' });
+    }
+
+    const { token, tokenHash } = createGuestToken();
+    await pg.query(
+      `UPDATE portal_entrega_convidados
+          SET token_hash=$2, revoked_at=NULL, expires_at=NOW()+INTERVAL '30 days', invited_at=NOW()
+        WHERE id=$1`,
+      [guest.id, tokenHash]
+    );
+
+    const accessLink = `${portalBaseUrl(req)}/validar/${token}`;
+
+    await recordPortalAudit(pg, req, {
+      entregaId,
+      versionId:guest.version_id,
+      actorType:'ckm',
+      actorId:user.id,
+      action:'link_manual_gerado',
+      details:{ convidadoId:guest.id, email:guest.email }
+    });
+
+    return json(res, 200, {
+      ok:true,
+      link:accessLink,
+      nome:guest.nome,
+      email:guest.email,
+      expiresAt:new Date(Date.now() + 30*24*60*60*1000).toISOString()
+    });
+  }
+
   const guestAccessMatch = url.pathname.match(/^\/entregas\/([0-9a-f-]{36})\/convidados\/([0-9a-f-]{36})\/(reemitir|revogar)$/i);
   if (req.method === 'POST' && guestAccessMatch) {
     const [, entregaId, convidadoId, action] = guestAccessMatch;
@@ -5118,8 +5169,19 @@ const server = http.createServer(async (req, res) => {
         <td>${state}</td>
         <td>${g.last_access_at ? escapeHtml(new Date(g.last_access_at).toLocaleString('pt-BR')) : '-'}</td>
         <td>${g.revoked_at ? 'Revogado' : g.expires_at && new Date(g.expires_at).getTime() <= Date.now() ? 'Expirado' : 'Ativo até ' + escapeHtml(new Date(g.expires_at).toLocaleDateString('pt-BR'))}</td>
-        <td><form method='post' action='/entregas/${entregaId}/convidados/${encodeURIComponent(g.id)}/reemitir' style='display:inline'><button type='submit' class='btn-outline'>Emitir novo link</button></form>
-        ${g.revoked_at ? '' : `<form method='post' action='/entregas/${entregaId}/convidados/${encodeURIComponent(g.id)}/revogar' style='display:inline'><button type='submit' class='btn-outline'>Revogar link</button></form>`}</td>
+        <td>
+          <div style='display:flex;gap:.35rem;flex-wrap:wrap'>
+            <form method='post' action='/entregas/${entregaId}/convidados/${encodeURIComponent(g.id)}/reemitir' style='display:inline'>
+              <button type='submit' class='btn-outline'>Reenviar por e-mail</button>
+            </form>
+            <button type='button' class='btn-outline'
+              onclick='gerarLinkManual("${entregaId}","${encodeURIComponent(g.id)}","${escapeHtml(String(g.nome || "").replace(/"/g,"&quot;"))}","${escapeHtml(String(g.email || "").replace(/"/g,"&quot;"))}",this)'>
+              Gerar link manual
+            </button>
+            ${g.revoked_at ? '' : `<form method='post' action='/entregas/${entregaId}/convidados/${encodeURIComponent(g.id)}/revogar' style='display:inline'><button type='submit' class='btn-outline'>Revogar link</button></form>`}
+          </div>
+          <div class='manual-link-area' style='display:none;margin-top:.45rem'></div>
+        </td>
       </tr>`;
     }).join('');
 
@@ -5239,6 +5301,61 @@ const server = http.createServer(async (req, res) => {
           </form>` : ''}
         ${historicoConversasInternoHtml}
       </section>
+
+
+      <script>
+      async function gerarLinkManual(entregaId, convidadoId, nome, email, botao) {
+        if (!confirm('Gerar um novo link manual? O link anterior deste validador deixará de funcionar.')) return;
+        const area = botao.closest('td').querySelector('.manual-link-area');
+        botao.disabled = true;
+        botao.textContent = 'Gerando...';
+        try {
+          const r = await fetch('/entregas/' + encodeURIComponent(entregaId) + '/convidados/' + encodeURIComponent(convidadoId) + '/gerar-link', {
+            method:'POST',
+            headers:{'Accept':'application/json'}
+          });
+          const data = await r.json();
+          if (!r.ok || data.error) throw new Error(data.error || 'Não foi possível gerar o link.');
+
+          const mensagem = 'Olá, ' + (data.nome || nome || '') + '. Segue seu link individual para análise e validação dos documentos da CKM Talents: ' + data.link;
+          area.style.display = 'block';
+          area.innerHTML =
+            '<div style="padding:.55rem;border:1px solid #c7d2fe;background:#f8faff;border-radius:8px">' +
+              '<div style="font-size:.7rem;font-weight:700;margin-bottom:.3rem">LINK INDIVIDUAL GERADO</div>' +
+              '<input class="manual-link-input" readonly value="' + data.link.replace(/&/g,'&amp;').replace(/"/g,'&quot;') + '" style="width:100%;font-size:.72rem;margin-bottom:.4rem">' +
+              '<div style="display:flex;gap:.35rem;flex-wrap:wrap">' +
+                '<button type="button" class="btn-outline btn-copy">Copiar link</button>' +
+                '<a class="btn-outline btn-whatsapp" target="_blank" rel="noopener" style="text-decoration:none">WhatsApp</a>' +
+                '<a class="btn-outline btn-email" style="text-decoration:none">E-mail</a>' +
+              '</div>' +
+              '<div style="font-size:.68rem;color:#64748b;margin-top:.35rem">Este novo link substitui qualquer link anterior deste validador.</div>' +
+            '</div>';
+
+          const input = area.querySelector('.manual-link-input');
+          area.querySelector('.btn-copy').onclick = async function() {
+            try {
+              await navigator.clipboard.writeText(data.link);
+              this.textContent = 'Copiado';
+            } catch {
+              input.select();
+              document.execCommand('copy');
+              this.textContent = 'Copiado';
+            }
+          };
+          area.querySelector('.btn-whatsapp').href = 'https://wa.me/?text=' + encodeURIComponent(mensagem);
+          area.querySelector('.btn-email').href =
+            'mailto:' + encodeURIComponent(data.email || email || '') +
+            '?subject=' + encodeURIComponent('Documentos para análise — CKM Talents') +
+            '&body=' + encodeURIComponent(mensagem);
+        } catch (e) {
+          area.style.display = 'block';
+          area.innerHTML = '<div style="padding:.5rem;border-radius:8px;background:#fef2f2;color:#991b1b">' + String(e.message || e) + '</div>';
+        } finally {
+          botao.disabled = false;
+          botao.textContent = 'Gerar link manual';
+        }
+      }
+      </script>
 
       ${canNewVersion ? `
       <section style='border:2px solid #f59e0b;background:#fffbeb'>
