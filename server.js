@@ -1078,48 +1078,82 @@ function serveStatic(req, res) {
 }
 
 function page(title, body, user, activePage) {
-  let navLinks = [];
-  if (user) {
-    if (isDeliveryConsultant(user)) {
-      navLinks = [
-        ['/entregas', 'Entregas e Validações', ''],
-        ['/logout', 'Sair', 'sair'],
-      ];
-    } else {
-      navLinks = [
-        ['/', 'Home', ''],
-        ['/upload', 'Upload', ''],
-        ['/fatura', 'Fatura', ''],
-        ['/lancamentos', '✏ Lançamentos', ''],
-        ['/historico', 'Histórico', ''],
-        ['/dashboard', 'Dashboard', ''],
-        ['/cadastros-mestres', '⚙ Cadastros', 'nav-cad'],
-        ['/contratos', '📋 Contratos', ''],
-        ['/entregas', 'Entregas e Validações', ''],
-        ...(isOwnerUser(user) ? [['/acessos', 'Usuários e Acessos', '']] : []),
-        ['/contas', '💰 Contas', ''],
-        ['/conciliacao', '🏦 Conciliação', ''],
-        ['/ia', '🤖 IA', 'nav-ia'],
-        ['/relatorio', '📄 Relatórios', 'nav-rel'],
-        ['/extrato', '📊 Extrato CC', ''],
-        ['/logout', 'Sair', 'sair'],
-      ];
-    }
-  }
-  const nav = navLinks.map(([href, label, cls]) =>
-    `<a href='${href}' class='${cls}${activePage === href ? ' active' : ''}'>${label}</a>`
-  ).join('');
   const homeHref = isDeliveryConsultant(user) ? '/entregas' : '/';
   const systemLabel = isDeliveryConsultant(user) ? 'Portal de Entregas' : 'Sistema Financeiro';
-  return `<!doctype html><html lang='pt-BR'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>${title} — CKM</title><link rel='preconnect' href='https://fonts.googleapis.com'><link rel='stylesheet' href='https://fonts.googleapis.com/css2?family=Poppins:wght@400;600;700&family=Inter:wght@400;500;600&family=Sora:wght@400;700&display=swap'><link rel='stylesheet' href='/public/style.css'></head><body>
-<header>
+
+  const linkHtml = (href, label, icon='') =>
+    `<a href='${href}' class='sidebar-link${activePage === href ? ' active' : ''}'><span class='sidebar-icon'>${icon}</span><span>${label}</span></a>`;
+
+  let sidebarGroups = '';
+  if (user) {
+    if (isDeliveryConsultant(user)) {
+      sidebarGroups = `
+        <div class='sidebar-group'>
+          <div class='sidebar-group-title'>Documentos</div>
+          ${linkHtml('/entregas', 'Entregas e Validações', '▣')}
+        </div>
+      `;
+    } else {
+      sidebarGroups = `
+        <div class='sidebar-group'>
+          <div class='sidebar-group-title'>Visão Geral</div>
+          ${linkHtml('/', 'Home', '⌂')}
+          ${linkHtml('/dashboard', 'Dashboard', '▥')}
+        </div>
+        <div class='sidebar-group'>
+          <div class='sidebar-group-title'>Financeiro</div>
+          ${linkHtml('/upload', 'Upload', '↑')}
+          ${linkHtml('/fatura', 'Fatura', '▤')}
+          ${linkHtml('/lancamentos', 'Lançamentos', '✎')}
+          ${linkHtml('/historico', 'Histórico', '◷')}
+          ${linkHtml('/contas', 'Contas', '$')}
+          ${linkHtml('/conciliacao', 'Conciliação', '⇄')}
+          ${linkHtml('/extrato', 'Extrato CC', '▦')}
+        </div>
+        <div class='sidebar-group'>
+          <div class='sidebar-group-title'>Gestão</div>
+          ${linkHtml('/cadastros-mestres', 'Cadastros', '⚙')}
+          ${linkHtml('/contratos', 'Contratos', '▧')}
+          ${linkHtml('/entregas', 'Entregas e Validações', '✓')}
+        </div>
+        <div class='sidebar-group'>
+          <div class='sidebar-group-title'>Análises</div>
+          ${linkHtml('/ia', 'IA', '◇')}
+          ${linkHtml('/relatorio', 'Relatórios', '▤')}
+        </div>
+        ${isFinancialAdmin(user) ? `
+        <div class='sidebar-group'>
+          <div class='sidebar-group-title'>Administração</div>
+          ${linkHtml('/acessos', 'Usuários e Acessos', '♙')}
+        </div>` : ''}
+      `;
+    }
+  }
+
+  return `<!doctype html><html lang='pt-BR'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>${title} — CKM</title><link rel='preconnect' href='https://fonts.googleapis.com'><link rel='stylesheet' href='https://fonts.googleapis.com/css2?family=Poppins:wght@400;600;700&family=Inter:wght@400;500;600&family=Sora:wght@400;700&display=swap'><link rel='stylesheet' href='/public/style.css'></head><body class='app-shell'>
+<header class='app-topbar'>
+  <button type='button' class='sidebar-toggle' aria-label='Abrir menu' onclick='document.body.classList.toggle("sidebar-open")'>☰</button>
   <a href='${homeHref}' class='header-logo'>
     <img src='/public/logo-branco.png' alt='Eco do Bem' onerror="this.style.display='none'">
     <div class='header-logo-text'><span>CKM Talents</span><span>${systemLabel}</span></div>
   </a>
-  ${user ? `<nav>${nav}</nav>` : ''}
+  ${user ? `<div class='topbar-user'><span>${escapeHtml(user.name || user.email || '')}</span></div>` : ''}
 </header>
-<main>${body}</main></body></html>`;
+${user ? `
+<aside class='app-sidebar'>
+  <div class='sidebar-scroll'>${sidebarGroups}</div>
+  <div class='sidebar-footer'>
+    ${linkHtml('/logout', 'Sair', '↪')}
+  </div>
+</aside>
+<div class='sidebar-backdrop' onclick='document.body.classList.remove("sidebar-open")'></div>` : ''}
+<main class='app-main'>${body}</main>
+<script>
+  document.querySelectorAll('.app-sidebar a').forEach(function(a){
+    a.addEventListener('click', function(){ document.body.classList.remove('sidebar-open'); });
+  });
+</script>
+</body></html>`;
 }
 
 const TYPE_GUIDE = {
@@ -5059,7 +5093,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method === 'GET' && url.pathname === '/acessos') {
-    if (!isOwnerUser(user)) {
+    if (!isFinancialAdmin(user)) {
       res.writeHead(403, { 'Content-Type': 'text/html; charset=utf-8' });
       res.end(page('Acesso negado', '<h2>Acesso não autorizado</h2>', user, ''));
       return;
@@ -5195,7 +5229,7 @@ const server = http.createServer(async (req, res) => {
 
     const body = `
       <h2 class='page-title'>Usuários e Acessos</h2>
-      <p style='color:var(--gray-600);font-size:.9rem'>Gerencie os acessos ao Sistema Financeiro e ao Portal de Entregas. Somente o perfil proprietário (owner) pode criar ou alterar administradores.</p>
+      <p style='color:var(--gray-600);font-size:.9rem'>Gerencie consultores e seus vínculos de cliente/projeto. A criação e alteração de administradores permanece exclusiva do proprietário (owner).</p>
       <div style='display:flex;gap:.75rem;flex-wrap:wrap;margin:1rem 0'>
         <span class='badge ${isSmtpConfigured() ? "badge-green" : "badge-amber"}'>SMTP: ${isSmtpConfigured() ? "configurado" : "pendente"}</span>
         <span class='badge ${isR2Configured() ? "badge-green" : "badge-amber"}'>R2 privado: ${isR2Configured() ? "configurado" : "pendente"}</span>
@@ -5221,6 +5255,7 @@ const server = http.createServer(async (req, res) => {
       ${url.searchParams.get('adminStatus') ? "<div style='margin:1rem 0;padding:.75rem;background:#ecfdf5;color:#065f46;border:1px solid #a7f3d0;border-radius:.5rem'>Situação do administrador atualizada.</div>" : ''}
       ${url.searchParams.get('adminConvite') === 'reenviado' ? "<div style='margin:1rem 0;padding:.75rem;background:#ecfdf5;color:#065f46;border:1px solid #a7f3d0;border-radius:.5rem'>Convite do administrador reenviado com novo link de ativação.</div>" : ''}
       ${url.searchParams.get('adminConvite') === 'smtp' ? "<div style='margin:1rem 0;padding:.75rem;background:#fff7ed;color:#9a3412;border:1px solid #fdba74;border-radius:.5rem'>Não foi possível reenviar o convite do administrador: SMTP ainda não está configurado.</div>" : ''}
+      ${isOwnerUser(user) ? `
       <section>
         <h2>Novo administrador</h2>
         <p style='color:#64748b;font-size:.84rem;margin-top:-.35rem'>O administrador terá acesso às áreas financeiras e ao Gerenciamento de Documentos. A gestão de usuários continuará exclusiva do proprietário.</p>
@@ -5234,6 +5269,8 @@ const server = http.createServer(async (req, res) => {
         <h2>Administradores cadastrados</h2>
         ${adminCards || "<p style='color:#64748b'>Nenhum administrador cadastrado.</p>"}
       </section>
+
+      ` : ''}
       <section>
         <h2>Novo consultor de entregas</h2>
         <form method='post' action='/acessos/consultor' style='display:grid;grid-template-columns:1fr 1fr auto;gap:.75rem;align-items:end'>
@@ -5254,7 +5291,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method === 'POST' && url.pathname === '/acessos/testar-email') {
-    if (!isOwnerUser(user)) return json(res, 403, { error: 'Acesso não autorizado.' });
+    if (!isFinancialAdmin(user)) return json(res, 403, { error: 'Acesso não autorizado.' });
     const form = new URLSearchParams(await readBody(req));
     const email = String(form.get('email') || '').trim().toLowerCase();
     if (!email || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
@@ -5267,7 +5304,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method === 'POST' && url.pathname === '/acessos/consultor-status') {
-    if (!isOwnerUser(user)) return json(res, 403, { error: 'Acesso não autorizado.' });
+    if (!isFinancialAdmin(user)) return json(res, 403, { error: 'Acesso não autorizado.' });
 
     const form = new URLSearchParams(await readBody(req));
     const consultantId = String(form.get('consultantId') || '').trim();
@@ -5301,7 +5338,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method === 'POST' && url.pathname === '/acessos/consultor-reenviar-convite') {
-    if (!isOwnerUser(user)) return json(res, 403, { error: 'Acesso não autorizado.' });
+    if (!isFinancialAdmin(user)) return json(res, 403, { error: 'Acesso não autorizado.' });
 
     if (!isSmtpConfigured()) {
       res.writeHead(302, { Location: '/acessos?convite=smtp' });
@@ -5336,7 +5373,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method === 'POST' && url.pathname === '/acessos/consultor-clientes') {
-    if (!isOwnerUser(user)) return json(res, 403, { error: 'Acesso não autorizado.' });
+    if (!isFinancialAdmin(user)) return json(res, 403, { error: 'Acesso não autorizado.' });
     const pg = storage.getPool ? storage.getPool() : null;
     if (!pg) return json(res, 503, { error: 'Banco não disponível.' });
 
@@ -5516,7 +5553,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method === 'POST' && url.pathname === '/acessos/consultor') {
-    if (!isOwnerUser(user)) return json(res, 403, { error: 'Acesso não autorizado.' });
+    if (!isFinancialAdmin(user)) return json(res, 403, { error: 'Acesso não autorizado.' });
 
     const form = new URLSearchParams(await readBody(req));
     const name = String(form.get('name') || '').trim();
