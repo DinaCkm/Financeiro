@@ -243,6 +243,25 @@ function createPostgresStorage(databaseUrl) {
         declaration_text TEXT NOT NULL,
         validated_at TIMESTAMPTZ NOT NULL DEFAULT now()
       );
+      CREATE TABLE IF NOT EXISTS portal_entrega_signatures (
+        id TEXT PRIMARY KEY,
+        entrega_id TEXT NOT NULL,
+        version_id TEXT NOT NULL,
+        convidado_id TEXT NOT NULL,
+        security_code TEXT NOT NULL UNIQUE,
+        signature_hash TEXT NOT NULL UNIQUE,
+        file_hash TEXT NOT NULL,
+        validator_name TEXT NOT NULL,
+        validator_email TEXT NOT NULL,
+        validator_cpf TEXT NOT NULL,
+        declaration_text TEXT NOT NULL,
+        ip_address TEXT,
+        user_agent TEXT,
+        signed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        UNIQUE (version_id, convidado_id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_portal_signatures_version
+        ON portal_entrega_signatures(version_id, signed_at DESC);
       CREATE TABLE IF NOT EXISTS portal_audit_events (
         id TEXT PRIMARY KEY,
         entrega_id TEXT,
