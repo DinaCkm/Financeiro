@@ -1024,3 +1024,115 @@ body.app-shell {
   .app-topbar .header-logo-text { display: flex; }
   .app-main { padding: 1rem; }
 }
+
+
+/* ── Compactação para layout com menu lateral ── */
+@media (min-width: 981px) {
+  body.app-shell { font-size: 13.5px; }
+
+  .app-main {
+    margin-left: 235px;
+    padding: 1.45rem 1.6rem;
+  }
+
+  .app-sidebar { width: 235px; }
+
+  h2.page-title {
+    font-size: 1.25rem;
+    margin-bottom: 1rem;
+  }
+
+  section {
+    padding: 1.2rem 1.35rem;
+    margin-bottom: 1rem;
+  }
+
+  section h2 {
+    font-size: .95rem;
+    margin-bottom: .9rem;
+    padding-bottom: .55rem;
+  }
+
+  section h3 { font-size: .78rem; }
+
+  .cards {
+    gap: .75rem;
+    margin-bottom: 1.25rem;
+  }
+
+  .card {
+    padding: .8rem .95rem;
+  }
+
+  .card strong { font-size: .64rem; }
+  .card span { font-size: clamp(.9rem, 1.55vw, 1.35rem); }
+
+  table {
+    font-size: .76rem;
+  }
+
+  thead th {
+    padding: .55rem .65rem;
+    font-size: .62rem;
+    white-space: normal;
+    line-height: 1.25;
+  }
+
+  tbody td {
+    padding: .52rem .65rem;
+    line-height: 1.35;
+  }
+
+  label { font-size: .78rem; }
+
+  input, select, textarea {
+    font-size: .82rem;
+    padding: .52rem .7rem;
+  }
+
+  button, .btn {
+    font-size: .8rem;
+    padding: .52rem .9rem;
+  }
+
+  .badge {
+    font-size: .62rem;
+    padding: .18rem .5rem;
+  }
+
+  .metric-label { font-size: .64rem; }
+  .metric-value { font-size: 1.18rem; }
+
+  .form-grid {
+    grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+    gap: .75rem;
+    margin-bottom: .9rem;
+  }
+
+  .sidebar-link {
+    font-size: .77rem;
+    padding: .5rem .65rem;
+  }
+
+  .sidebar-group-title { font-size: .6rem; }
+  .sidebar-icon { font-size: .86rem; }
+
+  .header-logo img { height: 32px; }
+  .header-logo-text span:first-child { font-size: .66rem; }
+  .header-logo-text span:last-child { font-size: .88rem; }
+  .topbar-user { font-size: .76rem; }
+
+  .app-main > section,
+  .app-main > div,
+  .app-main > form {
+    min-width: 0;
+  }
+
+  .app-main table {
+    table-layout: auto;
+  }
+
+  .app-main [style*="overflow-x:auto"] {
+    max-width: 100%;
+  }
+}
