@@ -3413,6 +3413,7 @@ const server = http.createServer(async (req, res) => {
           <td>${escapeHtml(e.contrato_numero || '-')}</td>
           <td><span class='badge ${statusClass}'>${statusLabel}</span></td>
           <td>${e.sent_at ? escapeHtml(new Date(e.sent_at).toLocaleString('pt-BR')) : '-'}</td>
+          <td><a href='/entregas/${encodeURIComponent(e.id)}#novo-documento' class='btn-outline' style='display:inline-block;text-decoration:none;white-space:nowrap'>+ Documento</a></td>
         </tr>
       `;
     }).join('');
@@ -3478,8 +3479,8 @@ const server = http.createServer(async (req, res) => {
     <h2>Entregas</h2>
     <div style='overflow-x:auto'>
       <table>
-        <thead><tr><th>Documento</th><th>Cliente</th><th>Projeto</th><th>Contrato</th><th>Status</th><th>Enviado em</th></tr></thead>
-        <tbody>${rows || "<tr><td colspan='6'>Nenhuma entrega cadastrada.</td></tr>"}</tbody>
+        <thead><tr><th>Documento</th><th>Cliente</th><th>Projeto</th><th>Contrato</th><th>Status</th><th>Enviado em</th><th>Ações</th></tr></thead>
+        <tbody>${rows || "<tr><td colspan='7'>Nenhuma entrega cadastrada.</td></tr>"}</tbody>
       </table>
     </div>
   </section>
@@ -4695,6 +4696,267 @@ const server = http.createServer(async (req, res) => {
   }
 
 
+
+  const addDocumentsMatch = url.pathname.match(/^\/api\/entregas\/([0-9a-f-]{36})\/adicionar-documentos$/i);
+  if (req.method === 'POST' && addDocumentsMatch) {
+    const entregaReferenciaId = addDocumentsMatch[1];
+    const pg = storage.getPool ? storage.getPool() : null;
+    if (!pg) return json(res, 503, { error: 'Banco não disponível.' });
+
+    const entrega = (await pg.query('SELECT * FROM portal_entregas WHERE id=$1 LIMIT 1', [entregaReferenciaId])).rows[0];
+    if (!entrega) return json(res, 404, { error: 'Entrega de referência não encontrada.' });
+    if (!(await userCanAccessPortalDelivery(user, entrega))) return json(res, 403, { error: 'Acesso não autorizado.' });
+    if (!entrega.projeto_id) return json(res, 409, { error: 'Esta entrega não está vinculada a um projeto.' });
+    if (!isR2Configured()) return json(res, 503, { error: 'Armazenamento seguro de documentos não está configurado.' });
+
+    let body;
+    try { body = JSON.parse(await readBody(req) || '{}'); }
+    catch { return json(res, 400, { error: 'Dados inválidos.' }); }
+
+    const descricao = String(body.descricao || entrega.descricao || '').trim() || 'Documento adicional do projeto.';
+    const documentos = Array.isArray(body.documentos) ? body.documentos : [];
+    if (!documentos.length) return json(res, 400, { error: 'Selecione pelo menos um PDF.' });
+    if (documentos.length > 20) return json(res, 400, { error: 'Envie no máximo 20 documentos por vez.' });
+
+    const prepared = [];
+    let totalBytes = 0;
+    for (const doc of documentos) {
+      const titulo = String(doc.titulo || '').trim().slice(0,255);
+      const fileName = String(doc.fileName || '').trim();
+      const fileType = String(doc.fileType || 'application/pdf').trim();
+      if (!titulo || !fileName || !doc.fileBase64) return json(res, 400, { error: 'Todos os documentos precisam ter nome e arquivo PDF.' });
+      if (!fileName.toLowerCase().endsWith('.pdf') && fileType !== 'application/pdf') return json(res, 400, { error: 'Todos os arquivos devem ser PDFs.' });
+      let fileBuffer;
+      try { fileBuffer = Buffer.from(String(doc.fileBase64), 'base64'); }
+      catch { return json(res, 400, { error: 'Um dos arquivos é inválido.' }); }
+      if (!fileBuffer.length || fileBuffer.length > 15*1024*1024 || fileBuffer.subarray(0,4).toString() !== '%PDF') {
+        return json(res, 400, { error: `O arquivo "${fileName}" é inválido ou ultrapassa 15 MB.` });
+      }
+      totalBytes += fileBuffer.length;
+      prepared.push({ titulo, fileName, fileBuffer });
+    }
+    if (totalBytes > 60*1024*1024) return json(res, 400, { error: 'O conjunto de arquivos deve ter no máximo 60 MB.' });
+
+    let loteId = entrega.lote_id || null;
+
+    // Se a entrega antiga não nasceu em lote, cria um pacote para o projeto
+    // e coloca nele as entregas ainda em análise do mesmo projeto.
+    if (!loteId) {
+      loteId = crypto.randomUUID();
+      const client = await pg.connect();
+      try {
+        await client.query('BEGIN');
+        await client.query(`
+          CREATE TABLE IF NOT EXISTS portal_entrega_lotes (
+            id TEXT PRIMARY KEY,
+            cliente_id INTEGER NOT NULL,
+            projeto_id INTEGER,
+            contrato_id INTEGER,
+            descricao TEXT,
+            responsavel_user_id TEXT NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+          )
+        `);
+        await client.query(`
+          CREATE TABLE IF NOT EXISTS portal_lote_convidados (
+            id TEXT PRIMARY KEY,
+            lote_id TEXT NOT NULL,
+            nome TEXT NOT NULL,
+            email TEXT NOT NULL,
+            token_hash TEXT NOT NULL UNIQUE,
+            status TEXT NOT NULL DEFAULT 'convidado',
+            invited_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            first_access_at TIMESTAMPTZ,
+            last_access_at TIMESTAMPTZ,
+            expires_at TIMESTAMPTZ NOT NULL,
+            revoked_at TIMESTAMPTZ,
+            cargo TEXT,
+            telefone TEXT,
+            cadastro_em TIMESTAMPTZ,
+            UNIQUE (lote_id, email)
+          )
+        `);
+        await client.query("ALTER TABLE portal_entregas ADD COLUMN IF NOT EXISTS lote_id TEXT");
+        await client.query(
+          `INSERT INTO portal_entrega_lotes
+            (id, cliente_id, projeto_id, contrato_id, descricao, responsavel_user_id, created_at)
+           VALUES ($1,$2,$3,$4,$5,$6,NOW())`,
+          [loteId, entrega.cliente_id, entrega.projeto_id, entrega.contrato_id, descricao, entrega.responsavel_user_id || user.id]
+        );
+        await client.query(
+          `UPDATE portal_entregas
+              SET lote_id=$1
+            WHERE cliente_id=$2 AND projeto_id=$3
+              AND status NOT IN ('cancelado') AND lote_id IS NULL`,
+          [loteId, entrega.cliente_id, entrega.projeto_id]
+        );
+
+        const validators = (await client.query(
+          `SELECT DISTINCT ON (lower(g.email)) g.nome, lower(g.email) AS email
+             FROM portal_entrega_convidados g
+             JOIN portal_entregas e ON e.id=g.entrega_id
+            WHERE e.cliente_id=$1 AND e.projeto_id=$2
+              AND e.status NOT IN ('cancelado')
+              AND g.email IS NOT NULL
+            ORDER BY lower(g.email), g.invited_at DESC`,
+          [entrega.cliente_id, entrega.projeto_id]
+        )).rows;
+
+        for (const v of validators) {
+          const { tokenHash } = createGuestToken();
+          await client.query(
+            `INSERT INTO portal_lote_convidados
+              (id, lote_id, nome, email, token_hash, status, invited_at, expires_at)
+             VALUES ($1,$2,$3,$4,$5,'convidado',NOW(),NOW()+INTERVAL '30 days')
+             ON CONFLICT (lote_id, email) DO NOTHING`,
+            [crypto.randomUUID(), loteId, v.nome, v.email, tokenHash]
+          );
+        }
+        await client.query('COMMIT');
+      } catch(e) {
+        await client.query('ROLLBACK');
+        return json(res, 500, { error: 'Não foi possível preparar o pacote do projeto: ' + e.message });
+      } finally {
+        client.release();
+      }
+    }
+
+    // Validadores do pacote atual (fonte principal).
+    let validators = (await pg.query(
+      `SELECT nome, lower(email) AS email
+         FROM portal_lote_convidados
+        WHERE lote_id=$1 AND revoked_at IS NULL
+        ORDER BY invited_at`,
+      [loteId]
+    )).rows;
+
+    // Fallback para projetos/lotes antigos sem convidados de pacote.
+    if (!validators.length) {
+      validators = (await pg.query(
+        `SELECT DISTINCT ON (lower(g.email)) g.nome, lower(g.email) AS email
+           FROM portal_entrega_convidados g
+           JOIN portal_entregas e ON e.id=g.entrega_id
+          WHERE e.lote_id=$1 AND g.email IS NOT NULL
+          ORDER BY lower(g.email), g.invited_at DESC`,
+        [loteId]
+      )).rows;
+    }
+    if (!validators.length) return json(res, 409, { error: 'Não foi possível localizar os validadores do projeto.' });
+
+    const now = new Date().toISOString();
+    const created = [];
+    const uploadedKeys = [];
+    try {
+      for (const doc of prepared) {
+        const entregaId = crypto.randomUUID();
+        const versionId = crypto.randomUUID();
+        const fileHash = crypto.createHash('sha256').update(doc.fileBuffer).digest('hex');
+        const storageKey = `portal-entregas/${entregaId}/v1-${versionId}.pdf`;
+        await putPrivateObject(storageKey, doc.fileBuffer, 'application/pdf');
+        uploadedKeys.push(storageKey);
+        created.push({ ...doc, entregaId, versionId, fileHash, storageKey });
+      }
+    } catch(e) {
+      for (const key of uploadedKeys) deletePrivateObject(key).catch(() => {});
+      return json(res, 503, { error: 'Não foi possível armazenar todos os documentos com segurança.' });
+    }
+
+    const client = await pg.connect();
+    try {
+      await client.query('BEGIN');
+
+      for (const doc of created) {
+        await client.query(
+          `INSERT INTO portal_entregas
+            (id, cliente_id, projeto_id, contrato_id, titulo, descricao, responsavel_user_id, status, current_version, created_at, sent_at, lote_id)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,'aguardando_cliente',1,$8,$8,$9)`,
+          [doc.entregaId, entrega.cliente_id, entrega.projeto_id, entrega.contrato_id, doc.titulo, descricao, entrega.responsavel_user_id || user.id, now, loteId]
+        );
+        await client.query(
+          `INSERT INTO portal_entrega_versions
+            (id, entrega_id, version_number, file_name, mime_type, file_size, file_hash, storage_key, file_data, uploaded_by, uploaded_at, status)
+           VALUES ($1,$2,1,$3,'application/pdf',$4,$5,$6,$7,$8,$9,'aguardando_cliente')`,
+          [doc.versionId, doc.entregaId, doc.fileName, doc.fileBuffer.length, doc.fileHash, doc.storageKey, Buffer.alloc(0), user.id, now]
+        );
+        for (const v of validators) {
+          const { tokenHash } = createGuestToken();
+          await client.query(
+            `INSERT INTO portal_entrega_convidados
+              (id, entrega_id, version_id, nome, email, can_comment, can_request_changes, can_validate, token_hash, status, invited_at, expires_at)
+             VALUES ($1,$2,$3,$4,$5,true,true,true,$6,'convidado',$7::timestamptz,$7::timestamptz + INTERVAL '30 days')`,
+            [crypto.randomUUID(), doc.entregaId, doc.versionId, v.nome, v.email, tokenHash, now]
+          );
+        }
+      }
+      await client.query('COMMIT');
+    } catch(e) {
+      await client.query('ROLLBACK');
+      for (const key of uploadedKeys) deletePrivateObject(key).catch(() => {});
+      return json(res, 500, { error: 'Não foi possível adicionar os documentos ao projeto: ' + e.message });
+    } finally {
+      client.release();
+    }
+
+    for (const doc of created) {
+      await recordPortalAudit(pg, req, {
+        entregaId:doc.entregaId,
+        versionId:doc.versionId,
+        actorType:'ckm',
+        actorId:user.id,
+        action:'documento_adicionado_projeto_existente',
+        details:{ projetoId:entrega.projeto_id, loteId, referenciaId:entregaReferenciaId, fileHash:doc.fileHash }
+      });
+    }
+
+    // Reemite um único link do pacote por validador, para que o novo documento
+    // apareça no mesmo acesso que já reúne os demais documentos do projeto.
+    const baseUrl = portalBaseUrl(req);
+    for (const v of validators) {
+      const packageToken = createGuestToken();
+      const existingPackage = (await pg.query(
+        'SELECT id FROM portal_lote_convidados WHERE lote_id=$1 AND lower(email)=lower($2) LIMIT 1',
+        [loteId, v.email]
+      )).rows[0];
+      if (existingPackage) {
+        await pg.query(
+          `UPDATE portal_lote_convidados
+              SET nome=$2, token_hash=$3, status='convidado', invited_at=NOW(),
+                  expires_at=NOW()+INTERVAL '30 days', revoked_at=NULL
+            WHERE id=$1`,
+          [existingPackage.id, v.nome, packageToken.tokenHash]
+        );
+      } else {
+        await pg.query(
+          `INSERT INTO portal_lote_convidados
+            (id, lote_id, nome, email, token_hash, status, invited_at, expires_at)
+           VALUES ($1,$2,$3,$4,$5,'convidado',NOW(),NOW()+INTERVAL '30 days')`,
+          [crypto.randomUUID(), loteId, v.nome, v.email, packageToken.tokenHash]
+        );
+      }
+      sendPortalNotificationEmail({
+        to:v.email,
+        subject:`Novo(s) documento(s) para análise — ${created.length} adicionado(s)`,
+        title:'Novos documentos adicionados ao projeto',
+        lines:[
+          `Olá, ${v.nome}.`,
+          `${created.length} novo(s) documento(s) foram incluídos no projeto para sua análise.`,
+          'O link abaixo abre o mesmo pacote de documentos e já inclui os novos arquivos.'
+        ],
+        actionLabel:'Acessar documentos',
+        actionLink:`${baseUrl}/validar-lote/${encodeURIComponent(packageToken.token)}`
+      }).catch(e => console.warn('[entregas] Falha ao avisar validador sobre novo documento:', e.message));
+    }
+
+    return json(res, 200, {
+      ok:true,
+      criados:created.length,
+      projetoId:entrega.projeto_id,
+      loteId,
+      validadores:validators.length
+    });
+  }
+
+
   const addValidatorMatch = url.pathname.match(/^\/entregas\/([0-9a-f-]{36})\/adicionar-validador$/i);
   if (req.method === 'POST' && addValidatorMatch) {
     const entregaId = addValidatorMatch[1];
@@ -5249,6 +5511,100 @@ const server = http.createServer(async (req, res) => {
           <div><strong>Versão atual</strong><div>V${Number(entrega.current_version)}</div></div>
         </div>
       </section>
+
+      <section id='novo-documento' style='border:2px solid #c7d2fe;background:#f8faff'>
+        <div style='display:flex;justify-content:space-between;align-items:flex-start;gap:1rem;flex-wrap:wrap'>
+          <div>
+            <div style='font-size:.72rem;font-weight:700;letter-spacing:.06em;color:#4338ca;text-transform:uppercase'>Projeto existente</div>
+            <h2 style='margin:.3rem 0'>Adicionar novos documentos</h2>
+            <p style='margin:.25rem 0;color:#475569;font-size:.85rem'>
+              Os novos PDFs serão incluídos em <strong>${escapeHtml(entrega.projeto_nome || 'este projeto')}</strong>
+              ${entrega.lote_id ? 'e no mesmo pacote de validação' : ''}. Os validadores atuais serão reaproveitados automaticamente.
+            </p>
+          </div>
+        </div>
+        ${!entrega.projeto_id ? "<div style='margin:.75rem 0;padding:.7rem;border-radius:8px;background:#fff7ed;color:#9a3412;border:1px solid #fdba74'>Esta entrega não está vinculada a um projeto. Vincule-a a um projeto antes de acrescentar documentos por este fluxo.</div>" : `
+          <label style='margin-top:.75rem'>Descrição dos novos documentos
+            <textarea id='add-doc-descricao' rows='3' maxlength='5000'>${escapeHtml(entrega.descricao || '')}</textarea>
+          </label>
+          <label style='margin-top:.75rem'>Novos PDFs *
+            <input id='add-doc-arquivos' type='file' accept='application/pdf,.pdf' multiple onchange='renderizarNovosDocumentos()'>
+          </label>
+          <div id='add-doc-lista' style='margin-top:.65rem'></div>
+          <div style='display:flex;align-items:center;gap:.75rem;flex-wrap:wrap;margin-top:.8rem'>
+            <button id='btn-add-docs' type='button' onclick='adicionarDocumentosAoProjeto()'>Adicionar documentos e manter os mesmos validadores</button>
+            <span style='font-size:.75rem;color:#64748b'>Até 20 PDFs; máximo de 15 MB por arquivo.</span>
+          </div>
+          <div id='add-doc-msg' style='margin-top:.65rem;font-size:.84rem'></div>
+        `}
+      </section>
+
+      ${entrega.projeto_id ? `
+      <script>
+      function tituloNovoDocumento(nome) {
+        return String(nome || '').replace(/\\.pdf$/i,'').replace(/[_-]+/g,' ').replace(/\\s+/g,' ').trim();
+      }
+      function escapeNovoHtml(value) {
+        return String(value || '').replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
+      }
+      function renderizarNovosDocumentos() {
+        const files = [...(document.getElementById('add-doc-arquivos').files || [])];
+        const lista = document.getElementById('add-doc-lista');
+        if (!files.length) { lista.innerHTML=''; return; }
+        lista.innerHTML = files.map((f,i) =>
+          "<div class='add-doc-row' data-index='"+i+"' style='display:grid;grid-template-columns:minmax(220px,1fr) minmax(260px,2fr);gap:.65rem;align-items:end;margin:.45rem 0;padding:.65rem;border:1px solid #e2e8f0;border-radius:10px;background:#fff'>" +
+            "<div><div style='font-size:.72rem;color:#64748b'>Arquivo</div><strong style='font-size:.82rem;word-break:break-word'>"+escapeNovoHtml(f.name)+"</strong><div style='font-size:.7rem;color:#94a3b8'>"+(f.size/1024/1024).toFixed(2)+" MB</div></div>" +
+            "<label style='margin:0'>Nome do documento *<input class='add-doc-titulo' maxlength='255' value='"+escapeNovoHtml(tituloNovoDocumento(f.name))+"' required></label>" +
+          "</div>"
+        ).join('');
+      }
+      async function adicionarDocumentosAoProjeto() {
+        const input = document.getElementById('add-doc-arquivos');
+        const files = [...(input.files || [])];
+        const msg = document.getElementById('add-doc-msg');
+        const btn = document.getElementById('btn-add-docs');
+        const titles = [...document.querySelectorAll('.add-doc-titulo')];
+
+        if (!files.length) { msg.textContent='Selecione pelo menos um PDF.'; msg.style.color='#991b1b'; return; }
+        if (files.length > 20) { msg.textContent='Selecione no máximo 20 documentos por vez.'; msg.style.color='#991b1b'; return; }
+        if (files.some(f => f.size > 15*1024*1024)) { msg.textContent='Cada PDF deve ter no máximo 15 MB.'; msg.style.color='#991b1b'; return; }
+        if (titles.some(t => !t.value.trim())) { msg.textContent='Informe o nome de todos os documentos.'; msg.style.color='#991b1b'; return; }
+
+        btn.disabled=true; btn.textContent='Adicionando...'; msg.style.color='#475569';
+        try {
+          const documentos=[];
+          for (let i=0;i<files.length;i++) {
+            msg.textContent='Preparando documento '+(i+1)+' de '+files.length+'...';
+            const ab=await files[i].arrayBuffer();
+            const bytes=new Uint8Array(ab);
+            let binary='';
+            for (let p=0;p<bytes.length;p+=0x8000) binary += String.fromCharCode(...bytes.subarray(p,p+0x8000));
+            documentos.push({
+              titulo:titles[i].value.trim(),
+              fileName:files[i].name,
+              fileType:files[i].type || 'application/pdf',
+              fileBase64:btoa(binary)
+            });
+          }
+          msg.textContent='Incluindo os documentos no projeto...';
+          const r=await fetch('/api/entregas/${entregaId}/adicionar-documentos',{
+            method:'POST',
+            headers:{'content-type':'application/json'},
+            body:JSON.stringify({
+              descricao:document.getElementById('add-doc-descricao').value.trim(),
+              documentos
+            })
+          });
+          const data=await r.json();
+          if(!r.ok || data.error) throw new Error(data.error || 'Não foi possível adicionar os documentos.');
+          window.location.href='/entregas?loteCriado='+encodeURIComponent(data.criados || documentos.length);
+        } catch(e) {
+          msg.textContent='Erro: '+String(e.message || e); msg.style.color='#991b1b';
+          btn.disabled=false; btn.textContent='Adicionar documentos e manter os mesmos validadores';
+        }
+      }
+      </script>
+      ` : ''}
 
       <section style='border:1px solid #fecaca;background:#fff7f7'>
         <h2 style='color:#991b1b'>Excluir documento</h2>
