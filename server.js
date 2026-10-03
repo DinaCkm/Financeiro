@@ -2395,8 +2395,30 @@ const server = http.createServer(async (req, res) => {
         return;
       }
 
-      if (validatorName.split(' ').filter(Boolean).length < 2 || !isValidCpf(validatorCpf) || !acknowledgement || !noMoreAdjustments) {
-        res.writeHead(302, { Location:`/validar-lote/${token}/documento/${selected.id}?erro=identificacao#validacao` });
+      const invalidName = validatorName.split(' ').filter(Boolean).length < 2;
+      const invalidCpf = !isValidCpf(validatorCpf);
+      const missingDeclarations = !acknowledgement || !noMoreAdjustments;
+      if (invalidName || invalidCpf || missingDeclarations) {
+        const validationErrors = [
+          invalidName ? 'nome' : null,
+          invalidCpf ? 'cpf' : null,
+          missingDeclarations ? 'declaracoes' : null
+        ].filter(Boolean);
+        console.warn('[validar-lote] validacao recusada', {
+          entregaId: selected.id,
+          versionId: selected.version_id,
+          email: pacote.email,
+          motivos: validationErrors
+        });
+        await recordPortalAudit(pg, req, {
+          entregaId:selected.id,
+          versionId:selected.version_id,
+          actorType:'cliente',
+          actorId:selected.convidado_id,
+          action:'validacao_recusada',
+          details:{ email:pacote.email, motivos:validationErrors, via:'pacote' }
+        });
+        res.writeHead(302, { Location:`/validar-lote/${token}/documento/${selected.id}?erro=${encodeURIComponent(validationErrors.join(','))}#validacao` });
         res.end();
         return;
       }
@@ -2587,19 +2609,31 @@ const server = http.createServer(async (req, res) => {
               </div>
             </form>
             ${possuiAjustes ? "<div style='margin-top:12px;padding:10px;border-radius:8px;background:#fff7ed;color:#9a3412'><strong>Esta versão já possui solicitação(ões) de alteração.</strong><br>Você ainda pode registrar outras solicitações ou contribuições acima. A validação ficará disponível novamente quando a CKM publicar a nova versão.</div>" :
-            selected.security_code ? `<div style='margin-top:12px;padding:12px;border-radius:8px;background:#ecfdf5;color:#065f46'>
+            selected.validado_por_mim ? (selected.security_code ? `<div style='margin-top:12px;padding:12px;border-radius:8px;background:#ecfdf5;color:#065f46'>
               <strong>Validação registrada.</strong><br>
               Validador: ${escapeHtml(selected.signature_name || '')}<br>
               CPF: ${escapeHtml(maskCpf(selected.signature_cpf))}<br>
               Registro: <strong>${escapeHtml(selected.security_code)}</strong><br>
               Data: ${escapeHtml(new Date(selected.signed_at).toLocaleString('pt-BR'))}
-            </div>` :
+            </div>` : `<div style='margin-top:12px;padding:12px;border-radius:8px;background:#ecfdf5;color:#065f46'>
+              <strong>Validação já registrada para este e-mail.</strong><br>
+              Não é necessário validar novamente esta versão.
+            </div>`) :
             `<form id='validacao' method='post' action='/validar-lote/${token}/documento/${selected.id}/decisao' style='margin-top:14px;border-top:1px solid #e2e8f0;padding-top:14px'>
               <input type='hidden' name='decision' value='validated'>
               <div style='margin-bottom:10px;padding:10px 12px;border-radius:8px;background:#eff6ff;border:1px solid #bfdbfe;color:#1e3a8a;font-size:13px;line-height:1.5'>
                 <strong>Importante:</strong> valide somente se o documento não tiver mais nenhum ajuste necessário. Caso contrário, registre primeiro a solicitação de alteração acima.
               </div>
-              ${url.searchParams.get('erro') === 'identificacao' ? "<div style='margin-bottom:10px;padding:10px;border-radius:8px;background:#fef2f2;color:#991b1b'>Informe seu nome completo, um CPF válido e confirme as duas declarações.</div>" : ''}
+              ${url.searchParams.get('erro') ? (() => {
+                const erros = String(url.searchParams.get('erro') || '').split(',');
+                const itens = [];
+                if (erros.includes('nome')) itens.push('informe seu nome completo');
+                if (erros.includes('cpf')) itens.push('confira o CPF informado');
+                if (erros.includes('declaracoes')) itens.push('marque as duas confirmações obrigatórias');
+                return itens.length
+                  ? "<div style='margin-bottom:10px;padding:10px;border-radius:8px;background:#fef2f2;color:#991b1b'><strong>A validação não foi registrada.</strong> Por favor, "+escapeHtml(itens.join('; '))+".</div>"
+                  : '';
+              })() : ''}
               <label style='display:block;font-size:13px;font-weight:700;margin:8px 0 4px'>Nome completo *</label>
               <input name='validatorName' required maxlength='150' value='${escapeHtml(pacote.nome || '')}' style='width:100%;padding:10px;border:1px solid #cbd5e1;border-radius:8px'>
               <label style='display:block;font-size:13px;font-weight:700;margin:8px 0 4px'>CPF *</label>
@@ -3492,20 +3526,21 @@ const server = http.createServer(async (req, res) => {
           SELECT e.*, c.nome as cliente_nome, c.nome_curto as cliente_nome_curto,
                  p.nome as projeto_nome, ct.numero as contrato_numero,
                  COALESCE((
-                   SELECT COUNT(*)::int
+                   SELECT COUNT(DISTINCT lower(g.email))::int
                      FROM portal_entrega_convidados g
                      JOIN portal_entrega_versions vx ON vx.id=g.version_id
                     WHERE g.entrega_id=e.id AND vx.version_number=e.current_version AND g.can_validate=true
                  ),0) AS total_validadores,
                  COALESCE((
-                   SELECT COUNT(*)::int
+                   SELECT COUNT(DISTINCT lower(g.email))::int
                      FROM portal_entrega_convidados g
                      JOIN portal_entrega_versions vx ON vx.id=g.version_id
                     WHERE g.entrega_id=e.id AND vx.version_number=e.current_version AND g.first_access_at IS NOT NULL
                  ),0) AS total_acessaram,
                  COALESCE((
-                   SELECT COUNT(DISTINCT d.convidado_id)::int
+                   SELECT COUNT(DISTINCT lower(gd.email))::int
                      FROM portal_entrega_decisions d
+                     JOIN portal_entrega_convidados gd ON gd.id=d.convidado_id
                      JOIN portal_entrega_versions vx ON vx.id=d.version_id
                     WHERE d.entrega_id=e.id AND vx.version_number=e.current_version AND d.decision='validated'
                  ),0) AS total_validados,
