@@ -2212,13 +2212,41 @@ const server = http.createServer(async (req, res) => {
               g.id AS convidado_id,
               s.security_code, s.validator_name AS signature_name, s.validator_cpf AS signature_cpf, s.signed_at,
               EXISTS(
-                SELECT 1 FROM portal_entrega_decisions d
-                 WHERE d.version_id=v.id AND d.convidado_id=g.id AND d.decision='validated'
+                SELECT 1
+                  FROM portal_entrega_decisions d
+                  JOIN portal_entrega_convidados gd ON gd.id=d.convidado_id
+                 WHERE d.version_id=v.id
+                   AND d.decision='validated'
+                   AND lower(gd.email)=lower($2)
               ) AS validado_por_mim
          FROM portal_entregas e
          JOIN portal_entrega_versions v ON v.entrega_id=e.id AND v.version_number=e.current_version
-         JOIN portal_entrega_convidados g ON g.entrega_id=e.id AND g.version_id=v.id AND lower(g.email)=lower($2)
-         LEFT JOIN portal_entrega_signatures s ON s.version_id=v.id AND s.convidado_id=g.id
+         JOIN LATERAL (
+           SELECT gx.*
+             FROM portal_entrega_convidados gx
+            WHERE gx.entrega_id=e.id
+              AND gx.version_id=v.id
+              AND lower(gx.email)=lower($2)
+            ORDER BY
+              EXISTS(
+                SELECT 1 FROM portal_entrega_signatures sx
+                 WHERE sx.version_id=v.id AND sx.convidado_id=gx.id
+              ) DESC,
+              EXISTS(
+                SELECT 1 FROM portal_entrega_decisions dx
+                 WHERE dx.version_id=v.id AND dx.convidado_id=gx.id AND dx.decision='validated'
+              ) DESC,
+              gx.invited_at DESC
+            LIMIT 1
+         ) g ON TRUE
+         LEFT JOIN LATERAL (
+           SELECT sx.security_code, sx.validator_name, sx.validator_cpf, sx.signed_at
+             FROM portal_entrega_signatures sx
+            WHERE sx.version_id=v.id
+              AND lower(sx.validator_email)=lower($2)
+            ORDER BY sx.signed_at DESC
+            LIMIT 1
+         ) s ON TRUE
         WHERE e.lote_id=$1
         ORDER BY e.created_at, e.titulo`,
       [pacote.lote_id, pacote.email]
@@ -2343,6 +2371,30 @@ const server = http.createServer(async (req, res) => {
       const acknowledgement = form.get('acknowledgement') === 'on';
       const noMoreAdjustments = form.get('noMoreAdjustments') === 'on';
       if (decision !== 'validated') return json(res,400,{error:'Decisão inválida.'});
+
+      const alreadyValidatedByEmail = (await pg.query(
+        `SELECT s.id, s.security_code, s.validator_name, s.signed_at
+           FROM portal_entrega_signatures s
+          WHERE s.version_id=$1 AND lower(s.validator_email)=lower($2)
+          ORDER BY s.signed_at DESC LIMIT 1`,
+        [selected.version_id, pacote.email]
+      )).rows[0] || (await pg.query(
+        `SELECT d.id
+           FROM portal_entrega_decisions d
+           JOIN portal_entrega_convidados gd ON gd.id=d.convidado_id
+          WHERE d.version_id=$1
+            AND d.decision='validated'
+            AND lower(gd.email)=lower($2)
+          LIMIT 1`,
+        [selected.version_id, pacote.email]
+      )).rows[0];
+
+      if (alreadyValidatedByEmail) {
+        res.writeHead(302, { Location:`/validar-lote/${token}/documento/${selected.id}?decisao=ja_validado` });
+        res.end();
+        return;
+      }
+
       if (validatorName.split(' ').filter(Boolean).length < 2 || !isValidCpf(validatorCpf) || !acknowledgement || !noMoreAdjustments) {
         res.writeHead(302, { Location:`/validar-lote/${token}/documento/${selected.id}?erro=identificacao#validacao` });
         res.end();
@@ -2355,8 +2407,8 @@ const server = http.createServer(async (req, res) => {
       const versionForSignature = (await pg.query('SELECT file_hash FROM portal_entrega_versions WHERE id=$1 LIMIT 1',[selected.version_id])).rows[0];
       if (!versionForSignature) return json(res,404,{error:'Versão não encontrada.'});
       const existingSignature = (await pg.query(
-        'SELECT * FROM portal_entrega_signatures WHERE version_id=$1 AND convidado_id=$2 LIMIT 1',
-        [selected.version_id, selected.convidado_id]
+        'SELECT * FROM portal_entrega_signatures WHERE version_id=$1 AND lower(validator_email)=lower($2) ORDER BY signed_at DESC LIMIT 1',
+        [selected.version_id, pacote.email]
       )).rows[0];
       if (!existingSignature) {
         const sig = createValidationSignature({
@@ -2383,8 +2435,14 @@ const server = http.createServer(async (req, res) => {
       }
 
       const existing = (await pg.query(
-        "SELECT id FROM portal_entrega_decisions WHERE version_id=$1 AND convidado_id=$2 AND decision='validated' LIMIT 1",
-        [selected.version_id, selected.convidado_id]
+        `SELECT d.id
+           FROM portal_entrega_decisions d
+           JOIN portal_entrega_convidados gd ON gd.id=d.convidado_id
+          WHERE d.version_id=$1
+            AND d.decision='validated'
+            AND lower(gd.email)=lower($2)
+          LIMIT 1`,
+        [selected.version_id, pacote.email]
       )).rows[0];
       if (!existing) {
         await pg.query(
@@ -2397,8 +2455,8 @@ const server = http.createServer(async (req, res) => {
       await pg.query(
         `UPDATE portal_entrega_convidados
             SET status='validado', first_access_at=COALESCE(first_access_at,NOW()), last_access_at=NOW()
-          WHERE id=$1`,
-        [selected.convidado_id]
+          WHERE entrega_id=$1 AND version_id=$2 AND lower(email)=lower($3)`,
+        [selected.id, selected.version_id, pacote.email]
       );
       await recordPortalAudit(pg, req, {
         entregaId:selected.id,
@@ -2410,11 +2468,16 @@ const server = http.createServer(async (req, res) => {
       });
 
       const totalRequired = Number((await pg.query(
-        'SELECT COUNT(*)::int AS c FROM portal_entrega_convidados WHERE entrega_id=$1 AND version_id=$2 AND can_validate=true',
+        `SELECT COUNT(DISTINCT lower(email))::int AS c
+           FROM portal_entrega_convidados
+          WHERE entrega_id=$1 AND version_id=$2 AND can_validate=true`,
         [selected.id, selected.version_id]
       )).rows[0].c || 0);
       const totalApproved = Number((await pg.query(
-        "SELECT COUNT(DISTINCT convidado_id)::int AS c FROM portal_entrega_decisions WHERE version_id=$1 AND decision='validated'",
+        `SELECT COUNT(DISTINCT lower(gd.email))::int AS c
+           FROM portal_entrega_decisions d
+           JOIN portal_entrega_convidados gd ON gd.id=d.convidado_id
+          WHERE d.version_id=$1 AND d.decision='validated'`,
         [selected.version_id]
       )).rows[0].c || 0);
 
@@ -2496,7 +2559,11 @@ const server = http.createServer(async (req, res) => {
       const possuiAjustes = selected.status === 'ajustes_solicitados' || selected.version_status === 'ajustes_solicitados';
       const bloqueado = cancelado;
       detalhe = `<section style='margin-top:22px'>
-        ${url.searchParams.get('decisao') === 'validado' ? "<div style='margin-bottom:14px;padding:12px 14px;border-radius:10px;background:#ecfdf5;border:1px solid #a7f3d0;color:#065f46'><strong>Validação registrada com sucesso.</strong> Sua validação individual foi gravada. O documento só ficará com status geral “Validado” quando todos os validadores obrigatórios concluírem.</div>" : ''}
+        ${url.searchParams.get('decisao') === 'validado'
+          ? "<div style='margin-bottom:14px;padding:12px 14px;border-radius:10px;background:#ecfdf5;border:1px solid #a7f3d0;color:#065f46'><strong>Validação registrada com sucesso.</strong> Sua validação individual foi gravada. O documento só ficará com status geral “Validado” quando todos os validadores obrigatórios concluírem.</div>"
+          : url.searchParams.get('decisao') === 'ja_validado'
+            ? "<div style='margin-bottom:14px;padding:12px 14px;border-radius:10px;background:#ecfdf5;border:1px solid #a7f3d0;color:#065f46'><strong>Este documento já foi validado por você.</strong> Não é necessário validar novamente.</div>"
+            : ''}
         <div style='display:flex;justify-content:space-between;gap:12px;align-items:flex-start;flex-wrap:wrap'>
           <div><a href='/validar-lote/${token}' style='font-size:13px'>← Voltar aos documentos</a>
           <h2 style='margin:8px 0 4px'>${escapeHtml(selected.titulo)}</h2>
