@@ -318,15 +318,24 @@ function currentUser(req, db) {
   return db.users.find((u) => u.id === userId) || null;
 }
 
-function readBody(req) {
+function readBody(req, maxBytes = 25 * 1024 * 1024) {
   return new Promise((resolve, reject) => {
     let data = '';
+    let settled = false;
     req.on('data', (chunk) => {
+      if (settled) return;
       data += chunk;
-      if (data.length > 25 * 1024 * 1024) reject(new Error('Body too large'));
+      if (data.length > maxBytes) {
+        settled = true;
+        reject(new Error('Body too large'));
+      }
     });
-    req.on('end', () => resolve(data));
-    req.on('error', reject);
+    req.on('end', () => {
+      if (!settled) resolve(data);
+    });
+    req.on('error', (err) => {
+      if (!settled) reject(err);
+    });
   });
 }
 
@@ -3413,7 +3422,6 @@ const server = http.createServer(async (req, res) => {
           <td>${escapeHtml(e.contrato_numero || '-')}</td>
           <td><span class='badge ${statusClass}'>${statusLabel}</span></td>
           <td>${e.sent_at ? escapeHtml(new Date(e.sent_at).toLocaleString('pt-BR')) : '-'}</td>
-          <td><a href='/entregas/${encodeURIComponent(e.id)}#novo-documento' class='btn-outline' style='display:inline-block;text-decoration:none;white-space:nowrap'>+ Documento</a></td>
         </tr>
       `;
     }).join('');
@@ -3431,7 +3439,7 @@ const server = http.createServer(async (req, res) => {
       </p>
     </div>
     ${r2Ready
-      ? "<a href='/entregas/nova'><button>+ Nova Entrega</button></a>"
+      ? "<div style='display:flex;gap:.6rem;flex-wrap:wrap'><a href='/entregas/nova?modo=adicionar'><button type='button' class='btn-outline'>+ Adicionar documento a projeto</button></a><a href='/entregas/nova'><button>+ Nova Entrega</button></a></div>"
       : "<span style='display:inline-flex;align-items:center;padding:.72rem 1.2rem;border-radius:.6rem;background:#e2e8f0;color:#64748b;font-weight:700;cursor:not-allowed;border:1px solid #cbd5e1' title='Novas entregas ainda não estão liberadas'>Nova Entrega — bloqueada</span>"}
   </div>
   ${isFinancialAdmin(user) ? `
@@ -3479,8 +3487,8 @@ const server = http.createServer(async (req, res) => {
     <h2>Entregas</h2>
     <div style='overflow-x:auto'>
       <table>
-        <thead><tr><th>Documento</th><th>Cliente</th><th>Projeto</th><th>Contrato</th><th>Status</th><th>Enviado em</th><th>Ações</th></tr></thead>
-        <tbody>${rows || "<tr><td colspan='7'>Nenhuma entrega cadastrada.</td></tr>"}</tbody>
+        <thead><tr><th>Documento</th><th>Cliente</th><th>Projeto</th><th>Contrato</th><th>Status</th><th>Enviado em</th></tr></thead>
+        <tbody>${rows || "<tr><td colspan='6'>Nenhuma entrega cadastrada.</td></tr>"}</tbody>
       </table>
     </div>
   </section>
@@ -3843,8 +3851,10 @@ const server = http.createServer(async (req, res) => {
     const body = `
       <div style='display:flex;justify-content:space-between;align-items:center;gap:1rem'>
         <div>
-          <h2 class='page-title'>Nova Entrega</h2>
-          <p style='color:#64748b;font-size:.9rem'>Crie uma ou várias entregas de uma só vez, selecione os PDFs e informe uma única vez quem deverá analisar.</p>
+          <h2 class='page-title'>${url.searchParams.get('modo') === 'adicionar' ? 'Adicionar documento a projeto existente' : 'Nova Entrega'}</h2>
+          <p style='color:#64748b;font-size:.9rem'>${url.searchParams.get('modo') === 'adicionar'
+            ? 'Selecione o cliente e o projeto. O sistema mostrará os documentos já existentes e permitirá acrescentar novos PDFs mantendo os validadores do projeto.'
+            : 'Crie uma ou várias entregas de uma só vez, selecione os PDFs e informe uma única vez quem deverá analisar.'}</p>
         </div>
         <a href='/entregas' style='font-size:.85rem'>Voltar</a>
       </div>
@@ -4206,8 +4216,8 @@ const server = http.createServer(async (req, res) => {
           msg.style.color = '#991b1b';
           return;
         }
-        if (files.some(file => file.size > 15 * 1024 * 1024)) {
-          msg.textContent = 'Cada PDF deve ter no máximo 15 MB nesta fase.';
+        if (files.some(file => file.size > 30 * 1024 * 1024)) {
+          msg.textContent = 'Cada PDF deve ter no máximo 30 MB nesta fase.';
           msg.style.color = '#991b1b';
           return;
         }
@@ -4281,7 +4291,7 @@ const server = http.createServer(async (req, res) => {
 
     let body;
     try {
-      body = JSON.parse(await readBody(req) || '{}');
+      body = JSON.parse(await readBody(req, 90 * 1024 * 1024) || '{}');
     } catch {
       return json(res, 400, { error: 'Dados inválidos.' });
     }
@@ -4339,8 +4349,8 @@ const server = http.createServer(async (req, res) => {
       } catch {
         return json(res, 400, { error: 'Um dos arquivos enviados é inválido.' });
       }
-      if (!fileBuffer.length || fileBuffer.length > 15 * 1024 * 1024) {
-        return json(res, 400, { error: 'Cada PDF deve ter entre 1 byte e 15 MB.' });
+      if (!fileBuffer.length || fileBuffer.length > 30 * 1024 * 1024) {
+        return json(res, 400, { error: 'Cada PDF deve ter entre 1 byte e 30 MB.' });
       }
       if (fileBuffer.subarray(0, 4).toString() !== '%PDF') {
         return json(res, 400, { error: `O arquivo "${fileName}" não parece ser um PDF válido.` });
@@ -4585,7 +4595,7 @@ const server = http.createServer(async (req, res) => {
 
     let body;
     try {
-      body = JSON.parse(await readBody(req) || '{}');
+      body = JSON.parse(await readBody(req, 90 * 1024 * 1024) || '{}');
     } catch {
       return json(res, 400, { error: 'Dados inválidos.' });
     }
@@ -4633,8 +4643,8 @@ const server = http.createServer(async (req, res) => {
     } catch {
       return json(res, 400, { error: 'Arquivo inválido.' });
     }
-    if (!fileBuffer.length || fileBuffer.length > 15 * 1024 * 1024) {
-      return json(res, 400, { error: 'O PDF deve ter entre 1 byte e 15 MB.' });
+    if (!fileBuffer.length || fileBuffer.length > 30 * 1024 * 1024) {
+      return json(res, 400, { error: 'O PDF deve ter entre 1 byte e 30 MB.' });
     }
     if (fileBuffer.subarray(0, 4).toString() !== '%PDF') {
       return json(res, 400, { error: 'O arquivo enviado não parece ser um PDF válido.' });
@@ -4799,7 +4809,7 @@ const server = http.createServer(async (req, res) => {
     if (!isR2Configured()) return json(res, 503, { error: 'Armazenamento seguro de documentos não está configurado.' });
 
     let body;
-    try { body = JSON.parse(await readBody(req) || '{}'); }
+    try { body = JSON.parse(await readBody(req, 90 * 1024 * 1024) || '{}'); }
     catch { return json(res, 400, { error: 'Dados inválidos.' }); }
 
     const descricao = String(body.descricao || entrega.descricao || '').trim() || 'Documento adicional do projeto.';
@@ -4818,8 +4828,8 @@ const server = http.createServer(async (req, res) => {
       let fileBuffer;
       try { fileBuffer = Buffer.from(String(doc.fileBase64), 'base64'); }
       catch { return json(res, 400, { error: 'Um dos arquivos é inválido.' }); }
-      if (!fileBuffer.length || fileBuffer.length > 15*1024*1024 || fileBuffer.subarray(0,4).toString() !== '%PDF') {
-        return json(res, 400, { error: `O arquivo "${fileName}" é inválido ou ultrapassa 15 MB.` });
+      if (!fileBuffer.length || fileBuffer.length > 30*1024*1024 || fileBuffer.subarray(0,4).toString() !== '%PDF') {
+        return json(res, 400, { error: `O arquivo "${fileName}" é inválido ou ultrapassa 30 MB.` });
       }
       totalBytes += fileBuffer.length;
       prepared.push({ titulo, fileName, fileBuffer });
@@ -5622,7 +5632,7 @@ const server = http.createServer(async (req, res) => {
           <div id='add-doc-lista' style='margin-top:.65rem'></div>
           <div style='display:flex;align-items:center;gap:.75rem;flex-wrap:wrap;margin-top:.8rem'>
             <button id='btn-add-docs' type='button' onclick='adicionarDocumentosAoProjeto()'>Adicionar documentos e manter os mesmos validadores</button>
-            <span style='font-size:.75rem;color:#64748b'>Até 20 PDFs; máximo de 15 MB por arquivo.</span>
+            <span style='font-size:.75rem;color:#64748b'>Até 20 PDFs; máximo de 30 MB por arquivo.</span>
           </div>
           <div id='add-doc-msg' style='margin-top:.65rem;font-size:.84rem'></div>
         `}
@@ -5656,7 +5666,7 @@ const server = http.createServer(async (req, res) => {
 
         if (!files.length) { msg.textContent='Selecione pelo menos um PDF.'; msg.style.color='#991b1b'; return; }
         if (files.length > 20) { msg.textContent='Selecione no máximo 20 documentos por vez.'; msg.style.color='#991b1b'; return; }
-        if (files.some(f => f.size > 15*1024*1024)) { msg.textContent='Cada PDF deve ter no máximo 15 MB.'; msg.style.color='#991b1b'; return; }
+        if (files.some(f => f.size > 30*1024*1024)) { msg.textContent='Cada PDF deve ter no máximo 30 MB.'; msg.style.color='#991b1b'; return; }
         if (titles.some(t => !t.value.trim())) { msg.textContent='Informe o nome de todos os documentos.'; msg.style.color='#991b1b'; return; }
 
         btn.disabled=true; btn.textContent='Adicionando...'; msg.style.color='#475569';
@@ -5855,7 +5865,7 @@ const server = http.createServer(async (req, res) => {
         const resumo = document.getElementById('nova-resumo').value.trim();
         const msg = document.getElementById('nova-msg');
         if (!f) { msg.textContent='Selecione o novo PDF.'; msg.style.color='#991b1b'; return; }
-        if (f.size > 15*1024*1024) { msg.textContent='O PDF deve ter no máximo 15 MB nesta fase.'; msg.style.color='#991b1b'; return; }
+        if (f.size > 30*1024*1024) { msg.textContent='O PDF deve ter no máximo 30 MB nesta fase.'; msg.style.color='#991b1b'; return; }
         const btn = document.getElementById('btn-nova-versao');
         btn.disabled=true; btn.textContent='Enviando...';
         try {
@@ -5966,7 +5976,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     let body;
-    try { body = JSON.parse(await readBody(req) || '{}'); }
+    try { body = JSON.parse(await readBody(req, 90 * 1024 * 1024) || '{}'); }
     catch { return json(res, 400, { error: 'Dados inválidos.' }); }
 
     const fileName = String(body.fileName || '').trim();
@@ -5976,8 +5986,8 @@ const server = http.createServer(async (req, res) => {
     }
 
     const fileBuffer = Buffer.from(String(body.fileBase64), 'base64');
-    if (!fileBuffer.length || fileBuffer.length > 15 * 1024 * 1024 || fileBuffer.subarray(0,4).toString() !== '%PDF') {
-      return json(res, 400, { error: 'PDF inválido ou acima de 15 MB.' });
+    if (!fileBuffer.length || fileBuffer.length > 30 * 1024 * 1024 || fileBuffer.subarray(0,4).toString() !== '%PDF') {
+      return json(res, 400, { error: 'PDF inválido ou acima de 30 MB.' });
     }
 
     if (!isR2Configured()) {
