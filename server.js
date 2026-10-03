@@ -3724,7 +3724,7 @@ const server = http.createServer(async (req, res) => {
     const pg = storage.getPool ? storage.getPool() : null;
     if (!pg) return json(res, 503, { error: 'Banco não disponível.' });
 
-    let clientes = [], projetos = [], contratos = [], contatos = [];
+    let clientes = [], projetos = [], contratos = [], contatos = [], entregasExistentes = [];
     try {
       const allowed = await getPortalAllowedClientIds(user);
       const allowedProjects = await getPortalAllowedProjectIds(user);
@@ -3811,6 +3811,25 @@ const server = http.createServer(async (req, res) => {
         projetos = projetos.filter(p => projectSet.has(Number(p.id)));
         contratos = contratos.filter(ct => ct.projeto_id && projectSet.has(Number(ct.projeto_id)));
       }
+
+      const projectIdsVisiveis = projetos.map(p => Number(p.id)).filter(Boolean);
+      if (projectIdsVisiveis.length) {
+        entregasExistentes = (await pg.query(
+          `SELECT e.id, e.cliente_id, e.projeto_id, e.contrato_id, e.lote_id,
+                  e.titulo, e.status, e.current_version, e.sent_at, e.created_at,
+                  v.file_name,
+                  COUNT(DISTINCT g.id)::int AS total_validadores
+             FROM portal_entregas e
+             LEFT JOIN portal_entrega_versions v
+               ON v.entrega_id=e.id AND v.version_number=e.current_version
+             LEFT JOIN portal_entrega_convidados g
+               ON g.entrega_id=e.id AND g.version_id=v.id
+            WHERE e.projeto_id = ANY($1::int[])
+            GROUP BY e.id, v.file_name
+            ORDER BY e.created_at DESC`,
+          [projectIdsVisiveis]
+        )).rows;
+      }
     } catch (e) {
       return json(res, 500, { error: e.message });
     }
@@ -3819,6 +3838,7 @@ const server = http.createServer(async (req, res) => {
     const projetosJson = JSON.stringify(projetos).replace(/</g, '\\u003c');
     const contratosJson = JSON.stringify(contratos).replace(/</g, '\\u003c');
     const contatosJson = JSON.stringify(contatos).replace(/</g, '\\u003c');
+    const entregasExistentesJson = JSON.stringify(entregasExistentes).replace(/</g, '\\u003c');
 
     const body = `
       <div style='display:flex;justify-content:space-between;align-items:center;gap:1rem'>
@@ -3838,7 +3858,7 @@ const server = http.createServer(async (req, res) => {
             </select>
           </label>
           <label>Projeto (opcional)
-            <select id='ent-projeto' onchange='filtrarContratos()'>
+            <select id='ent-projeto' onchange='filtrarContratos();renderizarDocumentosProjeto()'>
               <option value=''>-- Nenhum --</option>
             </select>
           </label>
@@ -3851,6 +3871,17 @@ const server = http.createServer(async (req, res) => {
           <label>Responsável CKM
             <input value='${escapeHtml(user.name || user.email || 'Usuário CKM')}' disabled>
           </label>
+        </div>
+
+        <div id='docs-projeto-existentes' style='display:none;margin-top:.9rem;border:1px solid #c7d2fe;border-radius:12px;background:#f8faff;padding:1rem'>
+          <div style='display:flex;justify-content:space-between;align-items:flex-start;gap:1rem;flex-wrap:wrap'>
+            <div>
+              <h3 style='margin:0 0 .25rem;color:#312e81'>Documentos já vinculados a este projeto</h3>
+              <p style='margin:0;color:#64748b;font-size:.8rem'>Esta lista mostra os documentos que já pertencem ao projeto selecionado e a situação atual de cada um.</p>
+            </div>
+            <div id='docs-projeto-acao'></div>
+          </div>
+          <div id='docs-projeto-lista' style='margin-top:.75rem'></div>
         </div>
 
         <label style='margin-top:.75rem'>Descrição da entrega *
@@ -3895,6 +3926,7 @@ const server = http.createServer(async (req, res) => {
       const PROJETOS = ${projetosJson};
       const CONTRATOS = ${contratosJson};
       const CONTATOS = ${contatosJson};
+      const ENTREGAS_EXISTENTES = ${entregasExistentesJson};
 
       function normalizarIdentidade(valor) {
         return String(valor || '')
@@ -3987,6 +4019,61 @@ const server = http.createServer(async (req, res) => {
           }
         }
         atualizarContatosDoCliente();
+        renderizarDocumentosProjeto();
+      }
+
+      function statusDocumentoProjeto(status) {
+        if (status === 'validado') return ['Validado', '#ecfdf5', '#065f46'];
+        if (status === 'cancelado') return ['Cancelado', '#fee2e2', '#991b1b'];
+        if (status === 'ajustes_solicitados') return ['Alteração solicitada', '#fff7ed', '#9a3412'];
+        return ['Aguardando validação', '#eff6ff', '#1d4ed8'];
+      }
+
+      function renderizarDocumentosProjeto() {
+        const projetoId = Number(document.getElementById('ent-projeto').value || 0);
+        const painel = document.getElementById('docs-projeto-existentes');
+        const lista = document.getElementById('docs-projeto-lista');
+        const acao = document.getElementById('docs-projeto-acao');
+        if (!painel || !lista || !acao) return;
+
+        if (!projetoId) {
+          painel.style.display = 'none';
+          lista.innerHTML = '';
+          acao.innerHTML = '';
+          return;
+        }
+
+        const docs = ENTREGAS_EXISTENTES.filter(e => Number(e.projeto_id) === projetoId);
+        painel.style.display = 'block';
+
+        if (!docs.length) {
+          lista.innerHTML = "<div style='padding:.8rem;border:1px dashed #cbd5e1;border-radius:9px;background:#fff;color:#64748b'>Ainda não há documentos cadastrados neste projeto.</div>";
+          acao.innerHTML = '';
+          return;
+        }
+
+        const referencia = docs.find(d => d.status !== 'cancelado') || docs[0];
+        acao.innerHTML = referencia
+          ? "<a href='/entregas/"+encodeURIComponent(referencia.id)+"#novo-documento' class='btn-outline' style='display:inline-block;text-decoration:none;white-space:nowrap'>+ Adicionar documento ao projeto</a>"
+          : '';
+
+        lista.innerHTML =
+          "<div style='overflow-x:auto'><table style='margin:0'><thead><tr><th>Documento</th><th>Versão</th><th>Status</th><th>Validadores</th><th>Enviado em</th><th></th></tr></thead><tbody>" +
+          docs.map(d => {
+            const st = statusDocumentoProjeto(d.status);
+            const data = d.sent_at ? new Date(d.sent_at).toLocaleString('pt-BR') : '-';
+            return "<tr>" +
+              "<td><strong>"+escapeHtmlClient(d.titulo || d.file_name || 'Documento')+"</strong>" +
+                (d.file_name ? "<div style='font-size:.7rem;color:#94a3b8'>"+escapeHtmlClient(d.file_name)+"</div>" : "") +
+              "</td>" +
+              "<td>V"+Number(d.current_version || 1)+"</td>" +
+              "<td><span style='display:inline-block;padding:.25rem .5rem;border-radius:999px;background:"+st[1]+";color:"+st[2]+";font-size:.72rem;font-weight:700'>"+st[0]+"</span></td>" +
+              "<td>"+Number(d.total_validadores || 0)+"</td>" +
+              "<td>"+escapeHtmlClient(data)+"</td>" +
+              "<td><a href='/entregas/"+encodeURIComponent(d.id)+"' style='font-size:.78rem'>Abrir</a></td>" +
+            "</tr>";
+          }).join('') +
+          "</tbody></table></div>";
       }
 
       function sincronizarProjetoDoContrato() {
@@ -4005,6 +4092,8 @@ const server = http.createServer(async (req, res) => {
           projeto.appendChild(opt);
         }
         projeto.value = String(p.id);
+        filtrarContratos();
+        renderizarDocumentosProjeto();
       }
 
       function atualizarContatosDoCliente() {
