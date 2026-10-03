@@ -2238,6 +2238,20 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (selected && action === 'pdf' && req.method === 'GET') {
+      await pg.query(
+        `UPDATE portal_entrega_convidados
+            SET first_access_at=COALESCE(first_access_at,NOW()), last_access_at=NOW()
+          WHERE id=$1`,
+        [selected.convidado_id]
+      );
+      await recordPortalAudit(pg, req, {
+        entregaId:selected.id,
+        versionId:selected.version_id,
+        actorType:'cliente',
+        actorId:selected.convidado_id,
+        action:'documento_visualizado',
+        details:{ via:'pacote', email:pacote.email }
+      });
       const version = (await pg.query(
         'SELECT * FROM portal_entrega_versions WHERE id=$1 AND entrega_id=$2 LIMIT 1',
         [selected.version_id, selected.id]
@@ -2380,6 +2394,20 @@ const server = http.createServer(async (req, res) => {
           [crypto.randomUUID(), selected.id, selected.version_id, selected.convidado_id, 'De acordo e validar entrega']
         );
       }
+      await pg.query(
+        `UPDATE portal_entrega_convidados
+            SET status='validado', first_access_at=COALESCE(first_access_at,NOW()), last_access_at=NOW()
+          WHERE id=$1`,
+        [selected.convidado_id]
+      );
+      await recordPortalAudit(pg, req, {
+        entregaId:selected.id,
+        versionId:selected.version_id,
+        actorType:'cliente',
+        actorId:selected.convidado_id,
+        action:'concordancia_registrada',
+        details:{ validatorName, email:pacote.email, via:'pacote' }
+      });
 
       const totalRequired = Number((await pg.query(
         'SELECT COUNT(*)::int AS c FROM portal_entrega_convidados WHERE entrega_id=$1 AND version_id=$2 AND can_validate=true',
@@ -2468,6 +2496,7 @@ const server = http.createServer(async (req, res) => {
       const possuiAjustes = selected.status === 'ajustes_solicitados' || selected.version_status === 'ajustes_solicitados';
       const bloqueado = cancelado;
       detalhe = `<section style='margin-top:22px'>
+        ${url.searchParams.get('decisao') === 'validado' ? "<div style='margin-bottom:14px;padding:12px 14px;border-radius:10px;background:#ecfdf5;border:1px solid #a7f3d0;color:#065f46'><strong>Validação registrada com sucesso.</strong> Sua validação individual foi gravada. O documento só ficará com status geral “Validado” quando todos os validadores obrigatórios concluírem.</div>" : ''}
         <div style='display:flex;justify-content:space-between;gap:12px;align-items:flex-start;flex-wrap:wrap'>
           <div><a href='/validar-lote/${token}' style='font-size:13px'>← Voltar aos documentos</a>
           <h2 style='margin:8px 0 4px'>${escapeHtml(selected.titulo)}</h2>
@@ -2714,6 +2743,20 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (req.method === 'GET' && action === 'pdf') {
+      await pg.query(
+        `UPDATE portal_entrega_convidados
+            SET first_access_at=COALESCE(first_access_at,NOW()), last_access_at=NOW()
+          WHERE id=$1`,
+        [guest.id]
+      );
+      await recordPortalAudit(pg, req, {
+        entregaId:guest.entrega_id,
+        versionId:version.id,
+        actorType:'cliente',
+        actorId:guest.id,
+        action:'documento_visualizado',
+        details:{ via:'link_individual', email:guest.email }
+      });
       let pdfBuffer;
       try {
         pdfBuffer = version.storage_key
@@ -3380,7 +3423,31 @@ const server = http.createServer(async (req, res) => {
         }
         entregas = (await pg.query(`
           SELECT e.*, c.nome as cliente_nome, c.nome_curto as cliente_nome_curto,
-                 p.nome as projeto_nome, ct.numero as contrato_numero
+                 p.nome as projeto_nome, ct.numero as contrato_numero,
+                 COALESCE((
+                   SELECT COUNT(*)::int
+                     FROM portal_entrega_convidados g
+                     JOIN portal_entrega_versions vx ON vx.id=g.version_id
+                    WHERE g.entrega_id=e.id AND vx.version_number=e.current_version AND g.can_validate=true
+                 ),0) AS total_validadores,
+                 COALESCE((
+                   SELECT COUNT(*)::int
+                     FROM portal_entrega_convidados g
+                     JOIN portal_entrega_versions vx ON vx.id=g.version_id
+                    WHERE g.entrega_id=e.id AND vx.version_number=e.current_version AND g.first_access_at IS NOT NULL
+                 ),0) AS total_acessaram,
+                 COALESCE((
+                   SELECT COUNT(DISTINCT d.convidado_id)::int
+                     FROM portal_entrega_decisions d
+                     JOIN portal_entrega_versions vx ON vx.id=d.version_id
+                    WHERE d.entrega_id=e.id AND vx.version_number=e.current_version AND d.decision='validated'
+                 ),0) AS total_validados,
+                 COALESCE((
+                   SELECT string_agg(DISTINCT s.validator_name, ', ' ORDER BY s.validator_name)
+                     FROM portal_entrega_signatures s
+                     JOIN portal_entrega_versions vx ON vx.id=s.version_id
+                    WHERE s.entrega_id=e.id AND vx.version_number=e.current_version
+                 ),'') AS nomes_validados
           FROM portal_entregas e
           LEFT JOIN clientes c ON c.id=e.cliente_id
           LEFT JOIN projetos p ON p.id=e.projeto_id
@@ -3420,7 +3487,14 @@ const server = http.createServer(async (req, res) => {
           <td>${escapeHtml(e.cliente_nome_curto || e.cliente_nome || '-')}</td>
           <td>${escapeHtml(e.projeto_nome || '-')}</td>
           <td>${escapeHtml(e.contrato_numero || '-')}</td>
-          <td><span class='badge ${statusClass}'>${statusLabel}</span></td>
+          <td>
+            <span class='badge ${statusClass}'>${statusLabel}</span>
+            <div style='margin-top:.3rem;font-size:.72rem;color:#475569'>
+              <strong>${Number(e.total_validados || 0)} de ${Number(e.total_validadores || 0)}</strong> validação(ões)
+              ${e.nomes_validados ? "<div style='margin-top:.15rem;color:#065f46'>Validado por: "+escapeHtml(e.nomes_validados)+"</div>" : ""}
+            </div>
+          </td>
+          <td><strong>${Number(e.total_acessaram || 0)} de ${Number(e.total_validadores || 0)}</strong><div style='font-size:.7rem;color:#64748b'>acessaram</div></td>
           <td>${e.sent_at ? escapeHtml(new Date(e.sent_at).toLocaleString('pt-BR')) : '-'}</td>
         </tr>
       `;
@@ -3487,8 +3561,8 @@ const server = http.createServer(async (req, res) => {
     <h2>Entregas</h2>
     <div style='overflow-x:auto'>
       <table>
-        <thead><tr><th>Documento</th><th>Cliente</th><th>Projeto</th><th>Contrato</th><th>Status</th><th>Enviado em</th></tr></thead>
-        <tbody>${rows || "<tr><td colspan='6'>Nenhuma entrega cadastrada.</td></tr>"}</tbody>
+        <thead><tr><th>Documento</th><th>Cliente</th><th>Projeto</th><th>Contrato</th><th>Status / Validações</th><th>Acessos</th><th>Enviado em</th></tr></thead>
+        <tbody>${rows || "<tr><td colspan='7'>Nenhuma entrega cadastrada.</td></tr>"}</tbody>
       </table>
     </div>
   </section>
