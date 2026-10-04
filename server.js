@@ -13554,6 +13554,411 @@ function limparCadastrosAutomatico(db) {
   }
 }
 
+
+// ============================================================
+// RESUMO DIÁRIO DO PORTAL DE VALIDAÇÃO
+// Administradores: todos os projetos.
+// Validadores: somente projetos em que estão vinculados.
+// Disparo: 00:00 no fuso America/Sao_Paulo.
+// ============================================================
+let portalDailyDigestTimer = null;
+const PORTAL_DIGEST_TIME_ZONE = 'America/Sao_Paulo';
+
+function portalDigestLocalParts(date = new Date()) {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: PORTAL_DIGEST_TIME_ZONE,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hourCycle: 'h23'
+  }).formatToParts(date);
+  const out = {};
+  for (const part of parts) {
+    if (part.type !== 'literal') out[part.type] = part.value;
+  }
+  return out;
+}
+
+function portalDigestPreviousDate(localDate) {
+  const d = new Date(String(localDate) + 'T12:00:00Z');
+  d.setUTCDate(d.getUTCDate() - 1);
+  return d.toISOString().slice(0, 10);
+}
+
+function portalDigestDateBr(isoDate) {
+  const [y, m, d] = String(isoDate || '').split('-');
+  return y && m && d ? d + '/' + m + '/' + y : String(isoDate || '');
+}
+
+function portalDigestValidatorStatus(row) {
+  if (row.validated) return 'Validado';
+  if (row.changes_requested) return 'Solicitou ajuste';
+  if (row.commented) return 'Comentou';
+  if (row.first_access_at) return 'Acessou / pendente';
+  return 'Não acessou';
+}
+
+function portalDigestDocumentStatus(status, versionStatus) {
+  if (status === 'validado' || versionStatus === 'validated') return 'Documento concluído';
+  if (status === 'ajustes_solicitados' || versionStatus === 'ajustes_solicitados') return 'Ajuste solicitado';
+  return 'Em validação';
+}
+
+async function portalDigestSnapshot(pgClient) {
+  return (await pgClient.query(`
+    WITH guest_emails AS (
+      SELECT
+        g.entrega_id,
+        g.version_id,
+        lower(trim(g.email)) AS email,
+        max(NULLIF(trim(g.nome), '')) AS validator_name,
+        min(g.first_access_at) AS first_access_at,
+        max(g.last_access_at) AS last_access_at
+      FROM portal_entrega_convidados g
+      WHERE g.revoked_at IS NULL
+      GROUP BY g.entrega_id, g.version_id, lower(trim(g.email))
+    )
+    SELECT
+      e.id AS entrega_id,
+      e.titulo,
+      e.projeto_id,
+      e.status AS entrega_status,
+      p.nome AS projeto_nome,
+      c.nome AS cliente_nome,
+      c.nome_curto AS cliente_nome_curto,
+      v.id AS version_id,
+      v.status AS version_status,
+      ge.email AS validator_email,
+      ge.validator_name,
+      ge.first_access_at,
+      ge.last_access_at,
+      CASE WHEN ge.email IS NULL THEN false ELSE EXISTS (
+        SELECT 1
+          FROM portal_entrega_decisions d
+          JOIN portal_entrega_convidados gd ON gd.id=d.convidado_id
+         WHERE d.version_id=v.id
+           AND d.decision='validated'
+           AND lower(trim(gd.email))=ge.email
+      ) END AS validated,
+      CASE WHEN ge.email IS NULL THEN false ELSE EXISTS (
+        SELECT 1
+          FROM portal_entrega_decisions d
+          JOIN portal_entrega_convidados gd ON gd.id=d.convidado_id
+         WHERE d.version_id=v.id
+           AND d.decision='changes_requested'
+           AND lower(trim(gd.email))=ge.email
+      ) END AS changes_requested,
+      CASE WHEN ge.email IS NULL THEN false ELSE EXISTS (
+        SELECT 1
+          FROM portal_entrega_messages m
+          LEFT JOIN portal_entrega_convidados gm ON gm.id=m.convidado_id
+         WHERE m.version_id=v.id
+           AND lower(trim(COALESCE(NULLIF(m.actor_email,''), gm.email, '')))=ge.email
+      ) END AS commented
+    FROM portal_entregas e
+    JOIN portal_entrega_versions v
+      ON v.entrega_id=e.id
+     AND v.version_number=e.current_version
+    LEFT JOIN projetos p ON p.id=e.projeto_id
+    LEFT JOIN clientes c ON c.id=e.cliente_id
+    LEFT JOIN guest_emails ge
+      ON ge.entrega_id=e.id
+     AND ge.version_id=v.id
+    WHERE e.projeto_id IS NOT NULL
+      AND e.status <> 'cancelado'
+    ORDER BY p.nome, e.created_at, e.titulo, ge.validator_name, ge.email
+  `)).rows;
+}
+
+async function portalDigestRecipients(pgClient) {
+  const admins = (await pgClient.query(`
+    SELECT id, name, lower(trim(email)) AS email
+      FROM users
+     WHERE lower(role) IN ('owner','admin')
+       AND COALESCE(status,'ativo')='ativo'
+       AND email IS NOT NULL
+       AND position('@' in email) > 1
+       AND lower(email) NOT LIKE '%@ckm.local'
+     ORDER BY email
+  `)).rows;
+
+  const validators = (await pgClient.query(`
+    WITH raw AS (
+      SELECT
+        l.projeto_id,
+        lower(trim(lg.email)) AS email,
+        NULLIF(trim(lg.nome), '') AS nome
+      FROM portal_lote_convidados lg
+      JOIN portal_entrega_lotes l ON l.id=lg.lote_id
+      WHERE lg.revoked_at IS NULL
+
+      UNION ALL
+
+      SELECT
+        e.projeto_id,
+        lower(trim(g.email)) AS email,
+        NULLIF(trim(g.nome), '') AS nome
+      FROM portal_entrega_convidados g
+      JOIN portal_entregas e ON e.id=g.entrega_id
+      WHERE g.revoked_at IS NULL
+    )
+    SELECT
+      email,
+      max(nome) AS name,
+      array_agg(DISTINCT projeto_id ORDER BY projeto_id) AS project_ids
+    FROM raw
+    WHERE projeto_id IS NOT NULL
+      AND email IS NOT NULL
+      AND email <> ''
+      AND position('@' in email) > 1
+    GROUP BY email
+    ORDER BY email
+  `)).rows;
+
+  return { admins, validators };
+}
+
+function portalDigestLines(snapshot, projectIds, reportDate, recipientName, isAdmin) {
+  const allowed = projectIds ? new Set(projectIds.map(Number)) : null;
+  const rows = snapshot.filter(row => !allowed || allowed.has(Number(row.projeto_id)));
+  const projects = new Map();
+
+  for (const row of rows) {
+    const projectId = Number(row.projeto_id);
+    if (!projects.has(projectId)) {
+      projects.set(projectId, {
+        name: row.projeto_nome || 'Projeto sem nome',
+        client: row.cliente_nome_curto || row.cliente_nome || '',
+        documents: new Map()
+      });
+    }
+    const project = projects.get(projectId);
+    if (!project.documents.has(row.entrega_id)) {
+      project.documents.set(row.entrega_id, {
+        title: row.titulo || 'Documento',
+        status: row.entrega_status,
+        versionStatus: row.version_status,
+        validators: []
+      });
+    }
+    if (row.validator_email) {
+      project.documents.get(row.entrega_id).validators.push({
+        name: row.validator_name || row.validator_email,
+        email: row.validator_email,
+        status: portalDigestValidatorStatus(row)
+      });
+    }
+  }
+
+  let totalDocs = 0;
+  let totalRequired = 0;
+  let totalValidated = 0;
+  let totalNotAccessed = 0;
+  let docsWithAdjustments = 0;
+
+  for (const project of projects.values()) {
+    for (const doc of project.documents.values()) {
+      totalDocs += 1;
+      if (doc.status === 'ajustes_solicitados' || doc.versionStatus === 'ajustes_solicitados') {
+        docsWithAdjustments += 1;
+      }
+      for (const validator of doc.validators) {
+        totalRequired += 1;
+        if (validator.status === 'Validado') totalValidated += 1;
+        if (validator.status === 'Não acessou') totalNotAccessed += 1;
+      }
+    }
+  }
+
+  const lines = [];
+  if (recipientName) lines.push('Olá, ' + recipientName + '.');
+  lines.push(
+    isAdmin
+      ? 'Resumo consolidado de todos os projetos do Portal de Validação.'
+      : 'Resumo dos projetos em que você está cadastrado(a) como validador(a).'
+  );
+  lines.push(
+    'Posição até ' + portalDigestDateBr(reportDate) + ': ' +
+    totalDocs + ' documento(s), ' +
+    totalValidated + ' de ' + totalRequired + ' validação(ões) concluída(s), ' +
+    totalNotAccessed + ' acesso(s) ainda não realizado(s) e ' +
+    docsWithAdjustments + ' documento(s) com ajuste solicitado.'
+  );
+
+  if (!projects.size) {
+    lines.push('Não há documentos ativos para acompanhamento neste momento.');
+    return lines;
+  }
+
+  for (const project of projects.values()) {
+    lines.push('────────────────────────');
+    lines.push('PROJETO: ' + project.name + (project.client ? ' — ' + project.client : ''));
+
+    for (const doc of project.documents.values()) {
+      const validatedCount = doc.validators.filter(v => v.status === 'Validado').length;
+      const requiredCount = doc.validators.length;
+      lines.push(
+        'Documento: ' + doc.title +
+        ' — ' + validatedCount + ' de ' + requiredCount + ' validação(ões)' +
+        ' — ' + portalDigestDocumentStatus(doc.status, doc.versionStatus)
+      );
+      if (!doc.validators.length) {
+        lines.push('Sem validador vinculado à versão atual.');
+      } else {
+        for (const validator of doc.validators) {
+          lines.push('• ' + validator.name + ' — ' + validator.status);
+        }
+      }
+    }
+  }
+  return lines;
+}
+
+async function runPortalDailyDigest(pg, baseUrl) {
+  const parts = portalDigestLocalParts();
+  if (parts.hour !== '00') return;
+
+  const localDate = parts.year + '-' + parts.month + '-' + parts.day;
+  const reportDate = portalDigestPreviousDate(localDate);
+  const client = await pg.connect();
+  let lockAcquired = false;
+
+  try {
+    const lockRow = (await client.query(
+      "SELECT pg_try_advisory_lock(hashtext('ckm_portal_daily_validation_digest')) AS locked"
+    )).rows[0];
+    lockAcquired = !!(lockRow && lockRow.locked);
+    if (!lockAcquired) return;
+
+    const stateRow = (await client.query(
+      "SELECT value FROM app_meta WHERE key='portal_daily_digest_state' LIMIT 1"
+    )).rows[0];
+    let state = stateRow && stateRow.value && typeof stateRow.value === 'object'
+      ? stateRow.value
+      : {};
+
+    if (state.date !== reportDate) {
+      state = { date: reportDate, sent: [], completed: false };
+    }
+    if (state.completed) return;
+
+    const [snapshot, recipients] = await Promise.all([
+      portalDigestSnapshot(client),
+      portalDigestRecipients(client)
+    ]);
+
+    const base = String(baseUrl || '').trim().replace(/\/+$/, '');
+    const adminEmails = new Set(recipients.admins.map(a => a.email));
+    const sent = new Set(Array.isArray(state.sent) ? state.sent : []);
+
+    const targets = [];
+    for (const admin of recipients.admins) {
+      targets.push({
+        key: 'admin:' + admin.email,
+        email: admin.email,
+        name: admin.name || '',
+        isAdmin: true,
+        projectIds: null
+      });
+    }
+    for (const validator of recipients.validators) {
+      if (adminEmails.has(validator.email)) continue;
+      targets.push({
+        key: 'validator:' + validator.email,
+        email: validator.email,
+        name: validator.name || '',
+        isAdmin: false,
+        projectIds: validator.project_ids || []
+      });
+    }
+
+    for (const target of targets) {
+      if (sent.has(target.key)) continue;
+
+      const lines = portalDigestLines(
+        snapshot,
+        target.projectIds,
+        reportDate,
+        target.name,
+        target.isAdmin
+      );
+
+      const ok = await sendPortalNotificationEmail({
+        to: target.email,
+        subject: target.isAdmin
+          ? '[Portal de Validação] Resumo diário geral — ' + portalDigestDateBr(reportDate)
+          : '[Portal de Validação] Resumo diário dos projetos — ' + portalDigestDateBr(reportDate),
+        title: target.isAdmin
+          ? 'Resumo diário do Portal de Validação'
+          : 'Resumo diário dos documentos em validação',
+        lines,
+        actionLabel: target.isAdmin ? 'Abrir gerenciamento de documentos' : undefined,
+        actionLink: target.isAdmin && base ? base + '/entregas' : undefined
+      });
+
+      if (ok) {
+        sent.add(target.key);
+        state = { date: reportDate, sent: Array.from(sent), completed: false };
+        await client.query(
+          `INSERT INTO app_meta (key, value)
+           VALUES ('portal_daily_digest_state', $1::jsonb)
+           ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value`,
+          [JSON.stringify(state)]
+        );
+      } else {
+        console.warn('[digest] falha SMTP; envio será tentado novamente', {
+          reportDate,
+          recipient: target.email
+        });
+      }
+    }
+
+    const allSent = targets.every(t => sent.has(t.key));
+    state = { date: reportDate, sent: Array.from(sent), completed: allSent };
+    await client.query(
+      `INSERT INTO app_meta (key, value)
+       VALUES ('portal_daily_digest_state', $1::jsonb)
+       ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value`,
+      [JSON.stringify(state)]
+    );
+
+    console.log('[digest] resumo diário processado', {
+      reportDate,
+      destinatarios: targets.length,
+      enviados: sent.size,
+      completo: allSent
+    });
+  } catch (error) {
+    console.error('[digest] erro no resumo diário:', error && error.message ? error.message : error);
+  } finally {
+    if (lockAcquired) {
+      try {
+        await client.query("SELECT pg_advisory_unlock(hashtext('ckm_portal_daily_validation_digest'))");
+      } catch (_) {}
+    }
+    client.release();
+  }
+}
+
+function startDailyValidationDigestScheduler(pg) {
+  if (!pg || portalDailyDigestTimer) return;
+  const baseUrl = String(process.env.APP_BASE_URL || 'https://controle.ecodobem.com').trim();
+
+  const check = () => {
+    runPortalDailyDigest(pg, baseUrl).catch(error => {
+      console.error('[digest] falha inesperada:', error && error.message ? error.message : error);
+    });
+  };
+
+  setTimeout(check, 5000);
+  portalDailyDigestTimer = setInterval(check, 60 * 1000);
+  if (portalDailyDigestTimer.unref) portalDailyDigestTimer.unref();
+  console.log('[digest] resumo diário programado para 00:00 — America/Sao_Paulo');
+}
+
+
 // Boot: sobe o servidor imediatamente para evitar timeout do Railway,
 // depois carrega os dados do PostgreSQL em background.
 let bootReady = false;
@@ -13631,7 +14036,10 @@ async function boot() {
         }
         // Carregar mapa de projetos do banco
         const pgPool = storage.getPool ? storage.getPool() : null;
-        if (pgPool) await recarregarMapaProjetos(pgPool);
+        if (pgPool) {
+          await recarregarMapaProjetos(pgPool);
+          startDailyValidationDigestScheduler(pgPool);
+        }
         bootReady = true;
         console.log(`[boot] Sincronizado: ${pgDb.entries.length} lançamentos, ${pgDb.reviewRegistry.length} cadastros, ${pgDb.savedRules.length} regras`);
       } catch (err) {
