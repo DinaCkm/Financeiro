@@ -100,7 +100,7 @@ async function sendConsultantInviteEmail({ to, name, activationLink }) {
     'Use o link abaixo para cadastrar sua senha de acesso:',
     activationLink,
     '',
-    'Este link expira em 1 hora.',
+    'Este link de convite não expira e permanece válido até a conclusão do cadastro da senha.',
     'Seu acesso é restrito ao módulo de Entregas e Validações.',
   ].join('\n');
 
@@ -115,7 +115,7 @@ async function sendConsultantInviteEmail({ to, name, activationLink }) {
           Cadastrar minha senha
         </a>
       </p>
-      <p>Este link expira em <strong>1 hora</strong>.</p>
+      <p>Este link de convite <strong>não expira</strong> e permanece válido até a conclusão do cadastro da senha.</p>
       <p style="color:#6b7280;font-size:13px">Se você não reconhece este convite, ignore esta mensagem.</p>
     </div>
   `;
@@ -157,7 +157,7 @@ async function sendDeliveryInviteEmail({ to, name, documentTitle, accessLink, se
     '',
     accessLink,
     '',
-    'Este link é individual e expira em 30 dias. Não encaminhe para outras pessoas.',
+    'Este link é individual e não expira. Ele permanece válido até que a CKM o revogue. Não encaminhe para outras pessoas.',
   ].join('\n');
 
   const html = `
