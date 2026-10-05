@@ -3660,8 +3660,8 @@ const server = http.createServer(async (req, res) => {
       </a>
       <a href='/entregas/contatos' style='display:block;text-decoration:none;color:inherit;border:1px solid #e2e8f0;border-radius:12px;padding:1rem;background:#fff'>
         <div style='font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase'>Passo 2</div>
-        <strong style='display:block;margin-top:.25rem'>Contatos / Validadores</strong>
-        <div style='font-size:.82rem;color:#64748b;margin-top:.3rem'>Cadastre nome e e-mail das pessoas que receberão os documentos para análise.</div>
+        <strong style='display:block;margin-top:.25rem'>Contatos Validadores</strong>
+        <div style='font-size:.82rem;color:#64748b;margin-top:.3rem'>Agenda de pessoas externas que recebem documentos para análise e validação.</div>
       </a>
       ${r2Ready
         ? `<a href='/entregas/nova' style='display:block;text-decoration:none;color:inherit;border:2px solid #6d28d9;border-radius:12px;padding:1rem;background:#faf5ff'>
@@ -3766,6 +3766,20 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  async function salvarContatoValidador(pgClient, clienteId, nome, email, createdBy) {
+    const nomeLimpo = String(nome || '').trim().replace(/\s+/g, ' ').slice(0,160);
+    const emailLimpo = String(email || '').trim().toLowerCase().slice(0,240);
+    if (!clienteId || !nomeLimpo || !emailLimpo) return;
+    await pgClient.query(
+      `INSERT INTO portal_contatos_validacao
+        (id, cliente_id, nome, email, ativo, created_by, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,true,$5,NOW(),NOW())
+       ON CONFLICT (cliente_id, email)
+       DO UPDATE SET nome=EXCLUDED.nome, ativo=true, updated_at=NOW()`,
+      [crypto.randomUUID(), Number(clienteId), nomeLimpo, emailLimpo, createdBy || null]
+    );
+  }
+
   if (req.method === 'GET' && url.pathname === '/entregas/contatos') {
     const pg = storage.getPool ? storage.getPool() : null;
     if (!pg) return json(res, 503, { error: 'Banco não disponível.' });
@@ -3819,13 +3833,13 @@ const server = http.createServer(async (req, res) => {
       <div style='display:flex;justify-content:space-between;align-items:flex-start;gap:1rem;flex-wrap:wrap'>
         <div>
           <a href='/entregas' style='font-size:.82rem'>← Voltar para Entregas</a>
-          <h2 class='page-title' style='margin-top:.5rem'>Contatos / Validadores</h2>
-          <p style='color:#64748b;font-size:.9rem'>Cadastre uma vez os nomes e e-mails dos responsáveis pela validação de cada cliente.</p>
+          <h2 class='page-title' style='margin-top:.5rem'>Contatos Validadores</h2>
+          <p style='color:#64748b;font-size:.9rem'>Esta é a agenda de pessoas externas que analisam e validam documentos. Não são usuários Consultores do sistema. Quando você informar um novo validador em uma entrega, ele será incluído aqui automaticamente para reutilização futura.</p>
         </div>
       </div>
 
       <section>
-        <h2>Novo contato</h2>
+        <h2>Novo contato validador</h2>
         <form method='post' action='/entregas/contatos' style='display:grid;grid-template-columns:minmax(220px,1fr) minmax(220px,1fr) minmax(220px,1fr) auto;gap:.75rem;align-items:end'>
           <label>Cliente *
             <select name='clienteId' required>
@@ -3854,7 +3868,7 @@ const server = http.createServer(async (req, res) => {
       </section>
     `;
 
-    const html = page('Contatos / Validadores', body, user, '/entregas');
+    const html = page('Contatos Validadores', body, user, '/entregas');
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
     res.end(html);
     return;
@@ -4105,7 +4119,7 @@ const server = http.createServer(async (req, res) => {
         <div style='display:flex;justify-content:space-between;align-items:center;gap:1rem'>
           <div>
             <h2 style='margin-bottom:.25rem'>Pessoas responsáveis pela validação</h2>
-            <p style='color:#64748b;font-size:.82rem'>Informe nome e e-mail. Cada pessoa receberá seu próprio link individual.</p>
+            <p style='color:#64748b;font-size:.82rem'>Informe nome e e-mail. Selecione um contato já cadastrado ou digite um novo. Todo novo nome/e-mail será salvo automaticamente em Contatos Validadores para os próximos documentos.</p>
           </div>
           <div style='display:flex;gap:.5rem;flex-wrap:wrap'>
             <button type='button' class='btn-outline' onclick='usarContatoCadastrado()'>Selecionar contato cadastrado</button>
@@ -4692,6 +4706,12 @@ const server = http.createServer(async (req, res) => {
         [loteId, clienteId, projetoId, contratoId, descricao, user.id, now]
       );
 
+      // Todo validador digitado ou selecionado passa a integrar automaticamente
+      // a agenda de Contatos Validadores deste cliente.
+      for (const guest of validGuests) {
+        await salvarContatoValidador(client, clienteId, guest.nome, guest.email, user.id);
+      }
+
       for (const guest of validGuests) {
         const { token: packageToken, tokenHash: packageTokenHash } = createGuestToken();
         const packageGuestId = crypto.randomUUID();
@@ -4949,6 +4969,10 @@ const server = http.createServer(async (req, res) => {
          VALUES ($1,$2,1,$3,$4,$5,$6,$7,$8,$9,$10,'aguardando_cliente')`,
         [versionId, entregaId, fileName, 'application/pdf', fileBuffer.length, fileHash, storageKey, Buffer.alloc(0), user.id, now]
       );
+
+      for (const guest of validGuests) {
+        await salvarContatoValidador(client, clienteId, guest.nome, guest.email, user.id);
+      }
 
       for (const guest of validGuests) {
         const { token, tokenHash } = createGuestToken();
@@ -5323,6 +5347,10 @@ const server = http.createServer(async (req, res) => {
     const client = await pg.connect();
     try {
       await client.query('BEGIN');
+
+      // O novo validador também passa a ficar disponível para reutilização
+      // em próximos documentos do mesmo cliente.
+      await salvarContatoValidador(client, entrega.cliente_id, nome, email, user.id);
 
       for (const target of targets) {
         const existing = (await client.query(
