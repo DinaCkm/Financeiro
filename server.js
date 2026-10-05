@@ -1879,7 +1879,7 @@ const server = http.createServer(async (req, res) => {
     const token = String(url.searchParams.get('token') || '');
     const erro = url.searchParams.get('erro');
     const erroMsg = erro === 'token'
-      ? 'Este link é inválido ou expirou.'
+      ? 'Este link é inválido ou não está mais disponível.'
       : erro === 'confirmacao'
         ? 'A confirmação da nova senha não confere.'
         : erro === 'fraca'
@@ -1916,8 +1916,10 @@ const server = http.createServer(async (req, res) => {
     const tokenHash = hashResetToken(token);
     const user = db.users.find((u) => u.passwordResetTokenHash === tokenHash);
     const expiresAt = user && user.passwordResetExpiresAt ? new Date(user.passwordResetExpiresAt) : null;
+    const isPermanentInvite = !!(user && user.mustChangePassword && user.status === 'pendente');
 
-    if (!user || !expiresAt || Number.isNaN(expiresAt.getTime()) || expiresAt.getTime() < Date.now()) {
+    // Convites de primeiro acesso não expiram. Links de recuperação de senha continuam temporários.
+    if (!user || (!isPermanentInvite && (!expiresAt || Number.isNaN(expiresAt.getTime()) || expiresAt.getTime() < Date.now()))) {
       res.writeHead(302, { Location: '/reset-password?erro=token' });
       res.end();
       return;
@@ -2133,9 +2135,9 @@ const server = http.createServer(async (req, res) => {
       res.end('<!doctype html><html lang="pt-BR"><meta charset="utf-8"><title>Link inválido</title><body style="font-family:Arial;padding:40px"><h2>Link inválido ou não disponível.</h2><p>Solicite um novo acesso à equipe CKM.</p></body></html>');
       return;
     }
-    if (pacote.revoked_at || !pacote.expires_at || new Date(pacote.expires_at).getTime() <= Date.now()) {
+    if (pacote.revoked_at) {
       res.writeHead(403, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'private, no-store' });
-      res.end('<!doctype html><html lang="pt-BR"><meta charset="utf-8"><title>Link indisponível</title><body style="font-family:Arial;padding:40px"><h2>Este link expirou ou foi revogado.</h2><p>Solicite um novo acesso à equipe CKM.</p></body></html>');
+      res.end('<!doctype html><html lang="pt-BR"><meta charset="utf-8"><title>Link revogado</title><body style="font-family:Arial;padding:40px"><h2>Este link foi revogado.</h2><p>Solicite um novo acesso à equipe CKM.</p></body></html>');
       return;
     }
 
@@ -2753,9 +2755,9 @@ const server = http.createServer(async (req, res) => {
       res.end('<!doctype html><html lang="pt-BR"><meta charset="utf-8"><title>Documento cancelado</title><body style="font-family:Arial;padding:40px"><h2>Este documento foi cancelado pela CKM Talents.</h2><p>Este envio não está mais disponível para análise ou validação.</p></body></html>');
       return;
     }
-    if (guest.revoked_at || !guest.expires_at || new Date(guest.expires_at).getTime() <= Date.now()) {
+    if (guest.revoked_at) {
       res.writeHead(403, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'private, no-store' });
-      res.end('<!doctype html><html lang="pt-BR"><meta charset="utf-8"><title>Link indisponível</title><body style="font-family:Arial;padding:40px"><h2>Este link expirou ou foi revogado.</h2><p>Solicite um novo acesso à equipe CKM.</p></body></html>');
+      res.end('<!doctype html><html lang="pt-BR"><meta charset="utf-8"><title>Link revogado</title><body style="font-family:Arial;padding:40px"><h2>Este link foi revogado.</h2><p>Solicite um novo acesso à equipe CKM.</p></body></html>');
       return;
     }
     const versionResult = await pg.query(
@@ -3820,16 +3822,34 @@ const server = http.createServer(async (req, res) => {
         <td>${escapeHtml(ct.cliente_nome_curto || ct.cliente_nome || '-')}</td>
         <td>${ct.ativo ? '<span class="badge badge-green">Ativo</span>' : '<span class="badge" style="background:#fee2e2;color:#991b1b">Inativo</span>'}</td>
         <td>
-          <form method='post' action='/entregas/contatos/status' style='margin:0'>
-            <input type='hidden' name='id' value='${escapeHtml(ct.id)}'>
-            <input type='hidden' name='status' value='${ct.ativo ? 'inativo' : 'ativo'}'>
-            <button type='submit' class='btn-outline'>${ct.ativo ? 'Inativar' : 'Ativar'}</button>
-          </form>
+          <div style='display:flex;gap:.45rem;flex-wrap:wrap'>
+            <form method='post' action='/entregas/contatos/status' style='margin:0'>
+              <input type='hidden' name='id' value='${escapeHtml(ct.id)}'>
+              <input type='hidden' name='status' value='${ct.ativo ? 'inativo' : 'ativo'}'>
+              <button type='submit' class='btn-outline'>${ct.ativo ? 'Inativar' : 'Ativar'}</button>
+            </form>
+            ${ct.ativo ? `
+              <form method='post' action='/entregas/contatos/reenviar-convite' style='margin:0'>
+                <input type='hidden' name='id' value='${escapeHtml(ct.id)}'>
+                <button type='submit' class='btn-outline' ${!isSmtpConfigured() ? "disabled title='SMTP ainda não configurado'" : ''}>Reenviar convite</button>
+              </form>
+            ` : ''}
+          </div>
         </td>
       </tr>
     `).join('');
 
+    const contactInvite = url.searchParams.get('convite');
+    const contactInviteMessage = contactInvite === 'reenviado'
+      ? "<div style='margin:1rem 0;padding:.75rem;background:#ecfdf5;color:#065f46;border:1px solid #a7f3d0;border-radius:.5rem'><strong>Convite reenviado.</strong> O novo link não expira.</div>"
+      : contactInvite === 'sem-convite'
+        ? "<div style='margin:1rem 0;padding:.75rem;background:#fff7ed;color:#9a3412;border:1px solid #fdba74;border-radius:.5rem'>Este contato ainda não possui documento enviado para validação. O convite será criado quando ele for incluído em uma entrega.</div>"
+        : contactInvite === 'erro'
+          ? "<div style='margin:1rem 0;padding:.75rem;background:#fef2f2;color:#991b1b;border:1px solid #fecaca;border-radius:.5rem'>Não foi possível reenviar o convite. Confira o e-mail e a configuração SMTP.</div>"
+          : '';
+
     const body = `
+      ${contactInviteMessage}
       <div style='display:flex;justify-content:space-between;align-items:flex-start;gap:1rem;flex-wrap:wrap'>
         <div>
           <a href='/entregas' style='font-size:.82rem'>← Voltar para Entregas</a>
@@ -3904,6 +3924,102 @@ const server = http.createServer(async (req, res) => {
     }
 
     res.writeHead(302, { Location: '/entregas/contatos' });
+    res.end();
+    return;
+  }
+
+  if (req.method === 'POST' && url.pathname === '/entregas/contatos/reenviar-convite') {
+    const pg = storage.getPool ? storage.getPool() : null;
+    if (!pg) return json(res, 503, { error: 'Banco não disponível.' });
+    if (!isSmtpConfigured()) {
+      res.writeHead(302, { Location: '/entregas/contatos?convite=erro' });
+      res.end();
+      return;
+    }
+
+    const form = new URLSearchParams(await readBody(req));
+    const id = String(form.get('id') || '').trim();
+    const contato = (await pg.query(
+      'SELECT id, cliente_id, nome, email, ativo FROM portal_contatos_validacao WHERE id=$1 LIMIT 1',
+      [id]
+    )).rows[0];
+    if (!contato) return json(res, 404, { error: 'Contato não encontrado.' });
+    if (!(await userCanAccessPortalClient(user, Number(contato.cliente_id)))) {
+      return json(res, 403, { error: 'Acesso não autorizado.' });
+    }
+
+    const lote = (await pg.query(
+      `SELECT lg.id, lg.lote_id
+         FROM portal_lote_convidados lg
+         JOIN portal_entrega_lotes l ON l.id=lg.lote_id
+        WHERE l.cliente_id=$1
+          AND lower(lg.email)=lower($2)
+          AND lg.revoked_at IS NULL
+        ORDER BY lg.invited_at DESC
+        LIMIT 1`,
+      [contato.cliente_id, contato.email]
+    )).rows[0];
+
+    if (lote) {
+      const { token, tokenHash } = createGuestToken();
+      await pg.query(
+        `UPDATE portal_lote_convidados
+            SET token_hash=$2, invited_at=NOW(), expires_at='infinity'::timestamptz, revoked_at=NULL
+          WHERE id=$1`,
+        [lote.id, tokenHash]
+      );
+      const ok = await sendPortalNotificationEmail({
+        to: contato.email,
+        subject: 'Documentos para análise e validação — CKM Talents',
+        title: 'Acesso aos documentos para validação',
+        lines: [
+          `Olá, ${contato.nome}.`,
+          'A CKM Talents reenviou seu acesso aos documentos disponíveis para análise e validação.',
+          'Este link não expira e permanece ativo até que a CKM o revogue.'
+        ],
+        actionLabel: 'Acessar documentos',
+        actionLink: `${portalBaseUrl(req)}/validar-lote/${encodeURIComponent(token)}`,
+      });
+      res.writeHead(302, { Location: ok ? '/entregas/contatos?convite=reenviado' : '/entregas/contatos?convite=erro' });
+      res.end();
+      return;
+    }
+
+    const individual = (await pg.query(
+      `SELECT g.id, e.titulo, v.version_number
+         FROM portal_entrega_convidados g
+         JOIN portal_entregas e ON e.id=g.entrega_id
+         LEFT JOIN portal_entrega_versions v ON v.id=g.version_id
+        WHERE e.cliente_id=$1
+          AND lower(g.email)=lower($2)
+          AND g.revoked_at IS NULL
+          AND e.status <> 'cancelado'
+        ORDER BY g.invited_at DESC
+        LIMIT 1`,
+      [contato.cliente_id, contato.email]
+    )).rows[0];
+
+    if (!individual) {
+      res.writeHead(302, { Location: '/entregas/contatos?convite=sem-convite' });
+      res.end();
+      return;
+    }
+
+    const { token, tokenHash } = createGuestToken();
+    await pg.query(
+      `UPDATE portal_entrega_convidados
+          SET token_hash=$2, invited_at=NOW(), expires_at='infinity'::timestamptz, revoked_at=NULL
+        WHERE id=$1`,
+      [individual.id, tokenHash]
+    );
+    const ok = await sendDeliveryInviteEmail({
+      to: contato.email,
+      name: contato.nome,
+      documentTitle: `${individual.titulo}${individual.version_number ? ' — V' + individual.version_number : ''}`,
+      accessLink: `${portalBaseUrl(req)}/validar/${encodeURIComponent(token)}`,
+      senderName: user.name || user.email || 'Equipe CKM Talents'
+    });
+    res.writeHead(302, { Location: ok ? '/entregas/contatos?convite=reenviado' : '/entregas/contatos?convite=erro' });
     res.end();
     return;
   }
@@ -4718,7 +4834,7 @@ const server = http.createServer(async (req, res) => {
         await client.query(
           `INSERT INTO portal_lote_convidados
             (id, lote_id, nome, email, token_hash, status, invited_at, expires_at)
-           VALUES ($1,$2,$3,$4,$5,'convidado',$6::timestamptz,$6::timestamptz + INTERVAL '30 days')`,
+           VALUES ($1,$2,$3,$4,$5,'convidado',$6::timestamptz,'infinity'::timestamptz)`,
           [packageGuestId, loteId, guest.nome, guest.email, packageTokenHash, now]
         );
         packageInvites.set(guest.email, {
@@ -4748,7 +4864,7 @@ const server = http.createServer(async (req, res) => {
           await client.query(
             `INSERT INTO portal_entrega_convidados
               (id, entrega_id, version_id, nome, email, can_comment, can_request_changes, can_validate, token_hash, status, invited_at, expires_at)
-             VALUES ($1,$2,$3,$4,$5,true,true,true,$6,'convidado',$7::timestamptz,$7::timestamptz + INTERVAL '30 days')`,
+             VALUES ($1,$2,$3,$4,$5,true,true,true,$6,'convidado',$7::timestamptz,'infinity'::timestamptz)`,
             [convidadoId, doc.entregaId, doc.versionId, guest.nome, guest.email, tokenHash, now]
           );
           if (!invitationsByEmail.has(guest.email)) invitationsByEmail.set(guest.email, []);
@@ -4980,7 +5096,7 @@ const server = http.createServer(async (req, res) => {
         await client.query(
           `INSERT INTO portal_entrega_convidados
             (id, entrega_id, version_id, nome, email, can_comment, can_request_changes, can_validate, token_hash, status, invited_at, expires_at)
-           VALUES ($1,$2,$3,$4,$5,true,true,true,$6,'convidado',$7::timestamptz,$7::timestamptz + INTERVAL '30 days')`,
+           VALUES ($1,$2,$3,$4,$5,true,true,true,$6,'convidado',$7::timestamptz,'infinity'::timestamptz)`,
           [convidadoId, entregaId, versionId, guest.nome, guest.email, tokenHash, now]
         );
         invitations.push({ ...guest, token, convidadoId });
@@ -5128,7 +5244,7 @@ const server = http.createServer(async (req, res) => {
           await client.query(
             `INSERT INTO portal_lote_convidados
               (id, lote_id, nome, email, token_hash, status, invited_at, expires_at)
-             VALUES ($1,$2,$3,$4,$5,'convidado',NOW(),NOW()+INTERVAL '30 days')
+             VALUES ($1,$2,$3,$4,$5,'convidado',NOW(),'infinity'::timestamptz)
              ON CONFLICT (lote_id, email) DO NOTHING`,
             [crypto.randomUUID(), loteId, v.nome, v.email, tokenHash]
           );
@@ -5204,7 +5320,7 @@ const server = http.createServer(async (req, res) => {
           await client.query(
             `INSERT INTO portal_entrega_convidados
               (id, entrega_id, version_id, nome, email, can_comment, can_request_changes, can_validate, token_hash, status, invited_at, expires_at)
-             VALUES ($1,$2,$3,$4,$5,true,true,true,$6,'convidado',$7::timestamptz,$7::timestamptz + INTERVAL '30 days')`,
+             VALUES ($1,$2,$3,$4,$5,true,true,true,$6,'convidado',$7::timestamptz,'infinity'::timestamptz)`,
             [crypto.randomUUID(), doc.entregaId, doc.versionId, v.nome, v.email, tokenHash, now]
           );
         }
@@ -5242,7 +5358,7 @@ const server = http.createServer(async (req, res) => {
         await pg.query(
           `UPDATE portal_lote_convidados
               SET nome=$2, token_hash=$3, status='convidado', invited_at=NOW(),
-                  expires_at=NOW()+INTERVAL '30 days', revoked_at=NULL
+                  expires_at='infinity'::timestamptz, revoked_at=NULL
             WHERE id=$1`,
           [existingPackage.id, v.nome, packageToken.tokenHash]
         );
@@ -5250,7 +5366,7 @@ const server = http.createServer(async (req, res) => {
         await pg.query(
           `INSERT INTO portal_lote_convidados
             (id, lote_id, nome, email, token_hash, status, invited_at, expires_at)
-           VALUES ($1,$2,$3,$4,$5,'convidado',NOW(),NOW()+INTERVAL '30 days')`,
+           VALUES ($1,$2,$3,$4,$5,'convidado',NOW(),'infinity'::timestamptz)`,
           [crypto.randomUUID(), loteId, v.nome, v.email, packageToken.tokenHash]
         );
       }
@@ -5365,7 +5481,7 @@ const server = http.createServer(async (req, res) => {
           await client.query(
             `UPDATE portal_entrega_convidados
                 SET nome=$2, token_hash=$3, status='convidado', invited_at=NOW(),
-                    expires_at=NOW()+INTERVAL '30 days', revoked_at=NULL
+                    expires_at='infinity'::timestamptz, revoked_at=NULL
               WHERE id=$1`,
             [existing.id, nome, individualToken.tokenHash]
           );
@@ -5373,7 +5489,7 @@ const server = http.createServer(async (req, res) => {
           await client.query(
             `INSERT INTO portal_entrega_convidados
               (id, entrega_id, version_id, nome, email, can_comment, can_request_changes, can_validate, token_hash, status, invited_at, expires_at)
-             VALUES ($1,$2,$3,$4,$5,true,true,true,$6,'convidado',NOW(),NOW()+INTERVAL '30 days')`,
+             VALUES ($1,$2,$3,$4,$5,true,true,true,$6,'convidado',NOW(),'infinity'::timestamptz)`,
             [crypto.randomUUID(), target.id, target.version_id, nome, email, individualToken.tokenHash]
           );
           addedCount++;
@@ -5391,7 +5507,7 @@ const server = http.createServer(async (req, res) => {
           await client.query(
             `UPDATE portal_lote_convidados
                 SET nome=$2, token_hash=$3, status='convidado', invited_at=NOW(),
-                    expires_at=NOW()+INTERVAL '30 days', revoked_at=NULL
+                    expires_at='infinity'::timestamptz, revoked_at=NULL
               WHERE id=$1`,
             [existingPackage.id, nome, packageToken.tokenHash]
           );
@@ -5399,7 +5515,7 @@ const server = http.createServer(async (req, res) => {
           await client.query(
             `INSERT INTO portal_lote_convidados
               (id, lote_id, nome, email, token_hash, status, invited_at, expires_at)
-             VALUES ($1,$2,$3,$4,$5,'convidado',NOW(),NOW()+INTERVAL '30 days')`,
+             VALUES ($1,$2,$3,$4,$5,'convidado',NOW(),'infinity'::timestamptz)`,
             [crypto.randomUUID(), entrega.lote_id, nome, email, packageToken.tokenHash]
           );
         }
@@ -5489,7 +5605,7 @@ const server = http.createServer(async (req, res) => {
         await pg.query(
           `UPDATE portal_lote_convidados
               SET nome=$2, token_hash=$3, revoked_at=NULL, status='convidado',
-                  expires_at=NOW()+INTERVAL '30 days', invited_at=NOW()
+                  expires_at='infinity'::timestamptz, invited_at=NOW()
             WHERE id=$1`,
           [existingPackage.id, guest.nome, packageToken.tokenHash]
         );
@@ -5497,7 +5613,7 @@ const server = http.createServer(async (req, res) => {
         await pg.query(
           `INSERT INTO portal_lote_convidados
             (id, lote_id, nome, email, token_hash, status, invited_at, expires_at)
-           VALUES ($1,$2,$3,$4,$5,'convidado',NOW(),NOW()+INTERVAL '30 days')`,
+           VALUES ($1,$2,$3,$4,$5,'convidado',NOW(),'infinity'::timestamptz)`,
           [crypto.randomUUID(), delivery.lote_id, guest.nome, guest.email, packageToken.tokenHash]
         );
       }
@@ -5508,7 +5624,7 @@ const server = http.createServer(async (req, res) => {
       const { token, tokenHash } = createGuestToken();
       await pg.query(
         `UPDATE portal_entrega_convidados
-            SET token_hash=$2, revoked_at=NULL, expires_at=NOW()+INTERVAL '30 days', invited_at=NOW()
+            SET token_hash=$2, revoked_at=NULL, expires_at='infinity'::timestamptz, invited_at=NOW()
           WHERE id=$1`,
         [guest.id, tokenHash]
       );
@@ -5557,7 +5673,7 @@ const server = http.createServer(async (req, res) => {
       const { token, tokenHash } = createGuestToken();
       await pg.query(
         `UPDATE portal_entrega_convidados
-         SET token_hash=$2, revoked_at=NULL, expires_at=NOW()+INTERVAL '30 days', invited_at=NOW()
+         SET token_hash=$2, revoked_at=NULL, expires_at='infinity'::timestamptz, invited_at=NOW()
          WHERE id=$1`,
         [guest.id, tokenHash]
       );
@@ -5786,7 +5902,7 @@ const server = http.createServer(async (req, res) => {
         <td>${escapeHtml(g.email)}</td>
         <td>${state}</td>
         <td>${g.last_access_at ? escapeHtml(new Date(g.last_access_at).toLocaleString('pt-BR')) : '-'}</td>
-        <td>${g.revoked_at ? 'Revogado' : g.expires_at && new Date(g.expires_at).getTime() <= Date.now() ? 'Expirado' : 'Ativo até ' + escapeHtml(new Date(g.expires_at).toLocaleDateString('pt-BR'))}</td>
+        <td>${g.revoked_at ? 'Revogado' : 'Ativo — sem expiração'}</td>
         <td>
           <div style='display:flex;gap:.35rem;flex-wrap:wrap'>
             <form method='post' action='/entregas/${entregaId}/convidados/${encodeURIComponent(g.id)}/reemitir' style='display:inline'>
@@ -6265,7 +6381,7 @@ const server = http.createServer(async (req, res) => {
         await client.query(
           `INSERT INTO portal_entrega_convidados
             (id, entrega_id, version_id, nome, email, can_comment, can_request_changes, can_validate, token_hash, status, invited_at, expires_at)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'convidado',NOW(),NOW() + INTERVAL '30 days')`,
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'convidado',NOW(),'infinity'::timestamptz)`,
           [newGuestId, entregaId, versionId, g.nome, g.email, !!g.can_comment, !!g.can_request_changes, !!g.can_validate, tokenHash]
         );
         invitations.push({ nome:g.nome, email:g.email, token });
@@ -6566,9 +6682,9 @@ const server = http.createServer(async (req, res) => {
       return json(res, 409, { error: 'O reenvio de convite é destinado apenas a acessos pendentes.' });
     }
 
-    const { token, tokenHash, expiresAt } = generatePasswordResetToken();
+    const { token, tokenHash } = generatePasswordResetToken();
     consultant.passwordResetTokenHash = tokenHash;
-    consultant.passwordResetExpiresAt = expiresAt;
+    consultant.passwordResetExpiresAt = null;
     consultant.mustChangePassword = true;
     saveDb(db);
 
@@ -6651,7 +6767,7 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
-    const { token, tokenHash, expiresAt } = generatePasswordResetToken();
+    const { token, tokenHash } = generatePasswordResetToken();
     const randomInitialSecret = crypto.randomBytes(48).toString('hex') + '!1';
     const newUser = {
       id: crypto.randomUUID(),
@@ -6665,7 +6781,7 @@ const server = http.createServer(async (req, res) => {
       lastLoginAt: null,
       mustChangePassword: true,
       passwordResetTokenHash: tokenHash,
-      passwordResetExpiresAt: expiresAt,
+      passwordResetExpiresAt: null,
     };
     if (!db.users) db.users = [];
     db.users.push(newUser);
@@ -6679,7 +6795,7 @@ const server = http.createServer(async (req, res) => {
       lines: [
         `Olá, ${name}.`,
         'Você recebeu acesso como Administrador do Sistema Financeiro CKM.',
-        'Use o botão abaixo para cadastrar sua senha de acesso. Este link expira em 1 hora.'
+        'Use o botão abaixo para cadastrar sua senha de acesso. Este link não expira.'
       ],
       actionLabel: 'Cadastrar minha senha',
       actionLink: activationLink,
@@ -6739,9 +6855,9 @@ const server = http.createServer(async (req, res) => {
       return json(res, 409, { error: 'O reenvio de convite é destinado apenas a acessos pendentes.' });
     }
 
-    const { token, tokenHash, expiresAt } = generatePasswordResetToken();
+    const { token, tokenHash } = generatePasswordResetToken();
     admin.passwordResetTokenHash = tokenHash;
-    admin.passwordResetExpiresAt = expiresAt;
+    admin.passwordResetExpiresAt = null;
     admin.mustChangePassword = true;
     saveDb(db);
 
@@ -6753,7 +6869,7 @@ const server = http.createServer(async (req, res) => {
       lines: [
         `Olá, ${admin.name || ''}.`,
         'Você recebeu acesso como Administrador do Sistema Financeiro CKM.',
-        'Use o botão abaixo para cadastrar sua senha de acesso. Este link expira em 1 hora.'
+        'Use o botão abaixo para cadastrar sua senha de acesso. Este link não expira.'
       ],
       actionLabel: 'Cadastrar minha senha',
       actionLink: activationLink,
@@ -6781,7 +6897,7 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
-    const { token, tokenHash, expiresAt } = generatePasswordResetToken();
+    const { token, tokenHash } = generatePasswordResetToken();
     const randomInitialSecret = crypto.randomBytes(48).toString('hex') + '!1';
     const newUser = {
       id: crypto.randomUUID(),
@@ -6795,7 +6911,7 @@ const server = http.createServer(async (req, res) => {
       lastLoginAt: null,
       mustChangePassword: true,
       passwordResetTokenHash: tokenHash,
-      passwordResetExpiresAt: expiresAt,
+      passwordResetExpiresAt: null,
     };
     if (!db.users) db.users = [];
     db.users.push(newUser);
