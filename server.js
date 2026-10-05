@@ -6425,11 +6425,13 @@ const server = http.createServer(async (req, res) => {
           <button type='submit'>Enviar e-mail de teste</button>
         </form>
       </section>
-      ${criado ? "<div style='margin:1rem 0;padding:.75rem;background:#ecfdf5;color:#065f46;border:1px solid #a7f3d0;border-radius:.5rem'>Consultor cadastrado. O convite para criação da senha será enviado se o SMTP estiver configurado.</div>" : ''}
+      ${criado && url.searchParams.get('convite') === 'enviado' ? "<div style='margin:1rem 0;padding:.75rem;background:#ecfdf5;color:#065f46;border:1px solid #a7f3d0;border-radius:.5rem'><strong>Consultor cadastrado e convite enviado com sucesso.</strong></div>" : ''}
+      ${criado && url.searchParams.get('convite') === 'erro' ? "<div style='margin:1rem 0;padding:.75rem;background:#fef2f2;color:#991b1b;border:1px solid #fecaca;border-radius:.5rem'><strong>Consultor cadastrado, mas o e-mail de convite não foi enviado.</strong> Confira o endereço informado e tente Reenviar convite.</div>" : ''}
+      ${criado && !url.searchParams.get('convite') ? "<div style='margin:1rem 0;padding:.75rem;background:#ecfdf5;color:#065f46;border:1px solid #a7f3d0;border-radius:.5rem'>Consultor cadastrado.</div>" : ''}
       ${salvo ? "<div style='margin:1rem 0;padding:.75rem;background:#ecfdf5;color:#065f46;border:1px solid #a7f3d0;border-radius:.5rem'>Clientes autorizados atualizados.</div>" : ''}
       ${url.searchParams.get('statusSalvo') ? "<div style='margin:1rem 0;padding:.75rem;background:#ecfdf5;color:#065f46;border:1px solid #a7f3d0;border-radius:.5rem'>Situação do consultor atualizada.</div>" : ''}
       ${url.searchParams.get('convite') === 'reenviado' ? "<div style='margin:1rem 0;padding:.75rem;background:#ecfdf5;color:#065f46;border:1px solid #a7f3d0;border-radius:.5rem'>Convite reenviado com novo link de ativação.</div>" : ''}
-      ${url.searchParams.get('convite') === 'smtp' ? "<div style='margin:1rem 0;padding:.75rem;background:#fff7ed;color:#9a3412;border:1px solid #fdba74;border-radius:.5rem'>Não foi possível reenviar: SMTP_USER e SMTP_PASS ainda estão pendentes.</div>" : ''}
+      ${url.searchParams.get('convite') === 'smtp' ? "<div style='margin:1rem 0;padding:.75rem;background:#fff7ed;color:#9a3412;border:1px solid #fdba74;border-radius:.5rem'>Não foi possível reenviar o convite. Confira o endereço de e-mail e a configuração SMTP.</div>" : ''}
       ${emailTeste === 'ok' ? "<div style='margin:1rem 0;padding:.75rem;background:#ecfdf5;color:#065f46;border:1px solid #a7f3d0;border-radius:.5rem'>E-mail de teste enviado com sucesso.</div>" : ''}
       ${emailTeste === 'erro' ? "<div style='margin:1rem 0;padding:.75rem;background:#fef2f2;color:#991b1b;border:1px solid #fecaca;border-radius:.5rem'>O e-mail não foi enviado. Verifique SMTP_USER e SMTP_PASS no Railway.</div>" : ''}
       ${erro === 'email' ? "<div style='margin:1rem 0;padding:.75rem;background:#fef2f2;color:#991b1b;border:1px solid #fecaca;border-radius:.5rem'>Este e-mail já está cadastrado.</div>" : ''}
@@ -6776,10 +6778,18 @@ const server = http.createServer(async (req, res) => {
     const configuredBase = String(process.env.APP_BASE_URL || '').trim().replace(/\/+$/, '');
     const baseUrl = configuredBase || `${proto}://${req.headers.host}`;
     const activationLink = `${baseUrl}/reset-password?token=${encodeURIComponent(token)}`;
-    sendConsultantInviteEmail({ to: email, name, activationLink })
-      .catch(e => console.warn('[email] Erro ao enviar convite:', e && e.message ? e.message : e));
+    const inviteSent = await sendConsultantInviteEmail({ to: email, name, activationLink });
+    if (inviteSent) {
+      console.log('[email] Convite de consultor enviado', { email, name });
+    } else {
+      console.warn('[email] Convite de consultor não enviado', { email, name });
+    }
 
-    res.writeHead(302, { Location: '/acessos?criado=1' });
+    res.writeHead(302, {
+      Location: inviteSent
+        ? '/acessos?criado=1&convite=enviado'
+        : '/acessos?criado=1&convite=erro'
+    });
     res.end();
     return;
   }
