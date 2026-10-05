@@ -322,19 +322,41 @@ function readBody(req, maxBytes = 25 * 1024 * 1024) {
   return new Promise((resolve, reject) => {
     let data = '';
     let settled = false;
+
+    const resolveOnce = (value) => {
+      if (settled) return;
+      settled = true;
+      resolve(value);
+    };
+    const rejectOnce = (error) => {
+      if (settled) return;
+      settled = true;
+      reject(error);
+    };
+
     req.on('data', (chunk) => {
       if (settled) return;
       data += chunk;
       if (data.length > maxBytes) {
-        settled = true;
-        reject(new Error('Body too large'));
+        req.pause();
+        rejectOnce(new Error('Body too large'));
       }
     });
-    req.on('end', () => {
-      if (!settled) resolve(data);
+
+    req.on('end', () => resolveOnce(data));
+
+    // Conexões encerradas pelo navegador, WAF ou scanners externos não são
+    // falhas da aplicação e não devem derrubar o processo Node.
+    req.on('aborted', () => resolveOnce(''));
+    req.on('close', () => {
+      if (!req.complete) resolveOnce('');
     });
     req.on('error', (err) => {
-      if (!settled) reject(err);
+      if (err && (err.code === 'ECONNRESET' || String(err.message || '').toLowerCase() === 'aborted')) {
+        resolveOnce('');
+        return;
+      }
+      rejectOnce(err);
     });
   });
 }
