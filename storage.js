@@ -278,6 +278,9 @@ function createPostgresStorage(databaseUrl) {
         ON portal_audit_events(entrega_id, created_at DESC);
     `);
 
+    await pool.query("ALTER TABLE portal_entrega_decisions ADD COLUMN IF NOT EXISTS cancelled_at TIMESTAMPTZ");
+    await pool.query("ALTER TABLE portal_entrega_decisions ADD COLUMN IF NOT EXISTS cancelled_by TEXT");
+    await pool.query("ALTER TABLE portal_entrega_decisions ADD COLUMN IF NOT EXISTS cancellation_reason TEXT");
     await pool.query("ALTER TABLE portal_entregas ADD COLUMN IF NOT EXISTS validation_mode TEXT NOT NULL DEFAULT 'all'");
     await pool.query("ALTER TABLE portal_entregas ADD COLUMN IF NOT EXISTS lote_id TEXT");
     await pool.query("ALTER TABLE portal_entregas ADD COLUMN IF NOT EXISTS cancelled_at TIMESTAMPTZ");
