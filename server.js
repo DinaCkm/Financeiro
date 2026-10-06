@@ -160,6 +160,7 @@ const {
   loginBlockUntilFromNow,
 } = require('./auth-security');
 const { isSmtpConfigured, sendPasswordResetEmail, sendConsultantInviteEmail, sendDeliveryInviteEmail, sendPortalNotificationEmail, sendSmtpTestEmail } = require('./email-service');
+const portalValidator = require('./portal-validator');
 const {
   ROLE_CONSULTOR_ENTREGAS,
   isDeliveryConsultant,
@@ -1749,6 +1750,13 @@ const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
 
   if (req.url.startsWith('/public/') && serveStatic(req, res)) return;
+
+  if (url.pathname.startsWith('/validacao')) {
+    const pg = storage.getPool ? storage.getPool() : null;
+    if (!pg) { res.writeHead(503); res.end('Serviço temporariamente indisponível.'); return; }
+    const handled = await portalValidator.handlePublic(req, res, { pg });
+    if (handled) return;
+  }
 
   if (req.method === 'GET' && url.pathname === '/login') {
     const erro = url.searchParams.get('erro');
@@ -3897,6 +3905,12 @@ const server = http.createServer(async (req, res) => {
                 <button type='submit' class='btn-outline' ${!isSmtpConfigured() ? "disabled title='SMTP ainda não configurado'" : ''}>Reenviar convite</button>
               </form>
             ` : ''}
+            ${ct.ativo && isFinancialAdmin(user) ? `
+              <form method='post' action='/entregas/contatos/visualizar-como' style='margin:0' target='_blank'>
+                <input type='hidden' name='id' value='${escapeHtml(ct.id)}'>
+                <button type='submit' class='btn-outline'>Visualizar como validador</button>
+              </form>
+            ` : ''}
           </div>
         </td>
       </tr>
@@ -3988,6 +4002,16 @@ const server = http.createServer(async (req, res) => {
 
     res.writeHead(302, { Location: '/entregas/contatos' });
     res.end();
+    return;
+  }
+
+  if (req.method === 'POST' && url.pathname === '/entregas/contatos/visualizar-como') {
+    if (!isFinancialAdmin(user)) return json(res, 403, { error: 'Acesso não autorizado.' });
+    const pg = storage.getPool ? storage.getPool() : null;
+    if (!pg) return json(res, 503, { error: 'Banco não disponível.' });
+    const form = new URLSearchParams(await readBody(req));
+    const id = String(form.get('id') || '').trim();
+    await portalValidator.startSupportSession(req, res, { pg }, id, user.id);
     return;
   }
 
