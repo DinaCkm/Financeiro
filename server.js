@@ -3531,21 +3531,60 @@ const server = http.createServer(async (req, res) => {
     const smtpReady = isSmtpConfigured();
     const r2Ready = isR2Configured();
     let entregas = [];
+    let projetosFiltro = [];
     let counts = { aguardando_cliente: 0, ajustes_solicitados: 0, validado: 0 };
+    const projetoFiltro = String(url.searchParams.get('projeto') || '').trim();
+    const documentoFiltro = String(url.searchParams.get('documento') || '').trim();
     if (pg) {
       try {
         const params = [];
-        let where = '';
+        const conditions = [];
+        const allowedClients = isDeliveryConsultant(user) ? await getPortalAllowedClientIds(user) : null;
+        const allowedProjects = isDeliveryConsultant(user) ? await getPortalAllowedProjectIds(user) : null;
+
         if (isDeliveryConsultant(user)) {
-          const allowedClients = await getPortalAllowedClientIds(user);
-          const allowedProjects = await getPortalAllowedProjectIds(user);
           if (!allowedClients.length || !allowedProjects.length) {
-            where = 'WHERE 1=0';
+            conditions.push('1=0');
           } else {
-            params.push(allowedClients, allowedProjects);
-            where = 'WHERE e.cliente_id = ANY($1::int[]) AND e.projeto_id = ANY($2::int[])';
+            params.push(allowedClients);
+            conditions.push(`e.cliente_id = ANY(${params.length}::int[])`);
+            params.push(allowedProjects);
+            conditions.push(`e.projeto_id = ANY(${params.length}::int[])`);
           }
         }
+
+        if (projetoFiltro && /^\d+$/.test(projetoFiltro)) {
+          params.push(Number(projetoFiltro));
+          conditions.push(`e.projeto_id = ${params.length}`);
+        }
+        if (documentoFiltro) {
+          params.push(`%${documentoFiltro}%`);
+          conditions.push(`e.titulo ILIKE ${params.length}`);
+        }
+
+        const where = conditions.length ? 'WHERE ' + conditions.join(' AND ') : '';
+
+        const projectParams = [];
+        const projectConditions = [];
+        if (isDeliveryConsultant(user)) {
+          if (!allowedClients.length || !allowedProjects.length) {
+            projectConditions.push('1=0');
+          } else {
+            projectParams.push(allowedClients);
+            projectConditions.push(`e.cliente_id = ANY(${projectParams.length}::int[])`);
+            projectParams.push(allowedProjects);
+            projectConditions.push(`e.projeto_id = ANY(${projectParams.length}::int[])`);
+          }
+        }
+        const projectWhere = projectConditions.length ? 'WHERE ' + projectConditions.join(' AND ') : '';
+        projetosFiltro = (await pg.query(`
+          SELECT DISTINCT p.id, p.nome
+            FROM portal_entregas e
+            JOIN projetos p ON p.id=e.projeto_id
+            ${projectWhere}
+           ORDER BY p.nome
+        `, projectParams)).rows;
+
         entregas = (await pg.query(`
           SELECT e.*, c.nome as cliente_nome, c.nome_curto as cliente_nome_curto,
                  p.nome as projeto_nome, ct.numero as contrato_numero,
@@ -3626,6 +3665,10 @@ const server = http.createServer(async (req, res) => {
       `;
     }).join('');
 
+    const projectOptions = projetosFiltro.map(p =>
+      `<option value='${Number(p.id)}'${String(p.id) === projetoFiltro ? ' selected' : ''}>${escapeHtml(p.nome || ('Projeto ' + p.id))}</option>`
+    ).join('');
+
     const loteCriado = Number(url.searchParams.get('loteCriado') || 0);
     const html = page('Entregas e Validações', `
 <section>
@@ -3678,6 +3721,26 @@ const server = http.createServer(async (req, res) => {
           </div>`}
     </div>
   </section>
+  <form method='get' action='/entregas' style='margin-top:1.25rem;padding:1rem;background:#fff;border:1px solid #e2e8f0;border-radius:12px;display:grid;grid-template-columns:minmax(220px,1fr) minmax(260px,1.4fr) auto auto;gap:.8rem;align-items:end'>
+    <div>
+      <label for='filtro-projeto' style='display:block;font-size:.78rem;font-weight:700;color:#475569;margin-bottom:.35rem'>Projeto</label>
+      <select id='filtro-projeto' name='projeto' style='width:100%'>
+        <option value=''>Todos os projetos</option>
+        ${projectOptions}
+      </select>
+    </div>
+    <div>
+      <label for='filtro-documento' style='display:block;font-size:.78rem;font-weight:700;color:#475569;margin-bottom:.35rem'>Documento</label>
+      <input id='filtro-documento' name='documento' value='${escapeHtml(documentoFiltro)}' placeholder='Digite o nome do documento' style='width:100%'>
+    </div>
+    <button type='submit' style='min-width:110px'>Filtrar</button>
+    <a href='/entregas' class='btn-outline' style='display:inline-flex;align-items:center;justify-content:center;text-decoration:none;min-height:42px;padding:.65rem 1rem;border-radius:.55rem'>Limpar</a>
+  </form>
+  <style>
+    @media (max-width: 900px) {
+      form[action='/entregas'] { grid-template-columns:1fr !important; }
+    }
+  </style>
   <div class='cards' style='margin-top:1.25rem'>
     <div class='card'><strong>Aguardando cliente</strong><span>${counts.aguardando_cliente}</span></div>
     <div class='card'><strong>Alteração solicitada</strong><span>${counts.ajustes_solicitados}</span></div>
