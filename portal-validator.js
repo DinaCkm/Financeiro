@@ -211,7 +211,7 @@ async function getContactByEmail(pg, email) {
 
 async function getDocuments(pg, email) {
   return (await pg.query(
-    `SELECT DISTINCT e.id,e.titulo,e.descricao,e.status,e.current_version,
+    `SELECT DISTINCT e.id,e.titulo,e.descricao,e.status,e.current_version,e.responsavel_user_id,
             v.id AS version_id,v.version_number,v.status AS version_status,
             g.id AS convidado_id,g.can_comment,g.can_request_changes,g.can_validate,
             c.nome AS cliente_nome,c.nome_curto AS cliente_nome_curto,p.nome AS projeto_nome,
@@ -252,6 +252,27 @@ async function recordAudit(pg, req, data) {
     );
   } catch (e) {
     console.warn('[portal-validator] auditoria:', e.message);
+  }
+}
+
+async function notifyResponsible(pg, req, doc, subject, title, lines) {
+  try {
+    if (!doc || !doc.responsavel_user_id) return;
+    const responsible = (await pg.query(
+      'SELECT email,name FROM users WHERE id=$1 AND status=\'ativo\' LIMIT 1',
+      [doc.responsavel_user_id]
+    )).rows[0];
+    if (!responsible || !responsible.email) return;
+    await sendPortalNotificationEmail({
+      to: responsible.email,
+      subject,
+      title,
+      lines,
+      actionLabel: 'Abrir entrega',
+      actionLink: `${portalBaseUrl(req)}/entregas/${encodeURIComponent(doc.id)}`
+    });
+  } catch (e) {
+    console.warn('[portal-validator] aviso ao responsável:', e.message);
   }
 }
 
@@ -528,6 +549,11 @@ async function handlePublic(req, res, ctx) {
            VALUES ($1,$2,$3,'cliente',$4,$5,$6,$7,NOW())`,
           [crypto.randomUUID(),doc.id,doc.version_id,doc.convidado_id,contact ? contact.nome : session.email,session.email,`CONTRIBUIÇÃO: ${message}`]
         );
+        await notifyResponsible(pg, req, doc,
+          `Nova contribuição — ${doc.titulo}`,
+          'Nova contribuição do cliente',
+          [`${contact ? contact.nome : session.email} enviou uma contribuição sobre "${doc.titulo}".`, message]
+        );
       } else if (type === 'changes_requested' && doc.can_request_changes) {
         const client = await pg.connect();
         try {
@@ -547,6 +573,11 @@ async function handlePublic(req, res, ctx) {
           await client.query("UPDATE portal_entrega_versions SET status='ajustes_solicitados' WHERE id=$1",[doc.version_id]);
           await client.query("UPDATE portal_entregas SET status='ajustes_solicitados' WHERE id=$1",[doc.id]);
           await client.query('COMMIT');
+          await notifyResponsible(pg, req, doc,
+            `Alteração solicitada — ${doc.titulo}`,
+            'Cliente solicitou alteração',
+            [`${contact ? contact.nome : session.email} solicitou alteração em "${doc.titulo}".`, message, 'Acesse a entrega para preparar e publicar a nova versão.']
+          );
         } catch (e) {
           await client.query('ROLLBACK');
           res.writeHead(500); res.end('Não foi possível registrar a solicitação.'); return true;
