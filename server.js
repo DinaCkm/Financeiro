@@ -5909,6 +5909,86 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  const cancelarSolicitacaoMatch = url.pathname.match(/^\/entregas\/([0-9a-f-]{36})\/solicitacoes\/([0-9a-f-]{36})\/cancelar$/i);
+  if (req.method === 'POST' && cancelarSolicitacaoMatch) {
+    if (!isFinancialAdmin(user)) return json(res, 403, { error: 'Apenas administradores podem cancelar solicitações de alteração.' });
+    const entregaId = cancelarSolicitacaoMatch[1];
+    const decisionId = cancelarSolicitacaoMatch[2];
+    const pg = storage.getPool ? storage.getPool() : null;
+    if (!pg) return json(res, 503, { error: 'Banco não disponível.' });
+
+    const entrega = (await pg.query('SELECT * FROM portal_entregas WHERE id=$1 LIMIT 1',[entregaId])).rows[0];
+    if (!entrega) return json(res, 404, { error: 'Entrega não encontrada.' });
+
+    const version = (await pg.query(
+      'SELECT id,version_number FROM portal_entrega_versions WHERE entrega_id=$1 AND version_number=$2 LIMIT 1',
+      [entregaId, Number(entrega.current_version)]
+    )).rows[0];
+    if (!version) return json(res, 404, { error: 'Versão atual não encontrada.' });
+
+    const requestRow = (await pg.query(
+      `SELECT d.id,d.decision_text,d.cancelled_at,g.nome,g.email
+         FROM portal_entrega_decisions d
+         JOIN portal_entrega_convidados g ON g.id=d.convidado_id
+        WHERE d.id=$1 AND d.entrega_id=$2 AND d.version_id=$3 AND d.decision='changes_requested'
+        LIMIT 1`,
+      [decisionId,entregaId,version.id]
+    )).rows[0];
+    if (!requestRow) return json(res, 404, { error: 'Solicitação não encontrada nesta versão.' });
+    if (requestRow.cancelled_at) {
+      res.writeHead(302,{Location:`/entregas/${entregaId}?solicitacao=ja-cancelada`}); res.end(); return;
+    }
+
+    const form = new URLSearchParams(await readBody(req));
+    const reason = String(form.get('reason') || 'Solicitação cancelada pela administração').trim().slice(0,500);
+    const client = await pg.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query(
+        `UPDATE portal_entrega_decisions
+            SET cancelled_at=NOW(),cancelled_by=$2,cancellation_reason=$3
+          WHERE id=$1 AND cancelled_at IS NULL`,
+        [decisionId,user.id,reason]
+      );
+
+      const remaining = Number((await client.query(
+        `SELECT COUNT(*)::int AS c FROM portal_entrega_decisions
+          WHERE version_id=$1 AND decision='changes_requested' AND cancelled_at IS NULL`,
+        [version.id]
+      )).rows[0].c || 0);
+
+      await client.query(
+        `INSERT INTO portal_entrega_messages
+          (id,entrega_id,version_id,actor_type,actor_user_id,actor_name,actor_email,message,created_at)
+         VALUES ($1,$2,$3,'ckm',$4,$5,$6,$7,NOW())`,
+        [crypto.randomUUID(),entregaId,version.id,user.id,user.name || user.email || 'Administrador CKM',user.email || null,
+         `SOLICITAÇÃO DE ALTERAÇÃO CANCELADA: ${requestRow.nome || requestRow.email} — ${requestRow.decision_text || ''}. Motivo: ${reason}`]
+      );
+
+      if (remaining === 0) {
+        await client.query("UPDATE portal_entrega_versions SET status='aguardando_cliente' WHERE id=$1",[version.id]);
+        await client.query("UPDATE portal_entregas SET status='aguardando_cliente' WHERE id=$1",[entregaId]);
+      }
+
+      await client.query(
+        `INSERT INTO portal_audit_events
+          (id,entrega_id,version_id,actor_type,actor_id,action,ip_address,user_agent,details)
+         VALUES ($1,$2,$3,'ckm',$4,'solicitacao_alteracao_cancelada',$5,$6,$7::jsonb)`,
+        [crypto.randomUUID(),entregaId,version.id,user.id,
+         String(req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').split(',')[0].trim().slice(0,64),
+         String(req.headers['user-agent'] || '').slice(0,500),
+         JSON.stringify({decisionId,validatorName:requestRow.nome,validatorEmail:requestRow.email,reason,remaining})]
+      );
+      await client.query('COMMIT');
+    } catch (e) {
+      await client.query('ROLLBACK');
+      return json(res,500,{error:e.message});
+    } finally {
+      client.release();
+    }
+    res.writeHead(302,{Location:`/entregas/${entregaId}?solicitacao=cancelada`});res.end();return;
+  }
+
   const entregaDetailMatch = url.pathname.match(/^\/entregas\/([0-9a-f-]{36})$/i);
   if (req.method === 'GET' && entregaDetailMatch) {
     const entregaId = entregaDetailMatch[1];
@@ -5961,6 +6041,16 @@ const server = http.createServer(async (req, res) => {
     )).rows[0] || null : null;
     const signatures = currentVersion ? (await pg.query(
       'SELECT * FROM portal_entrega_signatures WHERE version_id=$1 ORDER BY signed_at ASC',
+      [currentVersion.id]
+    )).rows : [];
+    const activeChangeRequests = currentVersion ? (await pg.query(
+      `SELECT d.id,d.decision_text,d.created_at,g.nome,g.email
+         FROM portal_entrega_decisions d
+         JOIN portal_entrega_convidados g ON g.id=d.convidado_id
+        WHERE d.version_id=$1
+          AND d.decision='changes_requested'
+          AND d.cancelled_at IS NULL
+        ORDER BY d.created_at ASC`,
       [currentVersion.id]
     )).rows : [];
 
@@ -6029,6 +6119,24 @@ const server = http.createServer(async (req, res) => {
           ${entrega.status === 'cancelado' ? `<div style='font-size:.78rem;color:#991b1b;margin-top:.3rem'>Cancelado em ${entrega.cancelled_at ? escapeHtml(new Date(entrega.cancelled_at).toLocaleString('pt-BR')) : '-'}<br>Motivo: ${escapeHtml(entrega.cancelled_reason || '-')}</div>` : ''}
         </div>
       </div>
+
+      ${activeChangeRequests.length ? `
+      <section style='border:2px solid #f59e0b;background:#fffbeb'>
+        <div style='font-size:.76rem;font-weight:700;letter-spacing:.08em;color:#92400e'>ALTERAÇÃO SOLICITADA</div>
+        <h2 style='margin:.35rem 0'>Solicitações de alteração ativas</h2>
+        <p style='font-size:.84rem;color:#475569'>Enquanto houver uma solicitação ativa nesta versão, a validação fica bloqueada.</p>
+        ${activeChangeRequests.map(reqAlt => `
+          <div style='padding:.8rem;border:1px solid #fcd34d;border-radius:9px;background:#fff;margin:.55rem 0'>
+            <div style='font-size:.78rem;color:#64748b'><strong>${escapeHtml(reqAlt.nome || reqAlt.email)}</strong> · ${escapeHtml(new Date(reqAlt.created_at).toLocaleString('pt-BR'))}</div>
+            <div style='margin-top:.35rem;white-space:pre-wrap'>${escapeHtml(reqAlt.decision_text || '')}</div>
+            ${isFinancialAdmin(user) ? `
+              <form method='post' action='/entregas/${entregaId}/solicitacoes/${encodeURIComponent(reqAlt.id)}/cancelar' style='margin-top:.65rem' onsubmit="return confirm('Cancelar esta solicitação de alteração? O histórico será preservado e, se não houver outra solicitação ativa, a validação será liberada novamente.');">
+                <input type='hidden' name='reason' value='Solicitação cancelada pela administração'>
+                <button type='submit' class='btn-outline'>Cancelar solicitação de alteração</button>
+              </form>` : ''}
+          </div>
+        `).join('')}
+      </section>` : ''}
 
       <section>
         <h2>Dados da entrega</h2>
