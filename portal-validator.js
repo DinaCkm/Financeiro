@@ -144,12 +144,11 @@ function page(title, body, session = null) {
     <link rel='stylesheet' href='/public/style.css'>
     <style>
       *{box-sizing:border-box}body{margin:0;background:#f8fafc;color:#1e293b;font-family:Inter,Arial,sans-serif}
-      .vp-head{background:#24116f;color:#fff;padding:15px 22px}.vp-head a{color:#fff}
-      .vp-wrap{max-width:1280px;margin:0 auto;padding:22px}
+      .vp-head{background:#24116f;color:#fff;padding:14px 24px;display:flex;align-items:center;justify-content:space-between;gap:18px;min-height:76px;position:sticky;top:0;z-index:20;box-shadow:0 2px 10px rgba(15,23,42,.12)}\n      .vp-brand{display:flex;align-items:center;gap:14px}.vp-brand img{height:46px;width:auto;display:block}.vp-brand-text{font-weight:800;letter-spacing:.01em;font-size:18px}.vp-head a{color:#fff}\n      .vp-wrap{max-width:1280px;margin:0 auto;padding:28px 22px}
       .vp-card{background:#fff;border:1px solid #e2e8f0;border-radius:12px;padding:16px}
       .vp-btn{display:inline-flex;align-items:center;justify-content:center;border:0;border-radius:9px;padding:10px 14px;background:#24116f;color:#fff;text-decoration:none;font-weight:700;cursor:pointer}
       .vp-btn.secondary{background:#fff;color:#24116f;border:1px solid #24116f}
-      .vp-muted{color:#64748b}.vp-grid{display:grid;gap:12px}.vp-doc{display:block;text-decoration:none;color:inherit;padding:12px 0;border-top:1px solid #e2e8f0}
+      .vp-muted{color:#64748b}.vp-grid{display:grid;gap:12px}.vp-doc{display:block;text-decoration:none;color:inherit;padding:16px 0;border-top:1px solid #e2e8f0;transition:.15s}.vp-doc:hover{background:#f8fafc}.vp-doc-title{font-size:15px;font-weight:800;color:#0f172a}.vp-meta{display:flex;gap:8px;flex-wrap:wrap;margin-top:7px}.vp-chip{font-size:11px;padding:4px 8px;border-radius:999px;background:#f1f5f9;color:#475569;border:1px solid #e2e8f0}.vp-chip.ok{background:#ecfdf5;color:#047857;border-color:#a7f3d0}.vp-chip.warn{background:#fff7ed;color:#9a3412;border-color:#fed7aa}.vp-instructions{background:linear-gradient(135deg,#ffffff,#f8f7ff);border:1px solid #ddd6fe;border-radius:14px;padding:18px 20px;margin-bottom:18px}.vp-instructions h1{font-size:28px;line-height:1.18;margin:0 0 8px;color:#1e1b4b}.vp-instructions p{margin:5px 0;color:#475569}.vp-status{font-weight:700;font-size:13px}
       input,textarea{width:100%;padding:10px;border:1px solid #cbd5e1;border-radius:8px;font:inherit}
       label{display:block;font-weight:700;font-size:13px;margin:10px 0 5px}
       .vp-alert{padding:10px 12px;border-radius:9px;margin:10px 0}.vp-support{background:#fff7ed;border:1px solid #fdba74;color:#9a3412}
@@ -157,11 +156,9 @@ function page(title, body, session = null) {
       @media(max-width:760px){.vp-wrap{padding:14px}}
     </style>
   </head><body>
-    <header class='vp-head'><strong>CKM Talents — Portal de Validação</strong>
-      ${session ? `<span style='float:right'><a href='/validacao/sair'>Sair</a></span>` : ''}
-    </header>
+    <header class='vp-head'>\n      <div class='vp-brand'><img src='/public/logo-branco.png' alt='CKM Talents'><div class='vp-brand-text'>CKM Talents <span style='font-weight:500;opacity:.86'>| Controle de Documentos</span></div></div>\n      ${session ? `<a href='/validacao/sair'>Sair</a>` : ''}\n    </header>
     <main class='vp-wrap'>
-      ${support ? "<div class='vp-alert vp-support'><strong>Modo de suporte — somente leitura.</strong> Você está visualizando exatamente os documentos disponíveis para este validador. Comentários, solicitações e validações estão bloqueados.</div>" : ''}
+      ${support ? "<div class='vp-alert vp-support'><strong>Modo de suporte do administrador.</strong> Esta tela reproduz a visão do validador. As ações estão desativadas somente para você, para evitar alterações em nome dele.</div>" : ''}
       ${body}
     </main>
   </body></html>`;
