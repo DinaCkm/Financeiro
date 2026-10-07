@@ -3627,12 +3627,24 @@ const server = http.createServer(async (req, res) => {
                      FROM portal_entrega_convidados g
                      JOIN portal_entrega_versions vx ON vx.id=g.version_id
                     WHERE g.entrega_id=e.id AND vx.version_number=e.current_version AND g.can_validate=true
+                      AND EXISTS (
+                        SELECT 1 FROM portal_contatos_validacao pc
+                         WHERE pc.cliente_id=e.cliente_id
+                           AND lower(pc.email)=lower(g.email)
+                           AND pc.ativo=true
+                      )
                  ),0) AS total_validadores,
                  COALESCE((
                    SELECT COUNT(DISTINCT lower(g.email))::int
                      FROM portal_entrega_convidados g
                      JOIN portal_entrega_versions vx ON vx.id=g.version_id
                     WHERE g.entrega_id=e.id AND vx.version_number=e.current_version AND g.first_access_at IS NOT NULL
+                      AND EXISTS (
+                        SELECT 1 FROM portal_contatos_validacao pc
+                         WHERE pc.cliente_id=e.cliente_id
+                           AND lower(pc.email)=lower(g.email)
+                           AND pc.ativo=true
+                      )
                  ),0) AS total_acessaram,
                  COALESCE((
                    SELECT COUNT(DISTINCT lower(gd.email))::int
@@ -3640,6 +3652,12 @@ const server = http.createServer(async (req, res) => {
                      JOIN portal_entrega_convidados gd ON gd.id=d.convidado_id
                      JOIN portal_entrega_versions vx ON vx.id=d.version_id
                     WHERE d.entrega_id=e.id AND vx.version_number=e.current_version AND d.decision='validated'
+                      AND EXISTS (
+                        SELECT 1 FROM portal_contatos_validacao pc
+                         WHERE pc.cliente_id=e.cliente_id
+                           AND lower(pc.email)=lower(gd.email)
+                           AND pc.ativo=true
+                      )
                  ),0) AS total_validados,
                  COALESCE((
                    SELECT string_agg(DISTINCT s.validator_name, ', ' ORDER BY s.validator_name)
@@ -6070,9 +6088,16 @@ const server = http.createServer(async (req, res) => {
                  WHERE d.version_id=$2 AND d.convidado_id=g.id AND d.decision='validated'
               ) as validated_current
          FROM portal_entrega_convidados g
-        WHERE g.entrega_id=$1 AND (g.version_id=$2 OR (g.version_id IS NULL AND $2 IS NULL))
+        WHERE g.entrega_id=$1
+          AND (g.version_id=$2 OR (g.version_id IS NULL AND $2 IS NULL))
+          AND EXISTS (
+            SELECT 1 FROM portal_contatos_validacao pc
+             WHERE pc.cliente_id=$3
+               AND lower(pc.email)=lower(g.email)
+               AND pc.ativo=true
+          )
         ORDER BY g.nome`,
-      [entregaId, currentVersion.id]
+      [entregaId, currentVersion.id, entrega.cliente_id]
     )).rows : [];
     const historicoConversasInternoHtml = currentVersion
       ? renderPreviousConversations(await loadPreviousConversations(pg, entregaId, currentVersion.version_number))
