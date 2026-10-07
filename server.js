@@ -3955,6 +3955,12 @@ const server = http.createServer(async (req, res) => {
                 <button type='submit' class='btn-outline'>Visualizar como validador</button>
               </form>
             ` : ''}
+            ${isFinancialAdmin(user) ? `
+              <form method='post' action='/entregas/contatos/excluir' style='margin:0' onsubmit="return confirm('Excluir este validador? Ele deixará de aparecer no cadastro e será removido de todos os documentos atuais deste cliente. O histórico já registrado será preservado.');">
+                <input type='hidden' name='id' value='${escapeHtml(ct.id)}'>
+                <button type='submit' class='btn-outline' style='border-color:#fecaca;color:#b91c1c'>Excluir</button>
+              </form>
+            ` : ''}
           </div>
         </td>
       </tr>
@@ -3965,6 +3971,7 @@ const server = http.createServer(async (req, res) => {
     const inactiveCount = contatos.filter(ct => !ct.ativo).length;
 
     const contactInvite = url.searchParams.get('convite');
+    const contactDeleted = url.searchParams.get('excluido');
     const contactInviteMessage = contactInvite === 'reenviado'
       ? "<div style='margin:1rem 0;padding:.75rem;background:#ecfdf5;color:#065f46;border:1px solid #a7f3d0;border-radius:.5rem'><strong>Convite reenviado.</strong> O novo link não expira.</div>"
       : contactInvite === 'sem-convite'
@@ -3975,6 +3982,7 @@ const server = http.createServer(async (req, res) => {
 
     const body = `
       ${contactInviteMessage}
+      ${contactDeleted ? "<div style='margin:1rem 0;padding:.75rem;background:#ecfdf5;color:#065f46;border:1px solid #a7f3d0;border-radius:.5rem'><strong>Validador excluído.</strong> Ele foi retirado do cadastro e dos documentos atuais. O histórico anterior foi preservado.</div>" : ''}
       <div style='display:flex;justify-content:space-between;align-items:flex-start;gap:1rem;flex-wrap:wrap'>
         <div>
           <a href='/entregas' style='font-size:.82rem'>← Voltar para Entregas</a>
@@ -4171,6 +4179,77 @@ const server = http.createServer(async (req, res) => {
       senderName: user.name || user.email || 'Equipe CKM Talents'
     });
     res.writeHead(302, { Location: ok ? '/entregas/contatos?convite=reenviado' : '/entregas/contatos?convite=erro' });
+    res.end();
+    return;
+  }
+
+  if (req.method === 'POST' && url.pathname === '/entregas/contatos/excluir') {
+    if (!isFinancialAdmin(user)) return json(res, 403, { error: 'Apenas administradores podem excluir validadores.' });
+    const pg = storage.getPool ? storage.getPool() : null;
+    if (!pg) return json(res, 503, { error: 'Banco não disponível.' });
+
+    const form = new URLSearchParams(await readBody(req));
+    const id = String(form.get('id') || '').trim();
+    const found = (await pg.query(
+      'SELECT id, cliente_id, nome, email FROM portal_contatos_validacao WHERE id=$1 LIMIT 1',
+      [id]
+    )).rows[0];
+    if (!found) return json(res, 404, { error: 'Validador não encontrado.' });
+    if (!(await userCanAccessPortalClient(user, Number(found.cliente_id)))) {
+      return json(res, 403, { error: 'Acesso não autorizado.' });
+    }
+
+    const client = await pg.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query(
+        `UPDATE portal_entrega_convidados g
+            SET revoked_at=COALESCE(g.revoked_at,NOW()),
+                can_comment=false,
+                can_request_changes=false,
+                can_validate=false,
+                status='revogado'
+          WHERE lower(g.email)=lower($1)
+            AND g.entrega_id IN (
+              SELECT e.id FROM portal_entregas e WHERE e.cliente_id=$2
+            )`,
+        [found.email, found.cliente_id]
+      );
+      await client.query(
+        `UPDATE portal_lote_convidados pl
+            SET revoked_at=COALESCE(pl.revoked_at,NOW()),
+                status='revogado'
+          WHERE lower(pl.email)=lower($1)
+            AND pl.lote_id IN (
+              SELECT DISTINCT e.lote_id
+                FROM portal_entregas e
+               WHERE e.cliente_id=$2 AND e.lote_id IS NOT NULL
+            )`,
+        [found.email, found.cliente_id]
+      );
+      await client.query('DELETE FROM portal_validator_sessions WHERE lower(email)=lower($1)', [found.email]);
+      await client.query('DELETE FROM portal_contatos_validacao WHERE id=$1', [id]);
+      await client.query(
+        `INSERT INTO portal_audit_events
+          (id,actor_type,actor_id,action,ip_address,user_agent,details)
+         VALUES ($1,'ckm',$2,'contato_validador_excluido',$3,$4,$5::jsonb)`,
+        [
+          crypto.randomUUID(),
+          user.id,
+          String(req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').split(',')[0].trim().slice(0,64),
+          String(req.headers['user-agent'] || '').slice(0,500),
+          JSON.stringify({ contatoId:id, clienteId:found.cliente_id, nome:found.nome, email:found.email, historicoPreservado:true })
+        ]
+      );
+      await client.query('COMMIT');
+    } catch (e) {
+      await client.query('ROLLBACK');
+      return json(res, 500, { error: 'Não foi possível excluir o validador: ' + e.message });
+    } finally {
+      client.release();
+    }
+
+    res.writeHead(302, { Location: '/entregas/contatos?excluido=1' });
     res.end();
     return;
   }
