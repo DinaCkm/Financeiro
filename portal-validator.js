@@ -206,7 +206,59 @@ async function getContactByEmail(pg, email) {
   )).rows[0] || null;
 }
 
+async function ensureCurrentAssignments(pg, email) {
+  const missing = (await pg.query(
+    `SELECT e.id AS entrega_id,
+            v.id AS version_id,
+            src.nome,
+            src.can_comment,
+            src.can_request_changes,
+            src.can_validate
+       FROM portal_entregas e
+       JOIN portal_entrega_versions v
+         ON v.entrega_id=e.id
+        AND v.version_number=e.current_version
+       JOIN LATERAL (
+         SELECT gx.nome,gx.can_comment,gx.can_request_changes,gx.can_validate
+           FROM portal_entrega_convidados gx
+          WHERE gx.entrega_id=e.id
+            AND lower(gx.email)=lower($1)
+            AND gx.revoked_at IS NULL
+          ORDER BY gx.invited_at DESC
+          LIMIT 1
+       ) src ON TRUE
+      WHERE e.status<>'cancelado'
+        AND NOT EXISTS (
+          SELECT 1
+            FROM portal_entrega_convidados cur
+           WHERE cur.entrega_id=e.id
+             AND cur.version_id=v.id
+             AND lower(cur.email)=lower($1)
+             AND cur.revoked_at IS NULL
+        )`,
+    [email]
+  )).rows;
+
+  for (const row of missing) {
+    const { tokenHash } = createGuestToken();
+    await pg.query(
+      `INSERT INTO portal_entrega_convidados
+        (id,entrega_id,version_id,nome,email,can_comment,can_request_changes,can_validate,token_hash,status,invited_at,expires_at)
+       SELECT $1,$2,$3,$4,lower($5),$6,$7,$8,$9,'convidado',NOW(),'infinity'::timestamptz
+       WHERE NOT EXISTS (
+         SELECT 1 FROM portal_entrega_convidados
+          WHERE entrega_id=$2 AND version_id=$3 AND lower(email)=lower($5) AND revoked_at IS NULL
+       )`,
+      [
+        crypto.randomUUID(), row.entrega_id, row.version_id, row.nome || email, email,
+        !!row.can_comment, !!row.can_request_changes, !!row.can_validate, tokenHash
+      ]
+    );
+  }
+}
+
 async function getDocuments(pg, email) {
+  await ensureCurrentAssignments(pg, email);
   return (await pg.query(
     `SELECT DISTINCT e.id,e.titulo,e.descricao,e.status,e.current_version,e.responsavel_user_id,
             v.id AS version_id,v.version_number,v.status AS version_status,v.uploaded_at AS version_uploaded_at,
