@@ -1942,7 +1942,7 @@ const server = http.createServer(async (req, res) => {
     const tokenHash = hashResetToken(token);
     const user = db.users.find((u) => u.passwordResetTokenHash === tokenHash);
     const expiresAt = user && user.passwordResetExpiresAt ? new Date(user.passwordResetExpiresAt) : null;
-    const isPermanentInvite = !!(user && user.mustChangePassword && user.status === 'pendente');
+    const isPermanentInvite = !!(user && user.mustChangePassword && user.status !== 'inativo');
 
     // Convites de primeiro acesso não expiram. Links de recuperação de senha continuam temporários.
     if (!user || (!isPermanentInvite && (!expiresAt || Number.isNaN(expiresAt.getTime()) || expiresAt.getTime() < Date.now()))) {
