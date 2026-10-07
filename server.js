@@ -14419,6 +14419,21 @@ async function portalDigestRecipients(pgClient) {
      ORDER BY email
   `)).rows;
 
+  const managers = (await pgClient.query(`
+    SELECT
+      u.id,
+      u.name,
+      lower(trim(u.email)) AS email,
+      array_agg(DISTINCT cp.projeto_id ORDER BY cp.projeto_id) AS project_ids
+    FROM users u
+    JOIN portal_consultor_projetos cp ON cp.consultant_user_id=u.id
+    WHERE COALESCE(u.status,'ativo')='ativo'
+      AND u.email IS NOT NULL
+      AND position('@' in u.email) > 1
+    GROUP BY u.id,u.name,u.email
+    ORDER BY email
+  `)).rows;
+
   const validators = (await pgClient.query(`
     WITH raw AS (
       SELECT
@@ -14452,7 +14467,7 @@ async function portalDigestRecipients(pgClient) {
     ORDER BY email
   `)).rows;
 
-  return { admins, validators };
+  return { admins, managers, validators };
 }
 
 function portalDigestLines(snapshot, projectIds, reportDate, recipientName, isAdmin) {
@@ -14512,7 +14527,7 @@ function portalDigestLines(snapshot, projectIds, reportDate, recipientName, isAd
   lines.push(
     isAdmin
       ? 'Resumo consolidado de todos os projetos do Portal de Validação.'
-      : 'Resumo dos projetos em que você está cadastrado(a) como validador(a).'
+      : 'Resumo dos projetos sob sua responsabilidade no Portal de Validação.'
   );
   lines.push(
     'Posição até ' + portalDigestDateBr(reportDate) + ': ' +
@@ -14586,6 +14601,7 @@ async function runPortalDailyDigest(pg, baseUrl) {
 
     const base = String(baseUrl || '').trim().replace(/\/+$/, '');
     const adminEmails = new Set(recipients.admins.map(a => a.email));
+    const managerEmails = new Set((recipients.managers || []).map(m => m.email));
     const sent = new Set(Array.isArray(state.sent) ? state.sent : []);
 
     const targets = [];
@@ -14598,8 +14614,18 @@ async function runPortalDailyDigest(pg, baseUrl) {
         projectIds: null
       });
     }
+    for (const manager of (recipients.managers || [])) {
+      if (adminEmails.has(manager.email)) continue;
+      targets.push({
+        key: 'manager:' + manager.email,
+        email: manager.email,
+        name: manager.name || '',
+        isAdmin: false,
+        projectIds: manager.project_ids || []
+      });
+    }
     for (const validator of recipients.validators) {
-      if (adminEmails.has(validator.email)) continue;
+      if (adminEmails.has(validator.email) || managerEmails.has(validator.email)) continue;
       targets.push({
         key: 'validator:' + validator.email,
         email: validator.email,
