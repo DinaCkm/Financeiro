@@ -312,11 +312,20 @@ function currentUser(req, db) {
   }
 
   // Sliding session: renova validade quando o usuário segue ativo.
-  sessions.set(sid, { userId, expiresAt: now + SESSION_TTL_SECONDS * 1000 });
-  if (storage.sessionSet) {
+  const supportMode = typeof sessionData === 'object' ? sessionData.supportMode : null;
+  const refreshedSession = supportMode
+    ? { ...sessionData, userId, expiresAt: now + SESSION_TTL_SECONDS * 1000 }
+    : { userId, expiresAt: now + SESSION_TTL_SECONDS * 1000 };
+  sessions.set(sid, refreshedSession);
+  // Sessões de suporte são intencionalmente efêmeras e não são persistidas.
+  if (!supportMode && storage.sessionSet) {
     storage.sessionSet(sid, userId, SESSION_TTL_SECONDS).catch(() => {});
   }
-  return db.users.find((u) => u.id === userId) || null;
+  const foundUser = db.users.find((u) => u.id === userId) || null;
+  if (!foundUser) return null;
+  return supportMode
+    ? { ...foundUser, _supportMode: supportMode, _supportAdminSid: sessionData.supportAdminSid || null, _supportAdminUserId: sessionData.supportAdminUserId || null }
+    : foundUser;
 }
 
 function readBody(req, maxBytes = 25 * 1024 * 1024) {
@@ -1213,7 +1222,15 @@ ${user ? `
   </div>
 </aside>
 <div class='sidebar-backdrop' onclick='document.body.classList.remove("sidebar-open")'></div>` : ''}
-<main class='app-main'>${body}</main>
+<main class='app-main'>
+${user && user._supportMode === 'consultant' ? `
+  <div style='margin:0 0 1rem;padding:.85rem 1rem;background:#fff7ed;border:1px solid #fdba74;border-radius:10px;color:#9a3412;display:flex;justify-content:space-between;align-items:center;gap:1rem;flex-wrap:wrap'>
+    <div><strong>Modo de suporte — somente leitura.</strong> Você está visualizando o sistema exatamente com as permissões de <strong>${escapeHtml(user.name || user.email || 'este gestor')}</strong>. Nenhuma alteração pode ser realizada neste modo.</div>
+    <form method='post' action='/entregas/sair-suporte' style='margin:0'>
+      <button type='submit' class='btn-outline'>Sair do modo suporte</button>
+    </form>
+  </div>` : ''}
+${body}</main>
 <script>
   document.querySelectorAll('.app-sidebar a').forEach(function(a){
     a.addEventListener('click', function(){ document.body.classList.remove('sidebar-open'); });
@@ -3520,6 +3537,13 @@ const server = http.createServer(async (req, res) => {
   if (!user) {
     res.writeHead(302, { Location: '/login' });
     res.end();
+    return;
+  }
+
+  if (user && user._supportMode === 'consultant' && req.method !== 'GET' && url.pathname !== '/entregas/sair-suporte') {
+    if (url.pathname.startsWith('/api/')) return json(res, 403, { error: 'Modo de suporte é somente leitura.' });
+    res.writeHead(403, { 'Content-Type':'text/html; charset=utf-8' });
+    res.end(page('Modo de suporte', "<div style='padding:1rem;background:#fff7ed;border:1px solid #fdba74;border-radius:10px;color:#9a3412'><strong>Modo de suporte é somente leitura.</strong> Saia do modo de suporte para realizar alterações.</div>", user, '/entregas'));
     return;
   }
 
@@ -6718,6 +6742,12 @@ const server = http.createServer(async (req, res) => {
                 <button type='submit' class='btn-outline' ${!isSmtpConfigured() ? "disabled title='SMTP ainda não configurado'" : ''}>Reenviar convite</button>
               </form>
             ` : ''}
+            ${u.status === 'ativo' ? `
+              <form method='post' action='/acessos/consultor-visualizar' style='margin:0'>
+                <input type='hidden' name='consultantId' value='${escapeHtml(u.id)}'>
+                <button type='submit' class='btn-outline'>Visualizar como gestor</button>
+              </form>
+            ` : ''}
           </div>
           <form method='post' action='/acessos/consultor-clientes' style='margin-top:1rem'>
             <input type='hidden' name='consultantId' value='${escapeHtml(u.id)}'>
@@ -6842,6 +6872,62 @@ const server = http.createServer(async (req, res) => {
     }
     const ok = await sendSmtpTestEmail({ to: email });
     res.writeHead(302, { Location: ok ? '/acessos?emailTeste=ok' : '/acessos?emailTeste=erro' });
+    res.end();
+    return;
+  }
+
+  if (req.method === 'POST' && url.pathname === '/acessos/consultor-visualizar') {
+    if (!isFinancialAdmin(user)) return json(res, 403, { error: 'Acesso não autorizado.' });
+    const form = new URLSearchParams(await readBody(req));
+    const consultantId = String(form.get('consultantId') || '').trim();
+    const consultant = (db.users || []).find(u => u.id === consultantId && isDeliveryConsultant(u));
+    if (!consultant) return json(res, 404, { error: 'Consultor não encontrado.' });
+    if (consultant.status !== 'ativo') return json(res, 409, { error: 'O acesso deste gestor não está ativo.' });
+
+    const originalSid = parseCookies(req).sid;
+    if (!originalSid) return json(res, 401, { error: 'Sessão administrativa não encontrada.' });
+    const supportSid = crypto.randomBytes(32).toString('hex');
+    sessions.set(supportSid, {
+      userId: consultant.id,
+      expiresAt: Date.now() + SESSION_TTL_SECONDS * 1000,
+      supportMode: 'consultant',
+      supportAdminSid: originalSid,
+      supportAdminUserId: user.id
+    });
+
+    const pg = storage.getPool ? storage.getPool() : null;
+    if (pg) {
+      pg.query(
+        `INSERT INTO portal_audit_events
+          (id,actor_type,actor_id,action,ip_address,user_agent,details)
+         VALUES ($1,'ckm',$2,'suporte_visualizar_como_gestor',$3,$4,$5::jsonb)`,
+        [
+          crypto.randomUUID(), user.id,
+          String(req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').split(',')[0].trim().slice(0,64),
+          String(req.headers['user-agent'] || '').slice(0,500),
+          JSON.stringify({ consultantId: consultant.id, consultantName: consultant.name, consultantEmail: consultant.email })
+        ]
+      ).catch(e => console.warn('[suporte] auditoria visualizar gestor:', e.message));
+    }
+
+    res.writeHead(302, {
+      'Set-Cookie': buildSessionCookie(req, supportSid, SESSION_TTL_SECONDS),
+      Location: '/entregas'
+    });
+    res.end();
+    return;
+  }
+
+  if (req.method === 'POST' && url.pathname === '/entregas/sair-suporte') {
+    if (!user || user._supportMode !== 'consultant' || !user._supportAdminSid) {
+      return json(res, 400, { error: 'Nenhum modo de suporte ativo.' });
+    }
+    const currentSid = parseCookies(req).sid;
+    if (currentSid) sessions.delete(currentSid);
+    res.writeHead(302, {
+      'Set-Cookie': buildSessionCookie(req, user._supportAdminSid, SESSION_TTL_SECONDS),
+      Location: '/acessos'
+    });
     res.end();
     return;
   }
