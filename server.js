@@ -6994,10 +6994,10 @@ const server = http.createServer(async (req, res) => {
               <input type='hidden' name='status' value='${u.status === 'ativo' ? 'inativo' : 'ativo'}'>
               <button type='submit' class='btn-outline'>${u.status === 'ativo' ? 'Inativar acesso' : 'Ativar acesso'}</button>
             </form>
-            ${u.status === 'pendente' ? `
+            ${u.status !== 'inativo' ? `
               <form method='post' action='/acessos/consultor-reenviar-convite' style='margin:0'>
                 <input type='hidden' name='consultantId' value='${escapeHtml(u.id)}'>
-                <button type='submit' class='btn-outline' ${!isSmtpConfigured() ? "disabled title='SMTP ainda não configurado'" : ''}>Reenviar convite</button>
+                <button type='submit' class='btn-outline' ${!isSmtpConfigured() ? "disabled title='SMTP ainda não configurado'" : ''}>${u.status === 'pendente' ? 'Reenviar convite' : 'Reenviar convite'}</button>
               </form>
             ` : ''}
             ${u.status === 'ativo' ? `
@@ -7237,8 +7237,8 @@ const server = http.createServer(async (req, res) => {
     const consultantId = String(form.get('consultantId') || '').trim();
     const consultant = (db.users || []).find(u => u.id === consultantId && isDeliveryConsultant(u));
     if (!consultant) return json(res, 404, { error: 'Consultor não encontrado.' });
-    if (consultant.status !== 'pendente') {
-      return json(res, 409, { error: 'O reenvio de convite é destinado apenas a acessos pendentes.' });
+    if (consultant.status === 'inativo') {
+      return json(res, 409, { error: 'Ative o acesso do gestor antes de reenviar o convite.' });
     }
 
     const { token, tokenHash } = generatePasswordResetToken();
