@@ -4194,7 +4194,7 @@ const server = http.createServer(async (req, res) => {
           'Este link não expira e permanece ativo até que a CKM o revogue.'
         ],
         actionLabel: 'Acessar documentos',
-        actionLink: `${portalBaseUrl(req)}/validar-lote/${encodeURIComponent(token)}`,
+        actionLink: `${portalBaseUrl(req)}/validacao`,
       });
       res.writeHead(302, { Location: ok ? '/entregas/contatos?convite=reenviado' : '/entregas/contatos?convite=erro' });
       res.end();
@@ -4232,7 +4232,7 @@ const server = http.createServer(async (req, res) => {
       to: contato.email,
       name: contato.nome,
       documentTitle: `${individual.titulo}${individual.version_number ? ' — V' + individual.version_number : ''}`,
-      accessLink: `${portalBaseUrl(req)}/validar/${encodeURIComponent(token)}`,
+      accessLink: `${portalBaseUrl(req)}/validacao`,
       senderName: user.name || user.email || 'Equipe CKM Talents'
     });
     res.writeHead(302, { Location: ok ? '/entregas/contatos?convite=reenviado' : '/entregas/contatos?convite=erro' });
@@ -5471,7 +5471,7 @@ const server = http.createServer(async (req, res) => {
     await recordPortalAudit(pg, req, { entregaId, versionId, actorType:'ckm', actorId:user.id, action:'entrega_criada', details:{ fileHash } });
     const baseUrl = portalBaseUrl(req);
     for (const inv of invitations) {
-      const accessLink = `${baseUrl}/validar/${encodeURIComponent(inv.token)}`;
+      const accessLink = `${baseUrl}/validacao`;
       sendDeliveryInviteEmail({
         to: inv.email,
         name: inv.nome,
@@ -6055,7 +6055,7 @@ const server = http.createServer(async (req, res) => {
       sendDeliveryInviteEmail({
         to: guest.email, name: guest.nome,
         documentTitle: `${delivery.titulo} — V${guest.version_number}`,
-        accessLink: `${portalBaseUrl(req)}/validar/${token}`,
+        accessLink: `${portalBaseUrl(req)}/validacao`,
         senderName: user.name || user.email || 'Equipe CKM Talents'
       }).catch(e => console.warn('[entregas] Falha ao reemitir link:', e.message));
     }
@@ -6907,7 +6907,7 @@ const server = http.createServer(async (req, res) => {
         to: inv.email,
         name: inv.nome,
         documentTitle: `${entrega.titulo} — V${nextVersion}`,
-        accessLink: `${baseUrl}/validar/${encodeURIComponent(inv.token)}`,
+        accessLink: `${baseUrl}/validacao`,
         senderName: user.name || user.email || 'Equipe CKM Talents'
       }).catch(e => console.warn('[entregas] Erro ao reenviar convite:', e && e.message ? e.message : e));
     }
