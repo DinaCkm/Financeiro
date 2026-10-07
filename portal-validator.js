@@ -276,6 +276,78 @@ async function notifyResponsible(pg, req, doc, subject, title, lines) {
   }
 }
 
+async function notifyConversationParticipants(pg, req, doc, versionId, actorEmail, actorName, message, eventLabel = 'Novo comentário') {
+  try {
+    if (!doc || !doc.id || !versionId) return;
+    const delivery = (await pg.query(
+      `SELECT e.id,e.titulo,e.projeto_id,e.responsavel_user_id,p.nome AS projeto_nome
+         FROM portal_entregas e
+         LEFT JOIN projetos p ON p.id=e.projeto_id
+        WHERE e.id=$1 LIMIT 1`,
+      [doc.id]
+    )).rows[0];
+    if (!delivery) return;
+
+    const recipients = new Map();
+    const actor = String(actorEmail || '').trim().toLowerCase();
+    const add = (email, name, kind) => {
+      const normalized = String(email || '').trim().toLowerCase();
+      if (!normalized || !normalized.includes('@') || normalized === actor) return;
+      if (!recipients.has(normalized)) recipients.set(normalized, {email:normalized,name:name||normalized,kind});
+    };
+
+    const guests = (await pg.query(
+      `SELECT lower(trim(email)) AS email,max(nome) AS nome
+         FROM portal_entrega_convidados
+        WHERE entrega_id=$1 AND version_id=$2 AND revoked_at IS NULL
+        GROUP BY lower(trim(email))`,
+      [delivery.id, versionId]
+    )).rows;
+    for (const g of guests) add(g.email,g.nome,'validator');
+
+    const internal = (await pg.query(
+      `SELECT DISTINCT u.email,u.name,
+              CASE WHEN lower(u.role) IN ('owner','admin') THEN 'admin' ELSE 'manager' END AS kind
+         FROM users u
+        WHERE COALESCE(u.status,'ativo')='ativo'
+          AND u.email IS NOT NULL
+          AND position('@' in u.email)>1
+          AND (
+            lower(u.role) IN ('owner','admin')
+            OR u.id=$1
+            OR EXISTS (
+              SELECT 1 FROM portal_consultor_projetos cp
+               WHERE cp.consultant_user_id=u.id AND cp.projeto_id=$2
+            )
+          )`,
+      [delivery.responsavel_user_id, delivery.projeto_id]
+    )).rows;
+    for (const u of internal) add(u.email,u.name,u.kind);
+
+    const excerpt = String(message || '').trim();
+    const shortMessage = excerpt.length > 700 ? excerpt.slice(0,700) + '…' : excerpt;
+    for (const recipient of recipients.values()) {
+      const internalUser = recipient.kind !== 'validator';
+      sendPortalNotificationEmail({
+        to: recipient.email,
+        subject: `${eventLabel} — ${delivery.titulo}`,
+        title: eventLabel,
+        lines: [
+          `${actorName || actorEmail || 'Participante'} registrou uma manifestação no documento "${delivery.titulo}".`,
+          delivery.projeto_nome ? `Projeto: ${delivery.projeto_nome}.` : '',
+          shortMessage
+        ].filter(Boolean),
+        actionLabel: internalUser ? 'Abrir entrega' : 'Acessar documentos',
+        actionLink: internalUser
+          ? `${portalBaseUrl(req)}/entregas/${encodeURIComponent(delivery.id)}`
+          : `${portalBaseUrl(req)}/validacao`
+      }).catch(e => console.warn('[portal-validator] aviso de conversa não enviado:', e && e.message ? e.message : e));
+    }
+  } catch (e) {
+    console.warn('[portal-validator] aviso aos participantes:', e.message);
+  }
+}
+
 function createSignature({ entregaId, versionId, convidadoId, fileHash, name, email, cpf }) {
   const securityCode = `CKM-VAL-${new Date().getUTCFullYear()}-${crypto.randomBytes(5).toString('hex').toUpperCase()}`;
   const signedAt = new Date().toISOString();
@@ -585,10 +657,9 @@ async function handlePublic(req, res, ctx) {
            VALUES ($1,$2,$3,'cliente',$4,$5,$6,$7,NOW())`,
           [crypto.randomUUID(),doc.id,doc.version_id,doc.convidado_id,contact ? contact.nome : session.email,session.email,`CONTRIBUIÇÃO: ${message}`]
         );
-        await notifyResponsible(pg, req, doc,
-          `Nova contribuição — ${doc.titulo}`,
-          'Nova contribuição do cliente',
-          [`${contact ? contact.nome : session.email} enviou uma contribuição sobre "${doc.titulo}".`, message]
+        await notifyConversationParticipants(
+          pg, req, doc, doc.version_id, session.email, contact ? contact.nome : session.email,
+          message, 'Novo comentário no documento'
         );
       } else if (type === 'changes_requested' && doc.can_request_changes) {
         const client = await pg.connect();
@@ -609,10 +680,9 @@ async function handlePublic(req, res, ctx) {
           await client.query("UPDATE portal_entrega_versions SET status='ajustes_solicitados' WHERE id=$1",[doc.version_id]);
           await client.query("UPDATE portal_entregas SET status='ajustes_solicitados' WHERE id=$1",[doc.id]);
           await client.query('COMMIT');
-          await notifyResponsible(pg, req, doc,
-            `Alteração solicitada — ${doc.titulo}`,
-            'Cliente solicitou alteração',
-            [`${contact ? contact.nome : session.email} solicitou alteração em "${doc.titulo}".`, message, 'Acesse a entrega para preparar e publicar a nova versão.']
+          await notifyConversationParticipants(
+            pg, req, doc, doc.version_id, session.email, contact ? contact.nome : session.email,
+            message, 'Alteração solicitada no documento'
           );
         } catch (e) {
           await client.query('ROLLBACK');
