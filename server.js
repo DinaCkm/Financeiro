@@ -4182,9 +4182,10 @@ const server = http.createServer(async (req, res) => {
     const form = new URLSearchParams(await readBody(req));
     const id = String(form.get('id') || '').trim();
     const status = String(form.get('status') || '').trim();
+    const ativar = status === 'ativo';
 
     const found = (await pg.query(
-      'SELECT id, cliente_id FROM portal_contatos_validacao WHERE id=$1 LIMIT 1',
+      'SELECT id, cliente_id, nome, email, ativo FROM portal_contatos_validacao WHERE id=$1 LIMIT 1',
       [id]
     )).rows[0];
     if (!found) return json(res, 404, { error: 'Contato não encontrado.' });
@@ -4192,10 +4193,80 @@ const server = http.createServer(async (req, res) => {
       return json(res, 403, { error: 'Acesso não autorizado.' });
     }
 
-    await pg.query(
-      'UPDATE portal_contatos_validacao SET ativo=$2, updated_at=NOW() WHERE id=$1',
-      [id, status === 'ativo']
-    );
+    const client = await pg.connect();
+    let revokedGuests = 0;
+    let revokedPackages = 0;
+    try {
+      await client.query('BEGIN');
+      await client.query(
+        'UPDATE portal_contatos_validacao SET ativo=$2, updated_at=NOW() WHERE id=$1',
+        [id, ativar]
+      );
+
+      if (!ativar) {
+        const guestResult = await client.query(
+          `UPDATE portal_entrega_convidados g
+              SET revoked_at=COALESCE(g.revoked_at,NOW()),
+                  can_comment=false,
+                  can_request_changes=false,
+                  can_validate=false,
+                  status='revogado'
+            WHERE lower(g.email)=lower($1)
+              AND g.entrega_id IN (
+                SELECT e.id FROM portal_entregas e WHERE e.cliente_id=$2
+              )`,
+          [found.email, found.cliente_id]
+        );
+        revokedGuests = guestResult.rowCount || 0;
+
+        const packageResult = await client.query(
+          `UPDATE portal_lote_convidados pl
+              SET revoked_at=COALESCE(pl.revoked_at,NOW()),
+                  status='revogado'
+            WHERE lower(pl.email)=lower($1)
+              AND pl.lote_id IN (
+                SELECT DISTINCT e.lote_id
+                  FROM portal_entregas e
+                 WHERE e.cliente_id=$2 AND e.lote_id IS NOT NULL
+              )`,
+          [found.email, found.cliente_id]
+        );
+        revokedPackages = packageResult.rowCount || 0;
+
+        await client.query(
+          'DELETE FROM portal_validator_sessions WHERE lower(email)=lower($1)',
+          [found.email]
+        );
+      }
+
+      await client.query(
+        `INSERT INTO portal_audit_events
+          (id,actor_type,actor_id,action,ip_address,user_agent,details)
+         VALUES ($1,'ckm',$2,$3,$4,$5,$6::jsonb)`,
+        [
+          crypto.randomUUID(),
+          user.id,
+          ativar ? 'contato_validador_ativado' : 'contato_validador_inativado',
+          String(req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').split(',')[0].trim().slice(0,64),
+          String(req.headers['user-agent'] || '').slice(0,500),
+          JSON.stringify({
+            contatoId:id,
+            nome:found.nome,
+            email:found.email,
+            clienteId:found.cliente_id,
+            revokedGuests,
+            revokedPackages
+          })
+        ]
+      ).catch(() => {});
+
+      await client.query('COMMIT');
+    } catch (e) {
+      await client.query('ROLLBACK');
+      return json(res, 500, { error: 'Não foi possível atualizar o contato: ' + e.message });
+    } finally {
+      client.release();
+    }
 
     res.writeHead(302, { Location: '/entregas/contatos' });
     res.end();
@@ -5411,10 +5482,19 @@ const server = http.createServer(async (req, res) => {
 
     // Validadores do pacote atual (fonte principal).
     let validators = (await pg.query(
-      `SELECT nome, lower(email) AS email
-         FROM portal_lote_convidados
-        WHERE lote_id=$1 AND revoked_at IS NULL
-        ORDER BY invited_at`,
+      `SELECT pl.nome, lower(pl.email) AS email
+         FROM portal_lote_convidados pl
+        WHERE pl.lote_id=$1
+          AND pl.revoked_at IS NULL
+          AND EXISTS (
+            SELECT 1
+              FROM portal_entregas e
+              JOIN portal_contatos_validacao pc ON pc.cliente_id=e.cliente_id
+             WHERE e.lote_id=pl.lote_id
+               AND lower(pc.email)=lower(pl.email)
+               AND pc.ativo=true
+          )
+        ORDER BY pl.invited_at`,
       [loteId]
     )).rows;
 
@@ -5424,7 +5504,15 @@ const server = http.createServer(async (req, res) => {
         `SELECT DISTINCT ON (lower(g.email)) g.nome, lower(g.email) AS email
            FROM portal_entrega_convidados g
            JOIN portal_entregas e ON e.id=g.entrega_id
-          WHERE e.lote_id=$1 AND g.email IS NOT NULL
+          WHERE e.lote_id=$1
+            AND g.email IS NOT NULL
+            AND g.revoked_at IS NULL
+            AND EXISTS (
+              SELECT 1 FROM portal_contatos_validacao pc
+               WHERE pc.cliente_id=e.cliente_id
+                 AND lower(pc.email)=lower(g.email)
+                 AND pc.ativo=true
+            )
           ORDER BY lower(g.email), g.invited_at DESC`,
         [loteId]
       )).rows;
@@ -6616,12 +6704,19 @@ const server = http.createServer(async (req, res) => {
     }
 
     const previousGuests = (await pg.query(
-      `SELECT nome, email, can_comment, can_request_changes, can_validate
-         FROM portal_entrega_convidados
-        WHERE entrega_id=$1
-          AND version_id=(SELECT id FROM portal_entrega_versions WHERE entrega_id=$1 AND version_number=$2 LIMIT 1)
-        ORDER BY invited_at`,
-      [entregaId, currentVersion]
+      `SELECT g.nome, g.email, g.can_comment, g.can_request_changes, g.can_validate
+         FROM portal_entrega_convidados g
+        WHERE g.entrega_id=$1
+          AND g.version_id=(SELECT id FROM portal_entrega_versions WHERE entrega_id=$1 AND version_number=$2 LIMIT 1)
+          AND g.revoked_at IS NULL
+          AND EXISTS (
+            SELECT 1 FROM portal_contatos_validacao pc
+             WHERE pc.cliente_id=$3
+               AND lower(pc.email)=lower(g.email)
+               AND pc.ativo=true
+          )
+        ORDER BY g.invited_at`,
+      [entregaId, currentVersion, entrega.cliente_id]
     )).rows;
     if (!previousGuests.length) return json(res, 409, { error: 'Não foi possível localizar os validadores da versão anterior.' });
 
