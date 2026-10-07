@@ -3664,7 +3664,40 @@ const server = http.createServer(async (req, res) => {
                      FROM portal_entrega_signatures s
                      JOIN portal_entrega_versions vx ON vx.id=s.version_id
                     WHERE s.entrega_id=e.id AND vx.version_number=e.current_version
-                 ),'') AS nomes_validados
+                 ),'') AS nomes_validados,
+                 COALESCE((
+                   SELECT COUNT(*)::int
+                     FROM portal_entrega_versions vv
+                    WHERE vv.entrega_id=e.id
+                 ),0) AS total_versoes,
+                 (
+                   SELECT MAX(g.last_access_at)
+                     FROM portal_entrega_convidados g
+                     JOIN portal_entrega_versions vx ON vx.id=g.version_id
+                    WHERE g.entrega_id=e.id
+                      AND vx.version_number=e.current_version
+                      AND g.last_access_at IS NOT NULL
+                      AND EXISTS (
+                        SELECT 1 FROM portal_contatos_validacao pc
+                         WHERE pc.cliente_id=e.cliente_id
+                           AND lower(pc.email)=lower(g.email)
+                           AND pc.ativo=true
+                      )
+                 ) AS ultimo_acesso_em,
+                 COALESCE((
+                   SELECT string_agg(DISTINCT g.nome, ', ' ORDER BY g.nome)
+                     FROM portal_entrega_convidados g
+                     JOIN portal_entrega_versions vx ON vx.id=g.version_id
+                    WHERE g.entrega_id=e.id
+                      AND vx.version_number=e.current_version
+                      AND g.last_access_at IS NOT NULL
+                      AND EXISTS (
+                        SELECT 1 FROM portal_contatos_validacao pc
+                         WHERE pc.cliente_id=e.cliente_id
+                           AND lower(pc.email)=lower(g.email)
+                           AND pc.ativo=true
+                      )
+                 ),'') AS nomes_acessaram
           FROM portal_entregas e
           LEFT JOIN clientes c ON c.id=e.cliente_id
           LEFT JOIN projetos p ON p.id=e.projeto_id
@@ -3683,39 +3716,64 @@ const server = http.createServer(async (req, res) => {
       }
     }
 
-    const rows = entregas.map(e => {
-      const statusLabel = e.status === 'validado'
-        ? 'Validado'
-        : e.status === 'cancelado'
-          ? 'Cancelado'
-          : e.status === 'ajustes_solicitados'
-            ? 'Alteração solicitada'
-            : 'Aguardando cliente';
-      const statusClass = e.status === 'validado'
-        ? 'badge-green'
-        : e.status === 'cancelado'
-          ? 'badge-red'
-          : e.status === 'ajustes_solicitados'
-            ? 'badge-amber'
-            : '';
-      return `
-        <tr>
-          <td><a href='/entregas/${encodeURIComponent(e.id)}' style='color:inherit;text-decoration:none'><strong>${escapeHtml(e.titulo)}</strong><div style='font-size:.75rem;color:#64748b'>V${Number(e.current_version || 1)}</div></a></td>
-          <td>${escapeHtml(e.cliente_nome_curto || e.cliente_nome || '-')}</td>
-          <td>${escapeHtml(e.projeto_nome || '-')}</td>
-          <td>${escapeHtml(e.contrato_numero || '-')}</td>
-          <td>
-            <span class='badge ${statusClass}'>${statusLabel}</span>
-            <div style='margin-top:.3rem;font-size:.72rem;color:#475569'>
-              <strong>${Number(e.total_validados || 0)} de ${Number(e.total_validadores || 0)}</strong> validação(ões)
-              ${e.nomes_validados ? "<div style='margin-top:.15rem;color:#065f46'>Validado por: "+escapeHtml(e.nomes_validados)+"</div>" : ""}
-            </div>
-          </td>
-          <td><strong>${Number(e.total_acessaram || 0)} de ${Number(e.total_validadores || 0)}</strong><div style='font-size:.7rem;color:#64748b'>acessaram</div></td>
-          <td>${e.sent_at ? escapeHtml(new Date(e.sent_at).toLocaleString('pt-BR')) : '-'}</td>
-        </tr>
-      `;
-    }).join('');
+    const grouped = new Map();
+    for (const e of entregas) {
+      const clienteNome = e.cliente_nome_curto || e.cliente_nome || 'Sem cliente';
+      const projetoNome = e.projeto_nome || 'Sem projeto';
+      const key = clienteNome + '||' + projetoNome;
+      if (!grouped.has(key)) grouped.set(key, { clienteNome, projetoNome, docs: [] });
+      grouped.get(key).docs.push(e);
+    }
+
+    const documentSections = [...grouped.values()].map(group => `
+      <section style='margin-top:1rem'>
+        <div style='margin-bottom:.6rem'>
+          <div style='font-size:.72rem;font-weight:800;color:#64748b;text-transform:uppercase;letter-spacing:.05em'>${escapeHtml(group.clienteNome)}</div>
+          <h2 style='margin:.15rem 0 0'>${escapeHtml(group.projetoNome)}</h2>
+        </div>
+        <div style='display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:.8rem'>
+          ${group.docs.map(e => {
+            const statusLabel = e.status === 'validado'
+              ? 'Validado'
+              : e.status === 'cancelado'
+                ? 'Cancelado'
+                : e.status === 'ajustes_solicitados'
+                  ? 'Alteração solicitada'
+                  : 'Aguardando cliente';
+            const statusStyle = e.status === 'validado'
+              ? 'background:#ecfdf5;color:#065f46'
+              : e.status === 'ajustes_solicitados'
+                ? 'background:#fff7ed;color:#9a3412'
+                : e.status === 'cancelado'
+                  ? 'background:#fee2e2;color:#991b1b'
+                  : 'background:#eff6ff;color:#1d4ed8';
+            const versionLabel = Number(e.current_version || 1) === 1
+              ? 'Versão original · V1'
+              : 'Versão atual · V' + Number(e.current_version) + ' · histórico com ' + Number(e.total_versoes || e.current_version) + ' versões';
+            const accessText = e.ultimo_acesso_em
+              ? (e.nomes_acessaram ? escapeHtml(e.nomes_acessaram) + ' · ' : '') + 'último acesso em ' + escapeHtml(new Date(e.ultimo_acesso_em).toLocaleString('pt-BR'))
+              : 'Ainda não houve acesso registrado nesta versão';
+            return `
+              <a href='/entregas/${encodeURIComponent(e.id)}' style='display:block;text-decoration:none;color:inherit;border:1px solid #e2e8f0;border-radius:12px;padding:1rem;background:#fff'>
+                <div style='display:flex;justify-content:space-between;gap:12px;align-items:flex-start'>
+                  <div style='font-weight:700;font-size:.95rem'>${escapeHtml(e.titulo)}</div>
+                  <span style='font-size:.72rem;font-weight:700;padding:.25rem .5rem;border-radius:999px;${statusStyle}'>${escapeHtml(statusLabel)}</span>
+                </div>
+                <div style='display:flex;gap:.4rem;flex-wrap:wrap;margin-top:.7rem'>
+                  <span style='font-size:.72rem;padding:.25rem .5rem;border-radius:999px;background:#f8fafc;border:1px solid #e2e8f0'>${escapeHtml(versionLabel)}</span>
+                  ${e.sent_at ? `<span style='font-size:.72rem;padding:.25rem .5rem;border-radius:999px;background:#f8fafc;border:1px solid #e2e8f0'>Disponibilizado em ${escapeHtml(new Date(e.sent_at).toLocaleString('pt-BR'))}</span>` : ''}
+                </div>
+                <div style='font-size:.78rem;color:#64748b;margin-top:.75rem'><strong>Histórico do documento:</strong> ${accessText}</div>
+                <div style='display:flex;gap:1rem;flex-wrap:wrap;margin-top:.65rem;font-size:.76rem;color:#475569'>
+                  <span><strong>${Number(e.total_validados || 0)} de ${Number(e.total_validadores || 0)}</strong> validações</span>
+                  <span><strong>${Number(e.total_acessaram || 0)} de ${Number(e.total_validadores || 0)}</strong> acessaram</span>
+                  ${e.nomes_validados ? `<span style='color:#065f46'>Validado por: ${escapeHtml(e.nomes_validados)}</span>` : ''}
+                </div>
+              </a>`;
+          }).join('')}
+        </div>
+      </section>`
+    ).join('');
 
     const projectOptions = projetosFiltro.map(p =>
       `<option value='${Number(p.id)}'${String(p.id) === projetoFiltro ? ' selected' : ''}>${escapeHtml(p.nome || ('Projeto ' + p.id))}</option>`
@@ -3799,13 +3857,12 @@ const server = http.createServer(async (req, res) => {
     <div class='card'><strong>Validados</strong><span>${counts.validado}</span></div>
   </div>
   <section style='margin-top:1rem'>
-    <h2>Entregas</h2>
-    <div style='overflow-x:auto'>
-      <table>
-        <thead><tr><th>Documento</th><th>Cliente</th><th>Projeto</th><th>Contrato</th><th>Status / Validações</th><th>Acessos</th><th>Enviado em</th></tr></thead>
-        <tbody>${rows || "<tr><td colspan='7'>Nenhuma entrega cadastrada.</td></tr>"}</tbody>
-      </table>
+    <div style='padding:1rem;background:#fff;border:1px solid #e2e8f0;border-radius:12px'>
+      <div style='font-size:.72rem;font-weight:800;color:#64748b;text-transform:uppercase;letter-spacing:.05em'>Controle de Documentos</div>
+      <h2 style='margin:.2rem 0 .35rem'>Projetos e documentos</h2>
+      <p style='color:#64748b;font-size:.86rem;margin:0'>A apresentação segue a mesma lógica visual do Portal do Validador. Clique em um documento para abrir a visão interna completa, com versões, conversas, acessos e histórico de validação.</p>
     </div>
+    ${documentSections || "<div style='margin-top:1rem;padding:1rem;background:#fff;border:1px solid #e2e8f0;border-radius:12px'>Nenhum documento disponível neste acesso.</div>"}
   </section>
 </section>`, user, '/entregas');
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
