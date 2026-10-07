@@ -209,9 +209,12 @@ async function getContactByEmail(pg, email) {
 async function getDocuments(pg, email) {
   return (await pg.query(
     `SELECT DISTINCT e.id,e.titulo,e.descricao,e.status,e.current_version,e.responsavel_user_id,
-            v.id AS version_id,v.version_number,v.status AS version_status,
+            v.id AS version_id,v.version_number,v.status AS version_status,v.uploaded_at AS version_uploaded_at,
             g.id AS convidado_id,g.can_comment,g.can_request_changes,g.can_validate,
             c.nome AS cliente_nome,c.nome_curto AS cliente_nome_curto,p.nome AS projeto_nome,
+            COALESCE((SELECT COUNT(*)::int FROM portal_entrega_versions vv WHERE vv.entrega_id=e.id),0) AS total_versoes,
+            COALESCE((SELECT MAX(ga.last_access_at) FROM portal_entrega_convidados ga WHERE ga.entrega_id=e.id AND ga.version_id=v.id AND ga.last_access_at IS NOT NULL),NULL) AS ultimo_acesso_em,
+            COALESCE((SELECT string_agg(DISTINCT ga.nome, ', ' ORDER BY ga.nome) FROM portal_entrega_convidados ga WHERE ga.entrega_id=e.id AND ga.version_id=v.id AND ga.last_access_at IS NOT NULL),'') AS nomes_acessaram,
             EXISTS(
               SELECT 1 FROM portal_entrega_decisions d
               JOIN portal_entrega_convidados gd ON gd.id=d.convidado_id
@@ -484,22 +487,58 @@ async function handlePublic(req, res, ctx) {
       if (!groups.has(key)) groups.set(key, []);
       groups.get(key).push(d);
     }
+
+    const formatDateTime = value => {
+      if (!value) return '';
+      try { return new Date(value).toLocaleString('pt-BR',{day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit'}); }
+      catch { return ''; }
+    };
+
     const sections = [...groups.entries()].map(([key, items]) => {
       const [client, project] = key.split('||');
-      return `<section class='vp-card' style='margin-bottom:14px'>
-        <div class='vp-muted' style='font-size:12px;text-transform:uppercase;font-weight:700'>${escapeHtml(client)}</div>
-        <h2 style='margin:.2rem 0 .7rem'>${escapeHtml(project)}</h2>
+      return `<section class='vp-card' style='margin-bottom:18px;padding:18px 20px'>
+        <div style='display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap'>
+          <div>
+            <div class='vp-muted' style='font-size:12px;text-transform:uppercase;font-weight:800'>${escapeHtml(client)}</div>
+            <h2 style='margin:.25rem 0 .7rem;color:#1e1b4b'>${escapeHtml(project)}</h2>
+          </div>
+          <div class='vp-chip'>${items.length} documento(s)</div>
+        </div>
         ${items.map(d => {
           const label = d.validado_por_mim ? 'Validado' : (d.status === 'ajustes_solicitados' || d.version_status === 'ajustes_solicitados') ? 'Alteração solicitada' : 'Pendente';
-          return `<a class='vp-doc' href='/validacao/documentos/${encodeURIComponent(d.id)}'><strong>${escapeHtml(d.titulo)}</strong><span class='vp-muted' style='float:right'>${escapeHtml(label)}</span><div class='vp-muted' style='font-size:12px'>V${Number(d.version_number || 1)}</div></a>`;
+          const statusClass = d.validado_por_mim ? 'ok' : (d.status === 'ajustes_solicitados' || d.version_status === 'ajustes_solicitados') ? 'warn' : '';
+          const versionLabel = Number(d.version_number || 1) === 1 ? 'Versão original · V1' : `Versão atual · V${Number(d.version_number)} · histórico com ${Number(d.total_versoes || d.version_number)} versões`;
+          const accessText = d.ultimo_acesso_em
+            ? `${d.nomes_acessaram ? escapeHtml(d.nomes_acessaram) + ' · ' : ''}último acesso em ${escapeHtml(formatDateTime(d.ultimo_acesso_em))}`
+            : 'Ainda não houve acesso registrado nesta versão';
+          return `<a class='vp-doc' href='/validacao/documentos/${encodeURIComponent(d.id)}'>
+            <div style='display:flex;justify-content:space-between;gap:12px;align-items:flex-start'>
+              <div class='vp-doc-title'>${escapeHtml(d.titulo)}</div>
+              <span class='vp-status'>${escapeHtml(label)}</span>
+            </div>
+            <div class='vp-meta'>
+              <span class='vp-chip ${statusClass}'>${escapeHtml(versionLabel)}</span>
+              ${d.version_uploaded_at ? `<span class='vp-chip'>Disponibilizado em ${escapeHtml(formatDateTime(d.version_uploaded_at))}</span>` : ''}
+            </div>
+            <div class='vp-muted' style='font-size:12px;margin-top:8px'><strong>Histórico do documento:</strong> ${accessText}</div>
+          </a>`;
         }).join('')}
       </section>`;
     }).join('');
 
-    html(res, page('Meus documentos', `
-      <div style='display:flex;justify-content:space-between;gap:12px;align-items:flex-start;flex-wrap:wrap'>
-        <div><h1 style='margin:0'>Meus documentos</h1><p class='vp-muted'>${escapeHtml(session.email)}</p></div>
-      </div>
+    const projectNames = [...new Set(docs.map(d => d.projeto_nome).filter(Boolean))];
+    const mainTitle = projectNames.length === 1
+      ? `Controle e Documentos do Projeto ${projectNames[0]}`
+      : 'Controle e Documentos dos Projetos';
+
+    html(res, page('Controle de Documentos', `
+      <section class='vp-instructions'>
+        <div class='vp-muted' style='font-size:12px;text-transform:uppercase;font-weight:800;letter-spacing:.05em'>Portal do Validador</div>
+        <h1>${escapeHtml(mainTitle)}</h1>
+        <p><strong>Orientações para análise:</strong> abra cada documento para leitura. Conforme sua participação, você poderá registrar contribuição, solicitar alteração ou confirmar a validação da versão apresentada.</p>
+        <p>Quando houver solicitação de alteração, a validação daquela versão fica temporariamente indisponível até a publicação da versão corrigida. Os acessos, manifestações e validações ficam registrados no histórico do documento.</p>
+        <p class='vp-muted' style='font-size:13px;margin-top:10px'>Acesso identificado: ${escapeHtml(session.email)}</p>
+      </section>
       ${sections || "<div class='vp-card'>Nenhum documento disponível para este acesso.</div>"}
     `, session));
     return true;
