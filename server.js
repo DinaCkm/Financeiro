@@ -3886,7 +3886,7 @@ const server = http.createServer(async (req, res) => {
        ORDER BY cl.nome, pc.nome
     `, params)).rows;
 
-    const rows = contatos.map(ct => `
+    const renderContactRow = (ct) => `
       <tr>
         <td><strong>${escapeHtml(ct.nome)}</strong></td>
         <td>${escapeHtml(ct.email)}</td>
@@ -3914,7 +3914,11 @@ const server = http.createServer(async (req, res) => {
           </div>
         </td>
       </tr>
-    `).join('');
+    `;
+
+    const activeRows = contatos.filter(ct => ct.ativo).map(renderContactRow).join('');
+    const inactiveRows = contatos.filter(ct => !ct.ativo).map(renderContactRow).join('');
+    const inactiveCount = contatos.filter(ct => !ct.ativo).length;
 
     const contactInvite = url.searchParams.get('convite');
     const contactInviteMessage = contactInvite === 'reenviado'
@@ -3955,13 +3959,29 @@ const server = http.createServer(async (req, res) => {
       </section>
 
       <section>
-        <h2>Contatos cadastrados</h2>
+        <div style='display:flex;justify-content:space-between;align-items:center;gap:1rem;flex-wrap:wrap'>
+          <h2 style='margin-bottom:.4rem'>Contatos cadastrados</h2>
+          ${inactiveCount ? `
+            <button type='button' class='btn-outline' onclick="const box=document.getElementById('contatos-inativos');const hidden=box.style.display==='none';box.style.display=hidden?'block':'none';this.textContent=hidden?'Ocultar inativos ('+${inactiveCount}+')':'Mostrar inativos ('+${inactiveCount}+')'">
+              Mostrar inativos (${inactiveCount})
+            </button>` : ''}
+        </div>
         <div style='overflow-x:auto'>
           <table>
             <thead><tr><th>Nome</th><th>E-mail</th><th>Cliente</th><th>Status</th><th>Ação</th></tr></thead>
-            <tbody>${rows || "<tr><td colspan='5'>Nenhum contato cadastrado.</td></tr>"}</tbody>
+            <tbody>${activeRows || "<tr><td colspan='5'>Nenhum contato ativo cadastrado.</td></tr>"}</tbody>
           </table>
         </div>
+        ${inactiveCount ? `
+          <div id='contatos-inativos' style='display:none;margin-top:1rem'>
+            <div style='font-size:.78rem;font-weight:700;color:#64748b;margin-bottom:.45rem'>CONTATOS INATIVOS (${inactiveCount})</div>
+            <div style='overflow-x:auto'>
+              <table>
+                <thead><tr><th>Nome</th><th>E-mail</th><th>Cliente</th><th>Status</th><th>Ação</th></tr></thead>
+                <tbody>${inactiveRows}</tbody>
+              </table>
+            </div>
+          </div>` : ''}
       </section>
     `;
 
