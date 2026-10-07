@@ -504,9 +504,10 @@ async function userCanAccessPortalProject(user, projetoId) {
 async function userCanAccessPortalDelivery(user, delivery) {
   if (!delivery) return false;
   if (!isDeliveryConsultant(user)) return true;
-  const clientOk = await userCanAccessPortalClient(user, Number(delivery.cliente_id));
-  const projectOk = await userCanAccessPortalProject(user, Number(delivery.projeto_id || 0));
-  return clientOk && projectOk;
+  const allowedProjects = await getPortalAllowedProjectIds(user);
+  if (allowedProjects.length) return allowedProjects.includes(Number(delivery.projeto_id || 0));
+  const allowedClients = await getPortalAllowedClientIds(user);
+  return allowedClients.includes(Number(delivery.cliente_id));
 }
 
 function createGuestToken() {
@@ -3575,23 +3576,23 @@ const server = http.createServer(async (req, res) => {
         const allowedProjects = isDeliveryConsultant(user) ? await getPortalAllowedProjectIds(user) : null;
 
         if (isDeliveryConsultant(user)) {
-          if (!allowedClients.length || !allowedProjects.length) {
-            conditions.push('1=0');
+          if (allowedProjects.length) {
+            const projectIds = allowedProjects.map(Number).filter(Number.isFinite);
+            conditions.push(projectIds.length ? 'e.projeto_id IN (' + projectIds.join(',') + ')' : '1=0');
+          } else if (allowedClients.length) {
+            const clientIds = allowedClients.map(Number).filter(Number.isFinite);
+            conditions.push(clientIds.length ? 'e.cliente_id IN (' + clientIds.join(',') + ')' : '1=0');
           } else {
-            params.push(allowedClients);
-            conditions.push(`e.cliente_id = ANY(${params.length}::int[])`);
-            params.push(allowedProjects);
-            conditions.push(`e.projeto_id = ANY(${params.length}::int[])`);
+            conditions.push('1=0');
           }
         }
 
         if (projetoFiltro && /^\d+$/.test(projetoFiltro)) {
-          params.push(Number(projetoFiltro));
-          conditions.push(`e.projeto_id = ${params.length}`);
+          conditions.push('e.projeto_id = ' + Number(projetoFiltro));
         }
         if (documentoFiltro) {
-          params.push(`%${documentoFiltro}%`);
-          conditions.push(`e.titulo ILIKE ${params.length}`);
+          const documentoSql = documentoFiltro.replace(/'/g, "''").replace(/%/g, '\\%').replace(/_/g, '\\_');
+          conditions.push("e.titulo ILIKE '%" + documentoSql + "%' ESCAPE '\\\\'");
         }
 
         const where = conditions.length ? 'WHERE ' + conditions.join(' AND ') : '';
@@ -3599,13 +3600,14 @@ const server = http.createServer(async (req, res) => {
         const projectParams = [];
         const projectConditions = [];
         if (isDeliveryConsultant(user)) {
-          if (!allowedClients.length || !allowedProjects.length) {
-            projectConditions.push('1=0');
+          if (allowedProjects.length) {
+            const projectIds = allowedProjects.map(Number).filter(Number.isFinite);
+            projectConditions.push(projectIds.length ? 'e.projeto_id IN (' + projectIds.join(',') + ')' : '1=0');
+          } else if (allowedClients.length) {
+            const clientIds = allowedClients.map(Number).filter(Number.isFinite);
+            projectConditions.push(clientIds.length ? 'e.cliente_id IN (' + clientIds.join(',') + ')' : '1=0');
           } else {
-            projectParams.push(allowedClients);
-            projectConditions.push(`e.cliente_id = ANY(${projectParams.length}::int[])`);
-            projectParams.push(allowedProjects);
-            projectConditions.push(`e.projeto_id = ANY(${projectParams.length}::int[])`);
+            projectConditions.push('1=0');
           }
         }
         const projectWhere = projectConditions.length ? 'WHERE ' + projectConditions.join(' AND ') : '';
