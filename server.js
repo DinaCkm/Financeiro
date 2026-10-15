@@ -171,7 +171,7 @@ const PORTAL_FILE_TYPES = {
   xlsm: { mime:'application/vnd.ms-excel.sheet.macroEnabled.12', magic:'zip' },
   xls:  { mime:'application/vnd.ms-excel', magic:'ole' }
 };
-const PORTAL_ACCEPT_ATTR = '.pdf,.doc,.docx,.xls,.xlsx,.xlsm,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+const PORTAL_ACCEPT_ATTR = '.pdf,.doc,.docx,.xls,.xlsx,.xlsm';
 function portalFileExt(fileName) {
   const m = String(fileName || '').toLowerCase().match(/\.([a-z0-9]+)$/);
   return m ? m[1] : '';
