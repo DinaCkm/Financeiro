@@ -261,7 +261,7 @@ async function getDocuments(pg, email) {
   await ensureCurrentAssignments(pg, email);
   return (await pg.query(
     `SELECT DISTINCT e.id,e.titulo,e.descricao,e.status,e.current_version,e.responsavel_user_id,
-            v.id AS version_id,v.version_number,v.status AS version_status,v.uploaded_at AS version_uploaded_at,
+            v.id AS version_id,v.version_number,v.status AS version_status,v.uploaded_at AS version_uploaded_at,v.file_name,v.mime_type,
             g.id AS convidado_id,g.can_comment,g.can_request_changes,g.can_validate,
             c.nome AS cliente_nome,c.nome_curto AS cliente_nome_curto,p.nome AS projeto_nome,
             COALESCE((SELECT COUNT(*)::int FROM portal_entrega_versions vv WHERE vv.entrega_id=e.id),0) AS total_versoes,
@@ -688,7 +688,10 @@ async function handlePublic(req, res, ctx) {
         res.writeHead(503); res.end('Documento temporariamente indisponível.'); return true;
       }
       await recordAudit(pg, req, { entregaId:doc.id, versionId:doc.version_id, actorType:session.read_only?'ckm':'cliente', actorId:session.support_user_id || session.email, action:session.read_only?'visualizacao_suporte_documento':'documento_visualizado', details:{via:'portal_permanente'} });
-      res.writeHead(200, {'Content-Type':'application/pdf','Content-Length':Number(pdf.length),'Cache-Control':'private, no-store','X-Content-Type-Options':'nosniff'});
+      const fileName = String(version.file_name || 'documento.pdf').replace(/[\r\n"]/g, '');
+      const mime = version.mime_type || 'application/pdf';
+      const disp = mime === 'application/pdf' ? 'inline' : 'attachment';
+      res.writeHead(200, {'Content-Type':mime,'Content-Disposition':`${disp}; filename="${fileName.replace(/[^\x20-\x7e]/g,'_')}"; filename*=UTF-8''${encodeURIComponent(fileName)}`,'Content-Length':Number(pdf.length),'Cache-Control':'private, no-store','X-Content-Type-Options':'nosniff'});
       res.end(pdf); return true;
     }
 
@@ -848,7 +851,9 @@ async function handlePublic(req, res, ctx) {
       html(res, page(doc.titulo, `
         <a href='/validacao/documentos'>← Voltar aos documentos</a>
         <h1>${escapeHtml(doc.titulo)}</h1><p class='vp-muted'>Versão V${Number(doc.version_number || 1)}</p>
-        <div class='vp-card'><iframe src='/validacao/documentos/${doc.id}/pdf' style='width:100%;height:70vh;border:0;border-radius:8px;background:#e2e8f0'></iframe></div>
+        <div class='vp-card'>${(!doc.mime_type || doc.mime_type === 'application/pdf')
+          ? `<iframe src='/validacao/documentos/${doc.id}/pdf' style='width:100%;height:70vh;border:0;border-radius:8px;background:#e2e8f0'></iframe>`
+          : `<div style='padding:40px 20px;text-align:center'><div style='font-size:44px'>${/\.xls[xm]?$/i.test(doc.file_name || '') ? '📊' : '📝'}</div><div style='margin-top:8px;font-weight:700;word-break:break-all'>${escapeHtml(doc.file_name || 'Documento')}</div><div class='vp-muted' style='margin-top:6px;font-size:13px'>Este formato não pode ser exibido no navegador. Baixe o arquivo para analisá-lo.</div><a href='/validacao/documentos/${doc.id}/pdf' download style='display:inline-block;margin-top:14px;padding:10px 18px;border-radius:9px;background:#0f766e;color:#fff;font-weight:700;text-decoration:none'>Baixar arquivo</a></div>`}</div>
         ${actionArea}
       `, session));
       return true;

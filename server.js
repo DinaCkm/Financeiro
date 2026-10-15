@@ -161,6 +161,65 @@ const {
 } = require('./auth-security');
 const { isSmtpConfigured, sendPasswordResetEmail, sendConsultantInviteEmail, sendDeliveryInviteEmail, sendPortalNotificationEmail, sendSmtpTestEmail } = require('./email-service');
 const portalValidator = require('./portal-validator');
+
+// ── Tipos de arquivo aceitos no portal Entregas e Validações ──
+const PORTAL_FILE_TYPES = {
+  pdf:  { mime:'application/pdf', magic:'pdf' },
+  docx: { mime:'application/vnd.openxmlformats-officedocument.wordprocessingml.document', magic:'zip' },
+  doc:  { mime:'application/msword', magic:'ole' },
+  xlsx: { mime:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', magic:'zip' },
+  xlsm: { mime:'application/vnd.ms-excel.sheet.macroEnabled.12', magic:'zip' },
+  xls:  { mime:'application/vnd.ms-excel', magic:'ole' }
+};
+const PORTAL_ACCEPT_ATTR = '.pdf,.doc,.docx,.xls,.xlsx,.xlsm,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+function portalFileExt(fileName) {
+  const m = String(fileName || '').toLowerCase().match(/\.([a-z0-9]+)$/);
+  return m ? m[1] : '';
+}
+// Retorna { ext, mime } se o arquivo for PDF, Word ou Excel válido; caso contrário null.
+function portalDetectFile(fileName, buffer) {
+  const ext = portalFileExt(fileName);
+  const def = PORTAL_FILE_TYPES[ext];
+  if (!def || !buffer || !buffer.length) return null;
+  const head = buffer.subarray(0, 8);
+  const ok = def.magic === 'pdf' ? head.subarray(0, 4).toString() === '%PDF'
+    : def.magic === 'zip' ? (head[0] === 0x50 && head[1] === 0x4b && head[2] === 0x03 && head[3] === 0x04)
+    : head.toString('hex') === 'd0cf11e0a1b11ae1';
+  return ok ? { ext, mime: def.mime } : null;
+}
+function portalIsPdf(fileName, mime) {
+  if (mime) return String(mime).toLowerCase() === 'application/pdf';
+  const ext = portalFileExt(fileName);
+  return !ext || ext === 'pdf';
+}
+function portalFileHeaders(fileName, mime, length) {
+  const safeName = String(fileName || 'documento.pdf').replace(/[\r\n"]/g, '');
+  const ext = portalFileExt(safeName);
+  const type = mime || (PORTAL_FILE_TYPES[ext] && PORTAL_FILE_TYPES[ext].mime) || 'application/octet-stream';
+  const inline = type === 'application/pdf';
+  return {
+    'Content-Type': type,
+    'Content-Disposition': `${inline ? 'inline' : 'attachment'}; filename="${safeName.replace(/[^\x20-\x7e]/g, '_')}"; filename*=UTF-8''${encodeURIComponent(safeName)}`,
+    'Content-Length': Number(length),
+    'Cache-Control': 'private, no-store',
+    'X-Content-Type-Options': 'nosniff'
+  };
+}
+// Visualizador: PDF em iframe; Word/Excel com cartão de download.
+function portalDocumentViewer(src, fileName, mime, style) {
+  if (portalIsPdf(fileName, mime)) {
+    return `<iframe src='${src}' title='Documento' style='${style}'></iframe>`;
+  }
+  const ext = portalFileExt(fileName);
+  const tipo = (ext === 'xls' || ext === 'xlsx' || ext === 'xlsm') ? 'Planilha Excel' : 'Documento Word';
+  return `<div style='padding:40px 20px;text-align:center;border:1px solid #e2e8f0;border-radius:10px;background:#f8fafc'>
+    <div style='font-size:44px;line-height:1'>${tipo.startsWith('Planilha') ? '📊' : '📝'}</div>
+    <div style='margin-top:10px;font-weight:700'>${escapeHtml(tipo)}</div>
+    <div style='margin-top:4px;font-size:13px;color:#64748b;word-break:break-all'>${escapeHtml(fileName || '')}</div>
+    <div style='margin-top:8px;font-size:13px;color:#64748b'>Este formato não pode ser exibido no navegador. Baixe o arquivo para analisá-lo.</div>
+    <a href='${src}' download style='display:inline-block;margin-top:14px;padding:10px 18px;border-radius:9px;background:#0f766e;color:#fff;font-weight:700;text-decoration:none'>Baixar arquivo</a>
+  </div>`;
+}
 const {
   ROLE_CONSULTOR_ENTREGAS,
   isDeliveryConsultant,
@@ -2258,7 +2317,7 @@ const server = http.createServer(async (req, res) => {
 
     const documentos = (await pg.query(
       `SELECT e.id, e.titulo, e.descricao, e.status, e.current_version,
-              v.id AS version_id, v.version_number, v.file_name, v.status AS version_status, e.cancelled_at, e.cancelled_reason,
+              v.id AS version_id, v.version_number, v.file_name, v.mime_type, v.status AS version_status, e.cancelled_at, e.cancelled_reason,
               g.id AS convidado_id,
               s.security_code, s.validator_name AS signature_name, s.validator_cpf AS signature_cpf, s.signed_at,
               EXISTS(
@@ -2341,13 +2400,7 @@ const server = http.createServer(async (req, res) => {
       } catch (e) {
         return json(res, 503, { error:'Documento temporariamente indisponível.' });
       }
-      res.writeHead(200, {
-        'Content-Type':'application/pdf',
-        'Content-Disposition':`inline; filename="${String(version.file_name || 'documento.pdf').replace(/[\r\n"]/g,'')}"`,
-        'Content-Length':Number(pdfBuffer.length),
-        'Cache-Control':'private, no-store',
-        'X-Content-Type-Options':'nosniff'
-      });
+      res.writeHead(200, portalFileHeaders(version.file_name, version.mime_type, pdfBuffer.length));
       res.end(pdfBuffer);
       return;
     }
@@ -2642,7 +2695,7 @@ const server = http.createServer(async (req, res) => {
           <div style='font-size:13px;color:#64748b'>Versão V${Number(selected.version_number)}</div></div>
         </div>
         <div style='margin-top:14px;background:#fff;border:1px solid #e2e8f0;border-radius:14px;padding:14px'>
-          <iframe src='/validar-lote/${token}/documento/${selected.id}/pdf' style='width:100%;height:70vh;border:0;border-radius:10px;background:#e2e8f0'></iframe>
+          ${portalDocumentViewer(`/validar-lote/${token}/documento/${selected.id}/pdf`, selected.file_name, selected.mime_type, 'width:100%;height:70vh;border:0;border-radius:10px;background:#e2e8f0')}
         </div>
         <div id='conversa' style='margin-top:14px;background:#fff;border:1px solid #e2e8f0;border-radius:14px;padding:16px'>
           <h3 style='margin-top:0'>Conversa sobre este documento</h3>
@@ -2918,13 +2971,7 @@ const server = http.createServer(async (req, res) => {
         return json(res, 503, { error: 'Documento temporariamente indisponível.' });
       }
       if (!pdfBuffer || !pdfBuffer.length) return json(res, 404, { error: 'Documento não encontrado.' });
-      res.writeHead(200, {
-        'Content-Type': 'application/pdf',
-        'Content-Disposition': `inline; filename="${String(version.file_name || 'documento.pdf').replace(/"/g, '')}"`,
-        'Content-Length': Number(pdfBuffer.length),
-        'Cache-Control': 'private, no-store',
-        'X-Content-Type-Options': 'nosniff'
-      });
+      res.writeHead(200, portalFileHeaders(version.file_name, version.mime_type, pdfBuffer.length));
       res.end(pdfBuffer);
       return;
     }
@@ -3452,8 +3499,8 @@ const server = http.createServer(async (req, res) => {
           ${erro ? "<div class='error'>Revise os dados informados e tente novamente.</div>" : ''}
           <div class='grid'>
             <div class='card'>
-              <iframe class='pdf' src='/validar/${token}/pdf'></iframe>
-              <div style='margin-top:10px'><a href='/validar/${token}/pdf' target='_blank'>Abrir PDF em nova aba</a></div>
+              ${portalDocumentViewer(`/validar/${token}/pdf`, version.file_name, version.mime_type, 'width:100%;height:78vh;border:0;border-radius:10px;background:#e2e8f0')}
+              ${portalIsPdf(version.file_name, version.mime_type) ? `<div style='margin-top:10px'><a href='/validar/${token}/pdf' target='_blank'>Abrir PDF em nova aba</a></div>` : ''}
             </div>
             <div>
               <div class='card'>
@@ -3822,7 +3869,7 @@ const server = http.createServer(async (req, res) => {
         ? `<a href='/entregas/nova' style='display:block;text-decoration:none;color:inherit;border:2px solid #6d28d9;border-radius:12px;padding:1rem;background:#faf5ff'>
             <div style='font-size:.72rem;font-weight:700;color:#6d28d9;text-transform:uppercase'>Passo 3</div>
             <strong style='display:block;margin-top:.25rem'>Nova Entrega</strong>
-            <div style='font-size:.82rem;color:#64748b;margin-top:.3rem'>Cadastre o documento, anexe o PDF V1, selecione os validadores e envie para análise.</div>
+            <div style='font-size:.82rem;color:#64748b;margin-top:.3rem'>Cadastre o documento, anexe o arquivo V1 (PDF, Word ou Excel), selecione os validadores e envie para análise.</div>
           </a>`
         : `<div style='display:block;border:1px solid #cbd5e1;border-radius:12px;padding:1rem;background:#f8fafc;color:#64748b'>
             <div style='font-size:.72rem;font-weight:700;text-transform:uppercase'>Passo 3</div>
@@ -4539,8 +4586,8 @@ const server = http.createServer(async (req, res) => {
         <div>
           <h2 class='page-title'>${url.searchParams.get('modo') === 'adicionar' ? 'Adicionar documento a projeto existente' : 'Nova Entrega'}</h2>
           <p style='color:#64748b;font-size:.9rem'>${url.searchParams.get('modo') === 'adicionar'
-            ? 'Selecione o cliente e o projeto. O sistema mostrará os documentos já existentes e permitirá acrescentar novos PDFs mantendo os validadores do projeto.'
-            : 'Crie uma ou várias entregas de uma só vez, selecione os PDFs e informe uma única vez quem deverá analisar.'}</p>
+            ? 'Selecione o cliente e o projeto. O sistema mostrará os documentos já existentes e permitirá acrescentar novos documentos mantendo os validadores do projeto.'
+            : 'Crie uma ou várias entregas de uma só vez, selecione os arquivos (PDF, Word ou Excel) e informe uma única vez quem deverá analisar.'}</p>
         </div>
         <a href='/entregas' style='font-size:.85rem'>Voltar</a>
       </div>
@@ -4583,8 +4630,8 @@ const server = http.createServer(async (req, res) => {
         <label style='margin-top:.75rem'>Descrição da entrega *
           <textarea id='ent-descricao' rows='4' placeholder='Explique o que está sendo entregue e o que o cliente deve analisar. Esta descrição será aplicada aos documentos selecionados.' required></textarea>
         </label>
-        <label style='margin-top:.75rem'>Arquivos da versão 1 (PDF) *
-          <input id='ent-arquivo' type='file' accept='application/pdf,.pdf' multiple required onchange='renderizarArquivosSelecionados()'>
+        <label style='margin-top:.75rem'>Arquivos da versão 1 (PDF, Word ou Excel) *
+          <input id='ent-arquivo' type='file' accept='${PORTAL_ACCEPT_ATTR}' multiple required onchange='renderizarArquivosSelecionados()'>
         </label>
         <div id='ent-arquivos-lista' style='margin-top:.75rem'></div>
       </section>
@@ -4826,7 +4873,7 @@ const server = http.createServer(async (req, res) => {
 
       function tituloDoArquivo(nome) {
         return String(nome || '')
-          .replace(/\\.pdf$/i, '')
+          .replace(/\\.(pdf|docx?|xlsx?|xlsm)$/i, '')
           .replace(/[_-]+/g, ' ')
           .replace(/\\s+/g, ' ')
           .trim();
@@ -4875,7 +4922,7 @@ const server = http.createServer(async (req, res) => {
         const faltando = [];
         if (!clienteId) faltando.push(['ent-cliente', 'Cliente']);
         if (!descricao) faltando.push(['ent-descricao', 'Descrição da entrega']);
-        if (!files.length) faltando.push(['ent-arquivo', 'Arquivos da versão 1 (PDF)']);
+        if (!files.length) faltando.push(['ent-arquivo', 'Arquivos da versão 1']);
         if (titleInputs.some(input => !input.value.trim())) faltando.push(['ent-arquivo', 'Nome de todos os documentos']);
         ['ent-cliente','ent-descricao','ent-arquivo'].forEach(id => {
           const el = document.getElementById(id);
@@ -4892,8 +4939,8 @@ const server = http.createServer(async (req, res) => {
           if (primeiro) { primeiro.scrollIntoView({ behavior: 'smooth', block: 'center' }); primeiro.focus(); }
           return;
         }
-        if (files.some(file => file.type !== 'application/pdf' && !file.name.toLowerCase().endsWith('.pdf'))) {
-          msg.textContent = 'Todos os arquivos da versão 1 devem ser PDFs.';
+        if (files.some(file => !/\\.(pdf|docx?|xlsx?|xlsm)$/i.test(file.name))) {
+          msg.textContent = 'Os arquivos devem ser PDF, Word (.doc/.docx) ou Excel (.xls/.xlsx).';
           msg.style.color = '#991b1b';
           return;
         }
@@ -4903,7 +4950,7 @@ const server = http.createServer(async (req, res) => {
           return;
         }
         if (files.some(file => file.size > 30 * 1024 * 1024)) {
-          msg.textContent = 'Cada PDF deve ter no máximo 30 MB nesta fase.';
+          msg.textContent = 'Cada arquivo deve ter no máximo 30 MB nesta fase.';
           msg.style.color = '#991b1b';
           return;
         }
@@ -4931,7 +4978,7 @@ const server = http.createServer(async (req, res) => {
             documentos.push({
               titulo: titleInputs[index].value.trim(),
               fileName: file.name,
-              fileType: file.type || 'application/pdf',
+              fileType: file.type || '',
               fileBase64: btoa(binary)
             });
           }
@@ -4990,7 +5037,7 @@ const server = http.createServer(async (req, res) => {
     const convidados = Array.isArray(body.convidados) ? body.convidados : [];
 
     if (!clienteId || !descricao || !documentos.length) {
-      return json(res, 400, { error: 'Cliente, descrição e pelo menos um PDF são obrigatórios.' });
+      return json(res, 400, { error: 'Cliente, descrição e pelo menos um arquivo são obrigatórios.' });
     }
     if (documentos.length > 20) {
       return json(res, 400, { error: 'Envie no máximo 20 documentos por lote.' });
@@ -5024,10 +5071,10 @@ const server = http.createServer(async (req, res) => {
       const fileName = String(doc.fileName || '').trim();
       const fileType = String(doc.fileType || 'application/pdf').trim();
       if (!titulo || !fileName || !doc.fileBase64) {
-        return json(res, 400, { error: 'Todos os documentos precisam ter nome e arquivo PDF.' });
+        return json(res, 400, { error: 'Todos os documentos precisam ter nome e arquivo.' });
       }
-      if (!fileName.toLowerCase().endsWith('.pdf') && fileType !== 'application/pdf') {
-        return json(res, 400, { error: 'Todos os documentos do lote devem ser PDFs.' });
+      if (!PORTAL_FILE_TYPES[portalFileExt(fileName)]) {
+        return json(res, 400, { error: 'Os arquivos devem ser PDF, Word (.doc/.docx) ou Excel (.xls/.xlsx).' });
       }
       let fileBuffer;
       try {
@@ -5036,13 +5083,14 @@ const server = http.createServer(async (req, res) => {
         return json(res, 400, { error: 'Um dos arquivos enviados é inválido.' });
       }
       if (!fileBuffer.length || fileBuffer.length > 30 * 1024 * 1024) {
-        return json(res, 400, { error: 'Cada PDF deve ter entre 1 byte e 30 MB.' });
+        return json(res, 400, { error: 'Cada arquivo deve ter entre 1 byte e 30 MB.' });
       }
-      if (fileBuffer.subarray(0, 4).toString() !== '%PDF') {
-        return json(res, 400, { error: `O arquivo "${fileName}" não parece ser um PDF válido.` });
+      const detected = portalDetectFile(fileName, fileBuffer);
+      if (!detected) {
+        return json(res, 400, { error: `O arquivo "${fileName}" não parece ser um PDF, Word ou Excel válido.` });
       }
       totalBytes += fileBuffer.length;
-      prepared.push({ titulo, fileName, fileBuffer });
+      prepared.push({ titulo, fileName, fileBuffer, ext: detected.ext, mime: detected.mime });
     }
     if (totalBytes > 60 * 1024 * 1024) {
       return json(res, 400, { error: 'O lote completo deve ter no máximo 60 MB.' });
@@ -5127,8 +5175,8 @@ const server = http.createServer(async (req, res) => {
         const entregaId = crypto.randomUUID();
         const versionId = crypto.randomUUID();
         const fileHash = crypto.createHash('sha256').update(doc.fileBuffer).digest('hex');
-        const storageKey = `portal-entregas/${entregaId}/v1-${versionId}.pdf`;
-        await putPrivateObject(storageKey, doc.fileBuffer, 'application/pdf');
+        const storageKey = `portal-entregas/${entregaId}/v1-${versionId}.${doc.ext}`;
+        await putPrivateObject(storageKey, doc.fileBuffer, doc.mime);
         uploadedKeys.push(storageKey);
         created.push({ ...doc, entregaId, versionId, fileHash, storageKey });
       }
@@ -5212,8 +5260,8 @@ const server = http.createServer(async (req, res) => {
         await client.query(
           `INSERT INTO portal_entrega_versions
             (id, entrega_id, version_number, file_name, mime_type, file_size, file_hash, storage_key, file_data, uploaded_by, uploaded_at, status)
-           VALUES ($1,$2,1,$3,'application/pdf',$4,$5,$6,$7,$8,$9,'aguardando_cliente')`,
-          [doc.versionId, doc.entregaId, doc.fileName, doc.fileBuffer.length, doc.fileHash, doc.storageKey, Buffer.alloc(0), user.id, now]
+           VALUES ($1,$2,1,$3,$10,$4,$5,$6,$7,$8,$9,'aguardando_cliente')`,
+          [doc.versionId, doc.entregaId, doc.fileName, doc.fileBuffer.length, doc.fileHash, doc.storageKey, Buffer.alloc(0), user.id, now, doc.mime]
         );
 
         for (const guest of validGuests) {
@@ -5302,7 +5350,7 @@ const server = http.createServer(async (req, res) => {
     const convidados = Array.isArray(body.convidados) ? body.convidados : [];
 
     if (!clienteId || !titulo || !descricao || !fileName || !body.fileBase64) {
-      return json(res, 400, { error: 'Cliente, nome, descrição e PDF são obrigatórios.' });
+      return json(res, 400, { error: 'Cliente, nome, descrição e arquivo são obrigatórios.' });
     }
     if (!(await userCanAccessPortalClient(user, clienteId))) {
       return json(res, 403, { error: 'Você não possui acesso a este cliente.' });
@@ -5312,8 +5360,8 @@ const server = http.createServer(async (req, res) => {
         return json(res, 403, { error: 'Você não possui acesso a este projeto.' });
       }
     }
-    if (!fileName.toLowerCase().endsWith('.pdf') && fileType !== 'application/pdf') {
-      return json(res, 400, { error: 'A entrega deve ser enviada em PDF.' });
+    if (!PORTAL_FILE_TYPES[portalFileExt(fileName)]) {
+      return json(res, 400, { error: 'A entrega deve ser enviada em PDF, Word (.doc/.docx) ou Excel (.xls/.xlsx).' });
     }
     if (!convidados.length) {
       return json(res, 400, { error: 'Informe pelo menos uma pessoa para validação.' });
@@ -5336,10 +5384,11 @@ const server = http.createServer(async (req, res) => {
       return json(res, 400, { error: 'Arquivo inválido.' });
     }
     if (!fileBuffer.length || fileBuffer.length > 30 * 1024 * 1024) {
-      return json(res, 400, { error: 'O PDF deve ter entre 1 byte e 30 MB.' });
+      return json(res, 400, { error: 'O arquivo deve ter entre 1 byte e 30 MB.' });
     }
-    if (fileBuffer.subarray(0, 4).toString() !== '%PDF') {
-      return json(res, 400, { error: 'O arquivo enviado não parece ser um PDF válido.' });
+    const detectedFile = portalDetectFile(fileName, fileBuffer);
+    if (!detectedFile) {
+      return json(res, 400, { error: 'O arquivo enviado não parece ser um PDF, Word ou Excel válido.' });
     }
 
     const clientesEquivalentes = async (idA, idB) => {
@@ -5416,12 +5465,12 @@ const server = http.createServer(async (req, res) => {
     const entregaId = crypto.randomUUID();
     const versionId = crypto.randomUUID();
     const fileHash = crypto.createHash('sha256').update(fileBuffer).digest('hex');
-    const storageKey = `portal-entregas/${entregaId}/v1-${versionId}.pdf`;
+    const storageKey = `portal-entregas/${entregaId}/v1-${versionId}.${detectedFile.ext}`;
     const now = new Date().toISOString();
     const invitations = [];
 
     try {
-      await putPrivateObject(storageKey, fileBuffer, 'application/pdf');
+      await putPrivateObject(storageKey, fileBuffer, detectedFile.mime);
     } catch (e) {
       console.warn('[entregas] Falha ao gravar V1 no R2:', e.message);
       return json(res, 503, { error: 'Não foi possível armazenar o documento com segurança.' });
@@ -5441,7 +5490,7 @@ const server = http.createServer(async (req, res) => {
         `INSERT INTO portal_entrega_versions
           (id, entrega_id, version_number, file_name, mime_type, file_size, file_hash, storage_key, file_data, uploaded_by, uploaded_at, status)
          VALUES ($1,$2,1,$3,$4,$5,$6,$7,$8,$9,$10,'aguardando_cliente')`,
-        [versionId, entregaId, fileName, 'application/pdf', fileBuffer.length, fileHash, storageKey, Buffer.alloc(0), user.id, now]
+        [versionId, entregaId, fileName, detectedFile.mime, fileBuffer.length, fileHash, storageKey, Buffer.alloc(0), user.id, now]
       );
 
       for (const guest of validGuests) {
@@ -5510,7 +5559,7 @@ const server = http.createServer(async (req, res) => {
 
     const descricao = String(body.descricao || entrega.descricao || '').trim() || 'Documento adicional do projeto.';
     const documentos = Array.isArray(body.documentos) ? body.documentos : [];
-    if (!documentos.length) return json(res, 400, { error: 'Selecione pelo menos um PDF.' });
+    if (!documentos.length) return json(res, 400, { error: 'Selecione pelo menos um arquivo.' });
     if (documentos.length > 20) return json(res, 400, { error: 'Envie no máximo 20 documentos por vez.' });
 
     const prepared = [];
@@ -5519,16 +5568,17 @@ const server = http.createServer(async (req, res) => {
       const titulo = String(doc.titulo || '').trim().slice(0,255);
       const fileName = String(doc.fileName || '').trim();
       const fileType = String(doc.fileType || 'application/pdf').trim();
-      if (!titulo || !fileName || !doc.fileBase64) return json(res, 400, { error: 'Todos os documentos precisam ter nome e arquivo PDF.' });
-      if (!fileName.toLowerCase().endsWith('.pdf') && fileType !== 'application/pdf') return json(res, 400, { error: 'Todos os arquivos devem ser PDFs.' });
+      if (!titulo || !fileName || !doc.fileBase64) return json(res, 400, { error: 'Todos os documentos precisam ter nome e arquivo.' });
+      if (!PORTAL_FILE_TYPES[portalFileExt(fileName)]) return json(res, 400, { error: 'Os arquivos devem ser PDF, Word (.doc/.docx) ou Excel (.xls/.xlsx).' });
       let fileBuffer;
       try { fileBuffer = Buffer.from(String(doc.fileBase64), 'base64'); }
       catch { return json(res, 400, { error: 'Um dos arquivos é inválido.' }); }
-      if (!fileBuffer.length || fileBuffer.length > 30*1024*1024 || fileBuffer.subarray(0,4).toString() !== '%PDF') {
+      const detected = (fileBuffer.length && fileBuffer.length <= 30*1024*1024) ? portalDetectFile(fileName, fileBuffer) : null;
+      if (!detected) {
         return json(res, 400, { error: `O arquivo "${fileName}" é inválido ou ultrapassa 30 MB.` });
       }
       totalBytes += fileBuffer.length;
-      prepared.push({ titulo, fileName, fileBuffer });
+      prepared.push({ titulo, fileName, fileBuffer, ext: detected.ext, mime: detected.mime });
     }
     if (totalBytes > 60*1024*1024) return json(res, 400, { error: 'O conjunto de arquivos deve ter no máximo 60 MB.' });
 
@@ -5663,8 +5713,8 @@ const server = http.createServer(async (req, res) => {
         const entregaId = crypto.randomUUID();
         const versionId = crypto.randomUUID();
         const fileHash = crypto.createHash('sha256').update(doc.fileBuffer).digest('hex');
-        const storageKey = `portal-entregas/${entregaId}/v1-${versionId}.pdf`;
-        await putPrivateObject(storageKey, doc.fileBuffer, 'application/pdf');
+        const storageKey = `portal-entregas/${entregaId}/v1-${versionId}.${doc.ext}`;
+        await putPrivateObject(storageKey, doc.fileBuffer, doc.mime);
         uploadedKeys.push(storageKey);
         created.push({ ...doc, entregaId, versionId, fileHash, storageKey });
       }
@@ -5687,8 +5737,8 @@ const server = http.createServer(async (req, res) => {
         await client.query(
           `INSERT INTO portal_entrega_versions
             (id, entrega_id, version_number, file_name, mime_type, file_size, file_hash, storage_key, file_data, uploaded_by, uploaded_at, status)
-           VALUES ($1,$2,1,$3,'application/pdf',$4,$5,$6,$7,$8,$9,'aguardando_cliente')`,
-          [doc.versionId, doc.entregaId, doc.fileName, doc.fileBuffer.length, doc.fileHash, doc.storageKey, Buffer.alloc(0), user.id, now]
+           VALUES ($1,$2,1,$3,$10,$4,$5,$6,$7,$8,$9,'aguardando_cliente')`,
+          [doc.versionId, doc.entregaId, doc.fileName, doc.fileBuffer.length, doc.fileHash, doc.storageKey, Buffer.alloc(0), user.id, now, doc.mime]
         );
         for (const v of validators) {
           const { tokenHash } = createGuestToken();
@@ -6086,13 +6136,7 @@ const server = http.createServer(async (req, res) => {
       return json(res, 503, { error: 'Documento temporariamente indisponível.' });
     }
     if (!pdfBuffer || !pdfBuffer.length) return json(res, 404, { error: 'Documento não encontrado.' });
-    res.writeHead(200, {
-      'Content-Type': 'application/pdf',
-      'Content-Disposition': `inline; filename="${String(v.file_name || 'documento.pdf').replace(/[\r\n"]/g, '')}"`,
-      'Content-Length': Number(pdfBuffer.length),
-      'Cache-Control': 'private, no-store',
-      'X-Content-Type-Options': 'nosniff'
-    });
+    res.writeHead(200, portalFileHeaders(v.file_name, v.mime_type, pdfBuffer.length));
     res.end(pdfBuffer);
     return;
   }
@@ -6458,13 +6502,13 @@ const server = http.createServer(async (req, res) => {
           <label style='margin-top:.75rem'>Descrição dos novos documentos
             <textarea id='add-doc-descricao' rows='3' maxlength='5000'>${escapeHtml(entrega.descricao || '')}</textarea>
           </label>
-          <label style='margin-top:.75rem'>Novos PDFs *
-            <input id='add-doc-arquivos' type='file' accept='application/pdf,.pdf' multiple onchange='renderizarNovosDocumentos()'>
+          <label style='margin-top:.75rem'>Novos documentos (PDF, Word ou Excel) *
+            <input id='add-doc-arquivos' type='file' accept='${PORTAL_ACCEPT_ATTR}' multiple onchange='renderizarNovosDocumentos()'>
           </label>
           <div id='add-doc-lista' style='margin-top:.65rem'></div>
           <div style='display:flex;align-items:center;gap:.75rem;flex-wrap:wrap;margin-top:.8rem'>
             <button id='btn-add-docs' type='button' onclick='adicionarDocumentosAoProjeto()'>Adicionar documentos e manter os mesmos validadores</button>
-            <span style='font-size:.75rem;color:#64748b'>Até 20 PDFs; máximo de 30 MB por arquivo.</span>
+            <span style='font-size:.75rem;color:#64748b'>Até 20 arquivos (PDF, Word ou Excel); máximo de 30 MB por arquivo.</span>
           </div>
           <div id='add-doc-msg' style='margin-top:.65rem;font-size:.84rem'></div>
         `}
@@ -6473,7 +6517,7 @@ const server = http.createServer(async (req, res) => {
       ${entrega.projeto_id ? `
       <script>
       function tituloNovoDocumento(nome) {
-        return String(nome || '').replace(/\\.pdf$/i,'').replace(/[_-]+/g,' ').replace(/\\s+/g,' ').trim();
+        return String(nome || '').replace(/\\.(pdf|docx?|xlsx?|xlsm)$/i,'').replace(/[_-]+/g,' ').replace(/\\s+/g,' ').trim();
       }
       function escapeNovoHtml(value) {
         return String(value || '').replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
@@ -6496,9 +6540,9 @@ const server = http.createServer(async (req, res) => {
         const btn = document.getElementById('btn-add-docs');
         const titles = [...document.querySelectorAll('.add-doc-titulo')];
 
-        if (!files.length) { msg.textContent='Selecione pelo menos um PDF.'; msg.style.color='#991b1b'; return; }
+        if (!files.length) { msg.textContent='Selecione pelo menos um arquivo.'; msg.style.color='#991b1b'; return; }
         if (files.length > 20) { msg.textContent='Selecione no máximo 20 documentos por vez.'; msg.style.color='#991b1b'; return; }
-        if (files.some(f => f.size > 30*1024*1024)) { msg.textContent='Cada PDF deve ter no máximo 30 MB.'; msg.style.color='#991b1b'; return; }
+        if (files.some(f => f.size > 30*1024*1024)) { msg.textContent='Cada arquivo deve ter no máximo 30 MB.'; msg.style.color='#991b1b'; return; }
         if (titles.some(t => !t.value.trim())) { msg.textContent='Informe o nome de todos os documentos.'; msg.style.color='#991b1b'; return; }
 
         btn.disabled=true; btn.textContent='Adicionando...'; msg.style.color='#475569';
@@ -6513,7 +6557,7 @@ const server = http.createServer(async (req, res) => {
             documentos.push({
               titulo:titles[i].value.trim(),
               fileName:files[i].name,
-              fileType:files[i].type || 'application/pdf',
+              fileType:files[i].type || '',
               fileBase64:btoa(binary)
             });
           }
@@ -6605,7 +6649,7 @@ const server = http.createServer(async (req, res) => {
           <a href='/entregas/${entregaId}/versoes/${currentVersion.id}/pdf' target='_blank' style='font-size:.85rem'>Abrir em nova aba ↗</a>
         </div>
         <div style='font-size:.8rem;color:#64748b;margin:.35rem 0 .75rem'>${escapeHtml(currentVersion.file_name || '')}</div>
-        <iframe src='/entregas/${entregaId}/versoes/${currentVersion.id}/pdf' title='Documento' style='width:100%;height:75vh;border:1px solid #e2e8f0;border-radius:10px;background:#f1f5f9'></iframe>
+        ${portalDocumentViewer(`/entregas/${entregaId}/versoes/${currentVersion.id}/pdf`, currentVersion.file_name, currentVersion.mime_type, 'width:100%;height:75vh;border:1px solid #e2e8f0;border-radius:10px;background:#f1f5f9')}
       </section>
       ` : ''}
 
@@ -6679,14 +6723,14 @@ const server = http.createServer(async (req, res) => {
       <section style='border:2px solid #f59e0b;background:#fffbeb'>
         <div style='font-size:.76rem;font-weight:700;letter-spacing:.08em;color:#92400e'>AÇÃO NECESSÁRIA</div>
         <h2 style='margin-top:.35rem'>Enviar documento ajustado</h2>
-        <p>O cliente solicitou alterações na versão V${Number(entrega.current_version)}. Faça o upload do PDF corrigido abaixo.</p>
+        <p>O cliente solicitou alterações na versão V${Number(entrega.current_version)}. Faça o upload do documento corrigido abaixo (PDF, Word ou Excel).</p>
         <p style='font-weight:700;color:#92400e'>Próxima versão: V${nextUiVersion}</p>
         <p style='color:#475569;font-size:.85rem'>A versão anterior será preservada no histórico. O arquivo corrigido será registrado automaticamente como V${nextUiVersion}. Os validadores receberão novos links individuais.</p>
         <label>Resumo do que foi alterado
           <textarea id='nova-resumo' rows='3' placeholder='Ex: Ajustados os itens solicitados na página 8 e no quadro da página 12.'></textarea>
         </label>
-        <label>Documento ajustado em PDF *
-          <input id='nova-arquivo' type='file' accept='application/pdf,.pdf' required>
+        <label>Documento ajustado (PDF, Word ou Excel) *
+          <input id='nova-arquivo' type='file' accept='${PORTAL_ACCEPT_ATTR}' required>
         </label>
         <button id='btn-nova-versao' type='button' onclick='enviarNovaVersao()'>Enviar documento ajustado como V${nextUiVersion}</button>
         <div id='nova-msg' style='margin-top:.5rem;font-size:.85rem'></div>
@@ -6696,8 +6740,8 @@ const server = http.createServer(async (req, res) => {
         const f = document.getElementById('nova-arquivo').files[0];
         const resumo = document.getElementById('nova-resumo').value.trim();
         const msg = document.getElementById('nova-msg');
-        if (!f) { msg.textContent='Selecione o novo PDF.'; msg.style.color='#991b1b'; return; }
-        if (f.size > 30*1024*1024) { msg.textContent='O PDF deve ter no máximo 30 MB nesta fase.'; msg.style.color='#991b1b'; return; }
+        if (!f) { msg.textContent='Selecione o novo arquivo.'; msg.style.color='#991b1b'; return; }
+        if (f.size > 30*1024*1024) { msg.textContent='O arquivo deve ter no máximo 30 MB nesta fase.'; msg.style.color='#991b1b'; return; }
         const btn = document.getElementById('btn-nova-versao');
         btn.disabled=true; btn.textContent='Enviando...';
         try {
@@ -6708,7 +6752,7 @@ const server = http.createServer(async (req, res) => {
           const r = await fetch('/api/entregas/${entregaId}/versoes', {
             method:'POST',
             headers:{'content-type':'application/json'},
-            body:JSON.stringify({fileName:f.name,fileType:f.type||'application/pdf',fileBase64:btoa(binary),changeSummary:resumo})
+            body:JSON.stringify({fileName:f.name,fileType:f.type||'',fileBase64:btoa(binary),changeSummary:resumo})
           });
           const d=await r.json();
           if(!r.ok||d.error) throw new Error(d.error||'Erro ao enviar nova versão.');
@@ -6813,13 +6857,14 @@ const server = http.createServer(async (req, res) => {
 
     const fileName = String(body.fileName || '').trim();
     const changeSummary = String(body.changeSummary || '').trim();
-    if (!fileName || !body.fileBase64 || !fileName.toLowerCase().endsWith('.pdf')) {
-      return json(res, 400, { error: 'Selecione um arquivo PDF válido.' });
+    if (!fileName || !body.fileBase64 || !PORTAL_FILE_TYPES[portalFileExt(fileName)]) {
+      return json(res, 400, { error: 'Selecione um arquivo PDF, Word ou Excel válido.' });
     }
 
     const fileBuffer = Buffer.from(String(body.fileBase64), 'base64');
-    if (!fileBuffer.length || fileBuffer.length > 30 * 1024 * 1024 || fileBuffer.subarray(0,4).toString() !== '%PDF') {
-      return json(res, 400, { error: 'PDF inválido ou acima de 30 MB.' });
+    const detectedFile = (fileBuffer.length && fileBuffer.length <= 30 * 1024 * 1024) ? portalDetectFile(fileName, fileBuffer) : null;
+    if (!detectedFile) {
+      return json(res, 400, { error: 'Arquivo inválido (use PDF, Word ou Excel) ou acima de 30 MB.' });
     }
 
     if (!isR2Configured()) {
@@ -6830,10 +6875,10 @@ const server = http.createServer(async (req, res) => {
     const nextVersion = currentVersion + 1;
     const versionId = crypto.randomUUID();
     const hash = crypto.createHash('sha256').update(fileBuffer).digest('hex');
-    const storageKey = `portal-entregas/${entregaId}/v${nextVersion}-${versionId}.pdf`;
+    const storageKey = `portal-entregas/${entregaId}/v${nextVersion}-${versionId}.${detectedFile.ext}`;
 
     try {
-      await putPrivateObject(storageKey, fileBuffer, 'application/pdf');
+      await putPrivateObject(storageKey, fileBuffer, detectedFile.mime);
     } catch (e) {
       console.warn('[entregas] Falha ao gravar nova versão no R2:', e.message);
       return json(res, 503, { error: 'Não foi possível armazenar a nova versão com segurança.' });
@@ -6863,8 +6908,8 @@ const server = http.createServer(async (req, res) => {
       await client.query(
         `INSERT INTO portal_entrega_versions
           (id, entrega_id, version_number, file_name, mime_type, file_size, file_hash, storage_key, file_data, uploaded_by, uploaded_at, status)
-         VALUES ($1,$2,$3,$4,'application/pdf',$5,$6,$7,$8,$9,$10,NOW(),'aguardando_cliente')`,
-        [versionId, entregaId, nextVersion, fileName, fileBuffer.length, hash, storageKey, Buffer.alloc(0), user.id]
+         VALUES ($1,$2,$3,$4,$11,$5,$6,$7,$8,$9,$10,NOW(),'aguardando_cliente')`,
+        [versionId, entregaId, nextVersion, fileName, fileBuffer.length, hash, storageKey, Buffer.alloc(0), user.id, detectedFile.mime]
       );
       await client.query(
         `UPDATE portal_entregas
