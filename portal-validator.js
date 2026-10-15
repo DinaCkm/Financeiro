@@ -283,7 +283,7 @@ async function getDocuments(pg, email) {
        LEFT JOIN clientes c ON c.id=e.cliente_id
        LEFT JOIN projetos p ON p.id=e.projeto_id
       WHERE e.status<>'cancelado'
-      ORDER BY c.nome,p.nome,e.titulo`,
+      ORDER BY version_uploaded_at ASC NULLS LAST, e.id ASC`,
     [email]
   )).rows;
 }
