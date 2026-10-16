@@ -1,6 +1,6 @@
 const crypto = require('crypto');
 const { getPrivateObjectBuffer } = require('./portal-storage');
-const { portalCanPreviewOffice, portalSendOfficePreview, portalOfficeViewerHtml } = require('./portal-preview');
+const { portalCanPreviewOffice, portalSendOfficePreview, portalOfficeViewerHtml, portalIsVideo, portalVideoViewerHtml, portalDownloadCardHtml, portalSendBuffer } = require('./portal-preview');
 const { sendPortalNotificationEmail } = require('./email-service');
 
 const SESSION_TTL_SECONDS = 60 * 60 * 12;
@@ -694,11 +694,8 @@ async function handlePublic(req, res, ctx) {
       }
       await recordAudit(pg, req, { entregaId:doc.id, versionId:doc.version_id, actorType:session.read_only?'ckm':'cliente', actorId:session.support_user_id || session.email, action:session.read_only?'visualizacao_suporte_documento':'documento_visualizado', details:{via:'portal_permanente'} });
       if (await portalSendOfficePreview(req, res, version.file_name, pdf)) return true;
-      const fileName = String(version.file_name || 'documento.pdf').replace(/[\r\n"]/g, '');
-      const mime = version.mime_type || 'application/pdf';
-      const disp = mime === 'application/pdf' ? 'inline' : 'attachment';
-      res.writeHead(200, {'Content-Type':mime,'Content-Disposition':`${disp}; filename="${fileName.replace(/[^\x20-\x7e]/g,'_')}"; filename*=UTF-8''${encodeURIComponent(fileName)}`,'Content-Length':Number(pdf.length),'Cache-Control':'private, no-store','X-Content-Type-Options':'nosniff'});
-      res.end(pdf); return true;
+      portalSendBuffer(req, res, version.file_name, version.mime_type || 'application/pdf', pdf);
+      return true;
     }
 
     if ((action === 'manifestacao' || action === 'decisao') && session.read_only) {
@@ -874,7 +871,9 @@ async function handlePublic(req, res, ctx) {
         ? `<iframe src='${fileSrc}' style='${viewerStyle}'></iframe>`
         : portalCanPreviewOffice(shown.file_name)
         ? portalOfficeViewerHtml(fileSrc, `${fileSrc}&view=1`, viewerStyle)
-        : `<div style='padding:40px 20px;text-align:center'><div style='font-size:44px'>${/\.xls[xm]?$/i.test(shown.file_name || '') ? '📊' : '📝'}</div><div style='margin-top:8px;font-weight:700;word-break:break-all'>${escapeHtml(shown.file_name || 'Documento')}</div><div class='vp-muted' style='margin-top:6px;font-size:13px'>Este formato não pode ser exibido no navegador. Baixe o arquivo para analisá-lo.</div><a href='${fileSrc}' download style='display:inline-block;margin-top:14px;padding:10px 18px;border-radius:9px;background:#0f766e;color:#fff;font-weight:700;text-decoration:none'>Baixar arquivo</a></div>`;
+        : portalIsVideo(shown.file_name, shown.mime_type)
+        ? portalVideoViewerHtml(fileSrc, viewerStyle)
+        : portalDownloadCardHtml(fileSrc, shown.file_name);
       const versionTabs = allVersions.length > 1 ? `<div style='display:flex;gap:8px;flex-wrap:wrap;margin:10px 0 12px'>${allVersions.map(v => {
           const n = Number(v.version_number);
           const label = n === 1 ? 'V1 · original' : (String(v.id) === String(doc.version_id) ? `V${n} · atual` : `V${n}`);

@@ -161,7 +161,7 @@ const {
 } = require('./auth-security');
 const { isSmtpConfigured, sendPasswordResetEmail, sendConsultantInviteEmail, sendDeliveryInviteEmail, sendPortalNotificationEmail, sendSmtpTestEmail } = require('./email-service');
 const portalValidator = require('./portal-validator');
-const { portalCanPreviewOffice, portalSendOfficePreview, portalOfficeViewerHtml } = require('./portal-preview');
+const { portalCanPreviewOffice, portalSendOfficePreview, portalOfficeViewerHtml, portalIsVideo, portalVideoViewerHtml, portalDownloadCardHtml, portalSendBuffer } = require('./portal-preview');
 
 // ── Tipos de arquivo aceitos no portal Entregas e Validações ──
 const PORTAL_FILE_TYPES = {
@@ -170,21 +170,30 @@ const PORTAL_FILE_TYPES = {
   doc:  { mime:'application/msword', magic:'ole' },
   xlsx: { mime:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', magic:'zip' },
   xlsm: { mime:'application/vnd.ms-excel.sheet.macroEnabled.12', magic:'zip' },
-  xls:  { mime:'application/vnd.ms-excel', magic:'ole' }
+  xls:  { mime:'application/vnd.ms-excel', magic:'ole' },
+  pptx: { mime:'application/vnd.openxmlformats-officedocument.presentationml.presentation', magic:'zip' },
+  ppt:  { mime:'application/vnd.ms-powerpoint', magic:'ole' },
+  mp4:  { mime:'video/mp4', magic:'iso' },
+  m4v:  { mime:'video/mp4', magic:'iso' },
+  mov:  { mime:'video/quicktime', magic:'iso' },
+  webm: { mime:'video/webm', magic:'webm' }
 };
-const PORTAL_ACCEPT_ATTR = '.pdf,.doc,.docx,.xls,.xlsx,.xlsm';
+const PORTAL_ACCEPT_ATTR = '.pdf,.doc,.docx,.xls,.xlsx,.xlsm,.ppt,.pptx,.mp4,.m4v,.mov,.webm';
 function portalFileExt(fileName) {
   const m = String(fileName || '').toLowerCase().match(/\.([a-z0-9]+)$/);
   return m ? m[1] : '';
 }
-// Retorna { ext, mime } se o arquivo for PDF, Word ou Excel válido; caso contrário null.
+// Retorna { ext, mime } se o arquivo for PDF, Word, Excel, PowerPoint ou vídeo válido; caso contrário null.
 function portalDetectFile(fileName, buffer) {
   const ext = portalFileExt(fileName);
   const def = PORTAL_FILE_TYPES[ext];
   if (!def || !buffer || !buffer.length) return null;
   const head = buffer.subarray(0, 8);
+  const box = head.subarray(4, 8).toString('latin1');
   const ok = def.magic === 'pdf' ? head.subarray(0, 4).toString() === '%PDF'
     : def.magic === 'zip' ? (head[0] === 0x50 && head[1] === 0x4b && head[2] === 0x03 && head[3] === 0x04)
+    : def.magic === 'iso' ? ['ftyp', 'moov', 'mdat', 'wide', 'free', 'skip'].includes(box)
+    : def.magic === 'webm' ? head.subarray(0, 4).toString('hex') === '1a45dfa3'
     : head.toString('hex') === 'd0cf11e0a1b11ae1';
   return ok ? { ext, mime: def.mime } : null;
 }
@@ -210,8 +219,7 @@ function portalFileHeaders(fileName, mime, length) {
 // Envia o arquivo; com ?view=1 em Word/Excel devolve a versão de leitura em HTML.
 async function portalSendDocument(req, res, fileName, mime, buffer) {
   if (await portalSendOfficePreview(req, res, fileName, buffer)) return;
-  res.writeHead(200, portalFileHeaders(fileName, mime, buffer.length));
-  res.end(buffer);
+  portalSendBuffer(req, res, fileName, mime || (PORTAL_FILE_TYPES[portalFileExt(fileName)] || {}).mime, buffer);
 }
 function portalDocumentViewer(src, fileName, mime, style) {
   if (portalIsPdf(fileName, mime)) {
@@ -221,15 +229,8 @@ function portalDocumentViewer(src, fileName, mime, style) {
     const sep = src.includes('?') ? '&' : '?';
     return portalOfficeViewerHtml(src, `${src}${sep}view=1`, style);
   }
-  const ext = portalFileExt(fileName);
-  const tipo = (ext === 'xls' || ext === 'xlsx' || ext === 'xlsm') ? 'Planilha Excel' : 'Documento Word';
-  return `<div style='padding:40px 20px;text-align:center;border:1px solid #e2e8f0;border-radius:10px;background:#f8fafc'>
-    <div style='font-size:44px;line-height:1'>${tipo.startsWith('Planilha') ? '📊' : '📝'}</div>
-    <div style='margin-top:10px;font-weight:700'>${escapeHtml(tipo)}</div>
-    <div style='margin-top:4px;font-size:13px;color:#64748b;word-break:break-all'>${escapeHtml(fileName || '')}</div>
-    <div style='margin-top:8px;font-size:13px;color:#64748b'>Este formato não pode ser exibido no navegador. Baixe o arquivo para analisá-lo.</div>
-    <a href='${src}' download style='display:inline-block;margin-top:14px;padding:10px 18px;border-radius:9px;background:#0f766e;color:#fff;font-weight:700;text-decoration:none'>Baixar arquivo</a>
-  </div>`;
+  if (portalIsVideo(fileName, mime)) return portalVideoViewerHtml(src, style);
+  return portalDownloadCardHtml(src, fileName);
 }
 const {
   ROLE_CONSULTOR_ENTREGAS,
@@ -3878,7 +3879,7 @@ const server = http.createServer(async (req, res) => {
         ? `<a href='/entregas/nova' style='display:block;text-decoration:none;color:inherit;border:2px solid #6d28d9;border-radius:12px;padding:1rem;background:#faf5ff'>
             <div style='font-size:.72rem;font-weight:700;color:#6d28d9;text-transform:uppercase'>Passo 3</div>
             <strong style='display:block;margin-top:.25rem'>Nova Entrega</strong>
-            <div style='font-size:.82rem;color:#64748b;margin-top:.3rem'>Cadastre o documento, anexe o arquivo V1 (PDF, Word ou Excel), selecione os validadores e envie para análise.</div>
+            <div style='font-size:.82rem;color:#64748b;margin-top:.3rem'>Cadastre o documento, anexe o arquivo V1 (PDF, Word, Excel, PowerPoint ou vídeo), selecione os validadores e envie para análise.</div>
           </a>`
         : `<div style='display:block;border:1px solid #cbd5e1;border-radius:12px;padding:1rem;background:#f8fafc;color:#64748b'>
             <div style='font-size:.72rem;font-weight:700;text-transform:uppercase'>Passo 3</div>
@@ -4596,7 +4597,7 @@ const server = http.createServer(async (req, res) => {
           <h2 class='page-title'>${url.searchParams.get('modo') === 'adicionar' ? 'Adicionar documento a projeto existente' : 'Nova Entrega'}</h2>
           <p style='color:#64748b;font-size:.9rem'>${url.searchParams.get('modo') === 'adicionar'
             ? 'Selecione o cliente e o projeto. O sistema mostrará os documentos já existentes e permitirá acrescentar novos documentos mantendo os validadores do projeto.'
-            : 'Crie uma ou várias entregas de uma só vez, selecione os arquivos (PDF, Word ou Excel) e informe uma única vez quem deverá analisar.'}</p>
+            : 'Crie uma ou várias entregas de uma só vez, selecione os arquivos (PDF, Word, Excel, PowerPoint ou vídeo) e informe uma única vez quem deverá analisar.'}</p>
         </div>
         <a href='/entregas' style='font-size:.85rem'>Voltar</a>
       </div>
@@ -4639,7 +4640,7 @@ const server = http.createServer(async (req, res) => {
         <label style='margin-top:.75rem'>Descrição da entrega *
           <textarea id='ent-descricao' rows='4' placeholder='Explique o que está sendo entregue e o que o cliente deve analisar. Esta descrição será aplicada aos documentos selecionados.' required></textarea>
         </label>
-        <label style='margin-top:.75rem'>Arquivos da versão 1 (PDF, Word ou Excel) *
+        <label style='margin-top:.75rem'>Arquivos da versão 1 (PDF, Word, Excel, PowerPoint ou vídeo) *
           <input id='ent-arquivo' type='file' accept='${PORTAL_ACCEPT_ATTR}' multiple required onchange='renderizarArquivosSelecionados()'>
         </label>
         <div id='ent-arquivos-lista' style='margin-top:.75rem'></div>
@@ -4882,7 +4883,7 @@ const server = http.createServer(async (req, res) => {
 
       function tituloDoArquivo(nome) {
         return String(nome || '')
-          .replace(/\\.(pdf|docx?|xlsx?|xlsm)$/i, '')
+          .replace(/\\.(pdf|docx?|xlsx?|xlsm|pptx?|mp4|m4v|mov|webm)$/i, '')
           .replace(/[_-]+/g, ' ')
           .replace(/\\s+/g, ' ')
           .trim();
@@ -4948,8 +4949,8 @@ const server = http.createServer(async (req, res) => {
           if (primeiro) { primeiro.scrollIntoView({ behavior: 'smooth', block: 'center' }); primeiro.focus(); }
           return;
         }
-        if (files.some(file => !/\\.(pdf|docx?|xlsx?|xlsm)$/i.test(file.name))) {
-          msg.textContent = 'Os arquivos devem ser PDF, Word (.doc/.docx) ou Excel (.xls/.xlsx).';
+        if (files.some(file => !/\\.(pdf|docx?|xlsx?|xlsm|pptx?|mp4|m4v|mov|webm)$/i.test(file.name))) {
+          msg.textContent = 'Os arquivos devem ser PDF, Word, Excel, PowerPoint ou vídeo (.mp4/.mov/.webm).';
           msg.style.color = '#991b1b';
           return;
         }
@@ -5083,7 +5084,7 @@ const server = http.createServer(async (req, res) => {
         return json(res, 400, { error: 'Todos os documentos precisam ter nome e arquivo.' });
       }
       if (!PORTAL_FILE_TYPES[portalFileExt(fileName)]) {
-        return json(res, 400, { error: 'Os arquivos devem ser PDF, Word (.doc/.docx) ou Excel (.xls/.xlsx).' });
+        return json(res, 400, { error: 'Os arquivos devem ser PDF, Word, Excel, PowerPoint ou vídeo (.mp4/.mov/.webm).' });
       }
       let fileBuffer;
       try {
@@ -5096,7 +5097,7 @@ const server = http.createServer(async (req, res) => {
       }
       const detected = portalDetectFile(fileName, fileBuffer);
       if (!detected) {
-        return json(res, 400, { error: `O arquivo "${fileName}" não parece ser um PDF, Word ou Excel válido.` });
+        return json(res, 400, { error: `O arquivo "${fileName}" não parece ser um PDF, Word, Excel, PowerPoint ou vídeo válido.` });
       }
       totalBytes += fileBuffer.length;
       prepared.push({ titulo, fileName, fileBuffer, ext: detected.ext, mime: detected.mime });
@@ -5370,7 +5371,7 @@ const server = http.createServer(async (req, res) => {
       }
     }
     if (!PORTAL_FILE_TYPES[portalFileExt(fileName)]) {
-      return json(res, 400, { error: 'A entrega deve ser enviada em PDF, Word (.doc/.docx) ou Excel (.xls/.xlsx).' });
+      return json(res, 400, { error: 'A entrega deve ser enviada em PDF, Word, Excel, PowerPoint ou vídeo (.mp4/.mov/.webm).' });
     }
     if (!convidados.length) {
       return json(res, 400, { error: 'Informe pelo menos uma pessoa para validação.' });
@@ -5397,7 +5398,7 @@ const server = http.createServer(async (req, res) => {
     }
     const detectedFile = portalDetectFile(fileName, fileBuffer);
     if (!detectedFile) {
-      return json(res, 400, { error: 'O arquivo enviado não parece ser um PDF, Word ou Excel válido.' });
+      return json(res, 400, { error: 'O arquivo enviado não parece ser um PDF, Word, Excel, PowerPoint ou vídeo válido.' });
     }
 
     const clientesEquivalentes = async (idA, idB) => {
@@ -5578,7 +5579,7 @@ const server = http.createServer(async (req, res) => {
       const fileName = String(doc.fileName || '').trim();
       const fileType = String(doc.fileType || 'application/pdf').trim();
       if (!titulo || !fileName || !doc.fileBase64) return json(res, 400, { error: 'Todos os documentos precisam ter nome e arquivo.' });
-      if (!PORTAL_FILE_TYPES[portalFileExt(fileName)]) return json(res, 400, { error: 'Os arquivos devem ser PDF, Word (.doc/.docx) ou Excel (.xls/.xlsx).' });
+      if (!PORTAL_FILE_TYPES[portalFileExt(fileName)]) return json(res, 400, { error: 'Os arquivos devem ser PDF, Word, Excel, PowerPoint ou vídeo (.mp4/.mov/.webm).' });
       let fileBuffer;
       try { fileBuffer = Buffer.from(String(doc.fileBase64), 'base64'); }
       catch { return json(res, 400, { error: 'Um dos arquivos é inválido.' }); }
@@ -6510,13 +6511,13 @@ const server = http.createServer(async (req, res) => {
           <label style='margin-top:.75rem'>Descrição dos novos documentos
             <textarea id='add-doc-descricao' rows='3' maxlength='5000'>${escapeHtml(entrega.descricao || '')}</textarea>
           </label>
-          <label style='margin-top:.75rem'>Novos documentos (PDF, Word ou Excel) *
+          <label style='margin-top:.75rem'>Novos documentos (PDF, Word, Excel, PowerPoint ou vídeo) *
             <input id='add-doc-arquivos' type='file' accept='${PORTAL_ACCEPT_ATTR}' multiple onchange='renderizarNovosDocumentos()'>
           </label>
           <div id='add-doc-lista' style='margin-top:.65rem'></div>
           <div style='display:flex;align-items:center;gap:.75rem;flex-wrap:wrap;margin-top:.8rem'>
             <button id='btn-add-docs' type='button' onclick='adicionarDocumentosAoProjeto()'>Adicionar documentos e manter os mesmos validadores</button>
-            <span style='font-size:.75rem;color:#64748b'>Até 20 arquivos (PDF, Word ou Excel); máximo de 30 MB por arquivo.</span>
+            <span style='font-size:.75rem;color:#64748b'>Até 20 arquivos (PDF, Word, Excel, PowerPoint ou vídeo); máximo de 30 MB por arquivo.</span>
           </div>
           <div id='add-doc-msg' style='margin-top:.65rem;font-size:.84rem'></div>
         `}
@@ -6525,7 +6526,7 @@ const server = http.createServer(async (req, res) => {
       ${entrega.projeto_id ? `
       <script>
       function tituloNovoDocumento(nome) {
-        return String(nome || '').replace(/\\.(pdf|docx?|xlsx?|xlsm)$/i,'').replace(/[_-]+/g,' ').replace(/\\s+/g,' ').trim();
+        return String(nome || '').replace(/\\.(pdf|docx?|xlsx?|xlsm|pptx?|mp4|m4v|mov|webm)$/i,'').replace(/[_-]+/g,' ').replace(/\\s+/g,' ').trim();
       }
       function escapeNovoHtml(value) {
         return String(value || '').replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
@@ -6731,13 +6732,13 @@ const server = http.createServer(async (req, res) => {
       <section style='border:2px solid #f59e0b;background:#fffbeb'>
         <div style='font-size:.76rem;font-weight:700;letter-spacing:.08em;color:#92400e'>AÇÃO NECESSÁRIA</div>
         <h2 style='margin-top:.35rem'>Enviar documento ajustado</h2>
-        <p>O cliente solicitou alterações na versão V${Number(entrega.current_version)}. Faça o upload do documento corrigido abaixo (PDF, Word ou Excel).</p>
+        <p>O cliente solicitou alterações na versão V${Number(entrega.current_version)}. Faça o upload do documento corrigido abaixo (PDF, Word, Excel, PowerPoint ou vídeo).</p>
         <p style='font-weight:700;color:#92400e'>Próxima versão: V${nextUiVersion}</p>
         <p style='color:#475569;font-size:.85rem'>A versão anterior será preservada no histórico. O arquivo corrigido será registrado automaticamente como V${nextUiVersion}. Os validadores receberão novos links individuais.</p>
         <label>Resumo do que foi alterado
           <textarea id='nova-resumo' rows='3' placeholder='Ex: Ajustados os itens solicitados na página 8 e no quadro da página 12.'></textarea>
         </label>
-        <label>Documento ajustado (PDF, Word ou Excel) *
+        <label>Documento ajustado (PDF, Word, Excel, PowerPoint ou vídeo) *
           <input id='nova-arquivo' type='file' accept='${PORTAL_ACCEPT_ATTR}' required>
         </label>
         <button id='btn-nova-versao' type='button' onclick='enviarNovaVersao()'>Enviar documento ajustado como V${nextUiVersion}</button>
@@ -6866,13 +6867,13 @@ const server = http.createServer(async (req, res) => {
     const fileName = String(body.fileName || '').trim();
     const changeSummary = String(body.changeSummary || '').trim();
     if (!fileName || !body.fileBase64 || !PORTAL_FILE_TYPES[portalFileExt(fileName)]) {
-      return json(res, 400, { error: 'Selecione um arquivo PDF, Word ou Excel válido.' });
+      return json(res, 400, { error: 'Selecione um arquivo PDF, Word, Excel, PowerPoint ou vídeo válido.' });
     }
 
     const fileBuffer = Buffer.from(String(body.fileBase64), 'base64');
     const detectedFile = (fileBuffer.length && fileBuffer.length <= 30 * 1024 * 1024) ? portalDetectFile(fileName, fileBuffer) : null;
     if (!detectedFile) {
-      return json(res, 400, { error: 'Arquivo inválido (use PDF, Word ou Excel) ou acima de 30 MB.' });
+      return json(res, 400, { error: 'Arquivo inválido (use PDF, Word, Excel, PowerPoint ou vídeo) ou acima de 30 MB.' });
     }
 
     if (!isR2Configured()) {

@@ -93,4 +93,65 @@ function portalOfficeViewerHtml(src, viewSrc, style) {
       <span style='font-size:12px;color:#64748b'>Visualização para leitura; a formatação exata está no arquivo original.</span>
     </div>`;
 }
-module.exports = { portalCanPreviewOffice, portalOfficePreviewHtml, portalSendOfficePreview, portalOfficeViewerHtml };
+// ── Vídeo e PowerPoint ──
+function portalIsVideo(fileName, mime) {
+  if (mime && /^video\//i.test(String(mime))) return true;
+  const ext = portalFileExt(fileName);
+  return ext === 'mp4' || ext === 'mov' || ext === 'webm' || ext === 'm4v';
+}
+function portalVideoViewerHtml(src, style) {
+  return `<video src='${src}' controls preload='metadata' playsinline controlslist='nodownload' style='${style};background:#000'></video>
+    <div style='margin-top:10px;display:flex;gap:12px;align-items:center;flex-wrap:wrap'>
+      <a href='${src}${src.includes('?') ? '&' : '?'}download=1' style='display:inline-block;padding:9px 16px;border-radius:9px;background:#0f766e;color:#fff;font-weight:700;text-decoration:none'>Baixar vídeo</a>
+      <span style='font-size:12px;color:#64748b'>Se o vídeo não reproduzir no navegador, baixe o arquivo.</span>
+    </div>`;
+}
+function portalFileKindLabel(fileName) {
+  const ext = portalFileExt(fileName);
+  if (ext === 'xls' || ext === 'xlsx' || ext === 'xlsm') return { icon:'📊', label:'Planilha Excel' };
+  if (ext === 'ppt' || ext === 'pptx') return { icon:'📽️', label:'Apresentação PowerPoint' };
+  if (portalIsVideo(fileName)) return { icon:'🎬', label:'Vídeo' };
+  return { icon:'📝', label:'Documento Word' };
+}
+function portalDownloadCardHtml(src, fileName) {
+  const k = portalFileKindLabel(fileName);
+  return `<div style='padding:40px 20px;text-align:center;border:1px solid #e2e8f0;border-radius:10px;background:#f8fafc'>
+    <div style='font-size:44px;line-height:1'>${k.icon}</div>
+    <div style='margin-top:10px;font-weight:700'>${escapeHtml(k.label)}</div>
+    <div style='margin-top:4px;font-size:13px;color:#64748b;word-break:break-all'>${escapeHtml(fileName || '')}</div>
+    <div style='margin-top:8px;font-size:13px;color:#64748b'>Este formato não pode ser exibido no navegador. Baixe o arquivo para analisá-lo.</div>
+    <a href='${src}' download style='display:inline-block;margin-top:14px;padding:10px 18px;border-radius:9px;background:#0f766e;color:#fff;font-weight:700;text-decoration:none'>Baixar arquivo</a>
+  </div>`;
+}
+// Envia o arquivo; vídeos abrem no player (com suporte a avanço/retrocesso via Range).
+function portalSendBuffer(req, res, fileName, mime, buffer) {
+  const safeName = String(fileName || 'documento.pdf').replace(/[\r\n"]/g, '');
+  const type = mime || 'application/octet-stream';
+  let forceDownload = false;
+  try { forceDownload = new URL(req.url, 'http://x').searchParams.get('download') === '1'; } catch {}
+  const inline = !forceDownload && (type === 'application/pdf' || /^video\//i.test(type));
+  const base = {
+    'Content-Type': type,
+    'Content-Disposition': `${inline ? 'inline' : 'attachment'}; filename="${safeName.replace(/[^\x20-\x7e]/g, '_')}"; filename*=UTF-8''${encodeURIComponent(safeName)}`,
+    'Cache-Control': 'private, no-store',
+    'X-Content-Type-Options': 'nosniff',
+    'Accept-Ranges': 'bytes'
+  };
+  const total = buffer.length;
+  const range = /^bytes=(\d*)-(\d*)$/.exec(String(req.headers.range || ''));
+  if (range && (range[1] || range[2])) {
+    let start = range[1] ? Number(range[1]) : Math.max(0, total - Number(range[2]));
+    let end = range[1] && range[2] ? Math.min(Number(range[2]), total - 1) : total - 1;
+    if (start >= total || start > end) {
+      res.writeHead(416, { 'Content-Range': `bytes */${total}` });
+      res.end();
+      return;
+    }
+    res.writeHead(206, { ...base, 'Content-Range': `bytes ${start}-${end}/${total}`, 'Content-Length': end - start + 1 });
+    res.end(buffer.subarray(start, end + 1));
+    return;
+  }
+  res.writeHead(200, { ...base, 'Content-Length': total });
+  res.end(buffer);
+}
+module.exports = { portalCanPreviewOffice, portalOfficePreviewHtml, portalSendOfficePreview, portalOfficeViewerHtml, portalIsVideo, portalVideoViewerHtml, portalDownloadCardHtml, portalSendBuffer };
