@@ -841,7 +841,7 @@ async function handlePublic(req, res, ctx) {
         || { id: doc.version_id, version_number: doc.version_number, file_name: doc.file_name, mime_type: doc.mime_type };
       const isCurrentShown = String(shown.id) === String(doc.version_id);
       const messages = (await pg.query(
-        'SELECT * FROM portal_entrega_messages WHERE version_id=$1 ORDER BY created_at ASC',[doc.version_id]
+        'SELECT * FROM portal_entrega_messages WHERE version_id=$1 ORDER BY created_at ASC',[shown.id]
       )).rows;
       const renderMsg = m => {
         const raw = String(m.message || '');
@@ -850,18 +850,6 @@ async function handlePublic(req, res, ctx) {
           : /^CONTRIBUIÇÃO:/i.test(raw) ? "<span style='margin-left:6px;padding:1px 8px;border-radius:999px;background:#ecfdf5;color:#065f46;font-size:11px'>Contribuição</span>" : '';
         return `<div style='padding:10px;border:1px solid #e2e8f0;border-radius:9px;margin:8px 0'><div class='vp-muted' style='font-size:12px'><strong>${escapeHtml(m.actor_name)}</strong> · ${escapeHtml(new Date(m.created_at).toLocaleString('pt-BR'))}${tag}</div><div style='white-space:pre-wrap;margin-top:4px'>${escapeHtml(clean)}</div></div>`;
       };
-      const previousVersions = allVersions.filter(v => Number(v.version_number) < Number(doc.version_number || 1));
-      const previousBlocks = [];
-      for (const v of previousVersions.slice().reverse()) {
-        const vm = (await pg.query('SELECT * FROM portal_entrega_messages WHERE version_id=$1 ORDER BY created_at ASC',[v.id])).rows;
-        const n = Number(v.version_number);
-        previousBlocks.push(`<details style='border:1px solid #e2e8f0;border-radius:10px;padding:10px 12px;margin:8px 0;background:#f8fafc'${String(v.id) === String(shown.id) ? ' open' : ''}>
-          <summary style='cursor:pointer;font-weight:700'>V${n}${n === 1 ? ' · original' : ''} — ${escapeHtml(v.file_name || '')} · ${vm.length} comentário(s)</summary>
-          <div style='margin:8px 0'><a href='/validacao/documentos/${doc.id}?versao=${n}'>Ver documento da V${n}</a></div>
-          ${vm.length ? vm.map(renderMsg).join('') : "<p class='vp-muted'>Nenhum comentário nesta versão.</p>"}
-        </details>`);
-      }
-      const previousHtml = previousBlocks.length ? `<div class='vp-card' style='margin-top:14px'><h3 style='margin-top:0'>Versões anteriores e comentários</h3><p class='vp-muted' style='margin-top:0'>Documento anterior e o que foi comentado em cada versão.</p>${previousBlocks.join('')}</div>` : '';
       const signature = (await pg.query(
         'SELECT * FROM portal_entrega_signatures WHERE version_id=$1 AND lower(validator_email)=lower($2) ORDER BY signed_at DESC LIMIT 1',
         [doc.version_id,session.email]
@@ -872,8 +860,10 @@ async function handlePublic(req, res, ctx) {
       const supportDisabled = readonly ? " disabled aria-disabled='true' title='Modo de suporte: ação bloqueada'" : '';
       const supportStyle = readonly ? "opacity:.72;pointer-events:none;" : '';
       const supportSubmit = readonly ? " onsubmit='return false'" : '';
-      const actionArea =
-        `<div class='vp-card' style='margin-top:14px'><h3 style='margin-top:0'>Conversa da versão atual (V${Number(doc.version_number || 1)})</h3>${msgHtml || "<p class='vp-muted'>Nenhuma conversa registrada.</p>"}${(doc.can_comment || doc.can_request_changes) ? `<form method='post' action='/validacao/documentos/${doc.id}/manifestacao' style='${supportStyle}'${supportSubmit}><label>Mensagem</label><textarea name='message' rows='4' maxlength='5000' required${supportDisabled}></textarea><div style='display:flex;gap:8px;flex-wrap:wrap;margin-top:8px'>${doc.can_request_changes ? `<button class='vp-btn secondary' name='manifestationType' value='changes_requested'${supportDisabled}>Solicitar alteração</button>` : ''}${doc.can_comment ? `<button class='vp-btn' name='manifestationType' value='contribution'${supportDisabled}>Contribuição</button>` : ''}</div></form>` : ''}
+      const actionArea = !isCurrentShown
+        ? `<div class='vp-card' style='margin-top:14px'><h3 style='margin-top:0'>Conversa da V${Number(shown.version_number)} (somente leitura)</h3>${msgHtml || "<p class='vp-muted'>Nenhum comentário registrado nesta versão.</p>"}</div>`
+        :
+        `<div class='vp-card' style='margin-top:14px'><h3 style='margin-top:0'>Conversa da V${Number(doc.version_number || 1)} (versão atual)</h3>${msgHtml || "<p class='vp-muted'>Nenhuma conversa registrada.</p>"}${(doc.can_comment || doc.can_request_changes) ? `<form method='post' action='/validacao/documentos/${doc.id}/manifestacao' style='${supportStyle}'${supportSubmit}><label>Mensagem</label><textarea name='message' rows='4' maxlength='5000' required${supportDisabled}></textarea><div style='display:flex;gap:8px;flex-wrap:wrap;margin-top:8px'>${doc.can_request_changes ? `<button class='vp-btn secondary' name='manifestationType' value='changes_requested'${supportDisabled}>Solicitar alteração</button>` : ''}${doc.can_comment ? `<button class='vp-btn' name='manifestationType' value='contribution'${supportDisabled}>Contribuição</button>` : ''}</div></form>` : ''}
         ${blockedByAdjustments ? "<div class='vp-alert vp-support'><strong>Aguardando nova versão.</strong> A validação fica bloqueada enquanto esta versão possui alteração solicitada.</div>" :
           doc.validado_por_mim ? `<div class='vp-alert vp-ok'><strong>Sua validação está registrada.</strong>${signature ? `<br>CPF: ${escapeHtml(maskCpf(signature.validator_cpf))}<br>Registro: ${escapeHtml(signature.security_code)}` : ''}</div>` :
           doc.can_validate ? `<form method='post' action='/validacao/documentos/${doc.id}/decisao' style='margin-top:14px;border-top:1px solid #e2e8f0;padding-top:14px;${supportStyle}'${supportSubmit}><h3>Validação</h3><label style='display:flex;gap:8px;align-items:flex-start;font-weight:400'><input type='checkbox' name='noMoreAdjustments' required style='width:auto;margin-top:3px'${supportDisabled}> Confirmo que revisei o documento e não há mais ajustes necessários.</label><label style='display:flex;gap:8px;align-items:flex-start;font-weight:400'><input type='checkbox' name='acknowledgement' required style='width:auto;margin-top:3px'${supportDisabled}> Estou ciente de que esta confirmação registra minha validação eletrônica desta versão.</label><button class='vp-btn' type='submit' style='margin-top:10px'${supportDisabled}>Confirmar e registrar validação</button></form>` : "<div class='vp-alert vp-err'><strong>Este acesso não possui permissão para validar esta versão.</strong></div>"}
@@ -891,14 +881,13 @@ async function handlePublic(req, res, ctx) {
           const active = String(v.id) === String(shown.id);
           return `<a href='/validacao/documentos/${doc.id}?versao=${n}' style='padding:7px 14px;border-radius:999px;font-size:13px;font-weight:700;text-decoration:none;border:1px solid ${active ? '#3b1d8f' : '#cbd5e1'};background:${active ? '#3b1d8f' : '#fff'};color:${active ? '#fff' : '#334155'}'>${escapeHtml(label)}</a>`;
         }).join('')}</div>` : '';
-      const oldNotice = isCurrentShown ? '' : `<div class='vp-alert vp-support' style='margin-bottom:10px'><strong>Você está vendo a V${Number(shown.version_number)}, uma versão anterior.</strong> Manifestações e validação valem para a versão atual. <a href='/validacao/documentos/${doc.id}'>Ver versão atual (V${Number(doc.version_number)})</a></div>`;
+      const oldNotice = isCurrentShown ? '' : `<div class='vp-alert vp-support' style='margin-bottom:10px'><strong>V${Number(shown.version_number)} — versão anterior, somente visualização.</strong> Esta versão e seus comentários não podem mais ser alterados. <a href='/validacao/documentos/${doc.id}'>Ir para a versão atual (V${Number(doc.version_number)})</a></div>`;
       html(res, page(doc.titulo, `
         <a href='/validacao/documentos'>← Voltar aos documentos</a>
         <h1>${escapeHtml(doc.titulo)}</h1><p class='vp-muted'>Versão atual: V${Number(doc.version_number || 1)}${allVersions.length > 1 ? ` · ${allVersions.length} versões no histórico` : ''}</p>
         ${versionTabs}
         ${oldNotice}
         <div class='vp-card'><div class='vp-muted' style='font-size:12px;margin-bottom:8px'>V${Number(shown.version_number)} · ${escapeHtml(shown.file_name || '')}</div>${viewerHtml}</div>
-        ${previousHtml}
         ${actionArea}
       `, session));
       return true;
