@@ -1,5 +1,6 @@
 const crypto = require('crypto');
 const { getPrivateObjectBuffer } = require('./portal-storage');
+const { portalCanPreviewOffice, portalSendOfficePreview, portalOfficeViewerHtml } = require('./portal-preview');
 const { sendPortalNotificationEmail } = require('./email-service');
 
 const SESSION_TTL_SECONDS = 60 * 60 * 12;
@@ -688,6 +689,7 @@ async function handlePublic(req, res, ctx) {
         res.writeHead(503); res.end('Documento temporariamente indisponível.'); return true;
       }
       await recordAudit(pg, req, { entregaId:doc.id, versionId:doc.version_id, actorType:session.read_only?'ckm':'cliente', actorId:session.support_user_id || session.email, action:session.read_only?'visualizacao_suporte_documento':'documento_visualizado', details:{via:'portal_permanente'} });
+      if (await portalSendOfficePreview(req, res, version.file_name, pdf)) return true;
       const fileName = String(version.file_name || 'documento.pdf').replace(/[\r\n"]/g, '');
       const mime = version.mime_type || 'application/pdf';
       const disp = mime === 'application/pdf' ? 'inline' : 'attachment';
@@ -852,8 +854,10 @@ async function handlePublic(req, res, ctx) {
         <a href='/validacao/documentos'>← Voltar aos documentos</a>
         <h1>${escapeHtml(doc.titulo)}</h1><p class='vp-muted'>Versão V${Number(doc.version_number || 1)}</p>
         <div class='vp-card'>${(!doc.mime_type || doc.mime_type === 'application/pdf')
-          ? `<iframe src='/validacao/documentos/${doc.id}/pdf' style='width:100%;height:70vh;border:0;border-radius:8px;background:#e2e8f0'></iframe>`
-          : `<div style='padding:40px 20px;text-align:center'><div style='font-size:44px'>${/\.xls[xm]?$/i.test(doc.file_name || '') ? '📊' : '📝'}</div><div style='margin-top:8px;font-weight:700;word-break:break-all'>${escapeHtml(doc.file_name || 'Documento')}</div><div class='vp-muted' style='margin-top:6px;font-size:13px'>Este formato não pode ser exibido no navegador. Baixe o arquivo para analisá-lo.</div><a href='/validacao/documentos/${doc.id}/pdf' download style='display:inline-block;margin-top:14px;padding:10px 18px;border-radius:9px;background:#0f766e;color:#fff;font-weight:700;text-decoration:none'>Baixar arquivo</a></div>`}</div>
+          ? `<iframe src='/validacao/documentos/${doc.id}/pdf?v=${encodeURIComponent(doc.version_id)}' style='width:100%;height:70vh;border:0;border-radius:8px;background:#e2e8f0'></iframe>`
+          : portalCanPreviewOffice(doc.file_name)
+          ? portalOfficeViewerHtml(`/validacao/documentos/${doc.id}/pdf?v=${encodeURIComponent(doc.version_id)}`, `/validacao/documentos/${doc.id}/pdf?v=${encodeURIComponent(doc.version_id)}&view=1`, 'width:100%;height:70vh;border:0;border-radius:8px;background:#e2e8f0')
+          : `<div style='padding:40px 20px;text-align:center'><div style='font-size:44px'>${/\.xls[xm]?$/i.test(doc.file_name || '') ? '📊' : '📝'}</div><div style='margin-top:8px;font-weight:700;word-break:break-all'>${escapeHtml(doc.file_name || 'Documento')}</div><div class='vp-muted' style='margin-top:6px;font-size:13px'>Este formato não pode ser exibido no navegador. Baixe o arquivo para analisá-lo.</div><a href='/validacao/documentos/${doc.id}/pdf?v=${encodeURIComponent(doc.version_id)}' download style='display:inline-block;margin-top:14px;padding:10px 18px;border-radius:9px;background:#0f766e;color:#fff;font-weight:700;text-decoration:none'>Baixar arquivo</a></div>`}</div>
         ${actionArea}
       `, session));
       return true;
