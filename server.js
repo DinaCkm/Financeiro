@@ -5006,7 +5006,7 @@ const server = http.createServer(async (req, res) => {
           files.map((file, idx) =>
             "<div class='arquivo-lote-row' data-index='"+idx+"' style='display:grid;grid-template-columns:minmax(220px,1fr) minmax(260px,2fr);gap:.65rem;align-items:end;margin:.45rem 0;padding:.65rem;border:1px solid #e2e8f0;border-radius:10px;background:#f8fafc'>" +
               "<div><div style='font-size:.72rem;color:#64748b'>Arquivo</div><strong style='font-size:.82rem;word-break:break-word'>"+escapeHtmlClient(file.name)+"</strong><div style='font-size:.7rem;color:#94a3b8'>"+(file.size/1024/1024).toFixed(2)+" MB</div></div>" +
-              "<label style='margin:0'>Nome do documento *<input class='arquivo-titulo' maxlength='255' value='"+escapeHtmlAttr(tituloDoArquivo(file.name))+"' required></label>" +
+              "<label style='margin:0'>Título do documento * <span style='font-weight:400;color:#64748b;font-size:.72rem'>(é este nome que o validador verá — edite se necessário)</span><input class='arquivo-titulo' maxlength='255' value='"+escapeHtmlAttr(tituloDoArquivo(file.name))+"' required style='border:2px solid #a78bfa;background:#faf5ff;font-weight:600'></label>" +
             "</div>"
           ).join('');
       }
@@ -5035,7 +5035,7 @@ const server = http.createServer(async (req, res) => {
         if (!clienteId) faltando.push(['ent-cliente', 'Cliente']);
         if (!descricao) faltando.push(['ent-descricao', 'Descrição da entrega']);
         if (!files.length) faltando.push(['ent-arquivo', 'Arquivos da versão 1']);
-        if (titleInputs.some(input => !input.value.trim())) faltando.push(['ent-arquivo', 'Nome de todos os documentos']);
+        if (titleInputs.some(input => !input.value.trim())) faltando.push(['ent-arquivo', 'Título de todos os documentos']);
         ['ent-cliente','ent-descricao','ent-arquivo'].forEach(id => {
           const el = document.getElementById(id);
           if (el) { el.style.border = ''; el.style.background = ''; }
@@ -5737,6 +5737,25 @@ const server = http.createServer(async (req, res) => {
   }
 
 
+
+  const tituloEntregaMatch = url.pathname.match(/^\/api\/entregas\/([0-9a-f-]{36})\/titulo$/i);
+  if (req.method === 'POST' && tituloEntregaMatch) {
+    const pg = storage.getPool ? storage.getPool() : null;
+    if (!pg) return json(res, 503, { error: 'Banco não disponível.' });
+    const entrega = (await pg.query('SELECT * FROM portal_entregas WHERE id=$1 LIMIT 1', [tituloEntregaMatch[1]])).rows[0];
+    if (!entrega) return json(res, 404, { error: 'Entrega não encontrada.' });
+    if (!(await userCanAccessPortalDelivery(user, entrega))) return json(res, 403, { error: 'Acesso não autorizado.' });
+    if (entrega.status === 'cancelado') return json(res, 409, { error: 'Entrega cancelada não pode ser alterada.' });
+    let body;
+    try { body = JSON.parse(await readBody(req, 16 * 1024) || '{}'); }
+    catch { return json(res, 400, { error: 'Dados inválidos.' }); }
+    const titulo = String(body.titulo || '').trim().slice(0, 255);
+    if (!titulo) return json(res, 400, { error: 'Informe o título.' });
+    if (titulo === entrega.titulo) return json(res, 200, { ok: true });
+    await pg.query('UPDATE portal_entregas SET titulo=$1 WHERE id=$2', [titulo, entrega.id]);
+    await recordPortalAudit(pg, req, { entregaId: entrega.id, versionId: null, actorType: 'ckm', actorId: user.id, action: 'titulo_alterado', details: { de: entrega.titulo, para: titulo } });
+    return json(res, 200, { ok: true });
+  }
 
   const addDocumentsMatch = url.pathname.match(/^\/api\/entregas\/([0-9a-f-]{36})\/adicionar-documentos$/i);
   if (req.method === 'POST' && addDocumentsMatch) {
@@ -6661,7 +6680,30 @@ const server = http.createServer(async (req, res) => {
       <div style='display:flex;justify-content:space-between;gap:1rem;align-items:flex-start;flex-wrap:wrap'>
         <div>
           <a href='/entregas' style='font-size:.82rem'>← Voltar para Entregas</a>
-          <h2 class='page-title' style='margin-top:.5rem'>${escapeHtml(entrega.titulo)}</h2>
+          <div id='titulo-view' style='display:flex;align-items:center;gap:.6rem;flex-wrap:wrap;margin-top:.5rem'>
+            <h2 class='page-title' style='margin:0'>${escapeHtml(entrega.titulo)}</h2>
+            ${entrega.status !== 'cancelado' && user._supportMode !== 'consultant' ? `<button type='button' class='btn-outline' style='padding:.3rem .7rem;font-size:.78rem' onclick="document.getElementById('titulo-view').style.display='none';document.getElementById('titulo-edit').style.display='flex';document.getElementById('titulo-input').focus()">✏️ Editar título</button>` : ''}
+          </div>
+          <div id='titulo-edit' style='display:none;gap:.5rem;align-items:center;flex-wrap:wrap;margin-top:.5rem'>
+            <input id='titulo-input' maxlength='255' value='${escapeHtml(entrega.titulo)}' style='min-width:320px;flex:1;font-size:1.05rem;font-weight:600;padding:.5rem;border:2px solid #a78bfa;border-radius:8px'>
+            <button type='button' onclick='salvarTituloEntrega()'>Salvar</button>
+            <button type='button' class='btn-outline' onclick="document.getElementById('titulo-edit').style.display='none';document.getElementById('titulo-view').style.display='flex'">Cancelar</button>
+            <span id='titulo-msg' style='font-size:.8rem'></span>
+          </div>
+          <script>
+          async function salvarTituloEntrega() {
+            const titulo = document.getElementById('titulo-input').value.trim();
+            const msg = document.getElementById('titulo-msg');
+            if (!titulo) { msg.textContent = 'Informe o título.'; msg.style.color = '#991b1b'; return; }
+            msg.textContent = 'Salvando...'; msg.style.color = '#475569';
+            try {
+              const r = await fetch('/api/entregas/${entregaId}/titulo', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({ titulo }) });
+              const d = await r.json().catch(() => ({}));
+              if (!r.ok || d.error) throw new Error(d.error || 'Não foi possível salvar.');
+              location.reload();
+            } catch (e) { msg.textContent = 'Erro: ' + e.message; msg.style.color = '#991b1b'; }
+          }
+          </script>
           <p style='color:#64748b;max-width:900px'>${escapeHtml(entrega.descricao)}</p>
         </div>
         <div style='text-align:right'>
@@ -6742,7 +6784,7 @@ const server = http.createServer(async (req, res) => {
         lista.innerHTML = files.map((f,i) =>
           "<div class='add-doc-row' data-index='"+i+"' style='display:grid;grid-template-columns:minmax(220px,1fr) minmax(260px,2fr);gap:.65rem;align-items:end;margin:.45rem 0;padding:.65rem;border:1px solid #e2e8f0;border-radius:10px;background:#fff'>" +
             "<div><div style='font-size:.72rem;color:#64748b'>Arquivo</div><strong style='font-size:.82rem;word-break:break-word'>"+escapeNovoHtml(f.name)+"</strong><div style='font-size:.7rem;color:#94a3b8'>"+(f.size/1024/1024).toFixed(2)+" MB</div></div>" +
-            "<label style='margin:0'>Nome do documento *<input class='add-doc-titulo' maxlength='255' value='"+escapeNovoHtml(tituloNovoDocumento(f.name))+"' required></label>" +
+            "<label style='margin:0'>Título do documento * <span style='font-weight:400;color:#64748b;font-size:.72rem'>(é este nome que o validador verá — edite se necessário)</span><input class='add-doc-titulo' maxlength='255' value='"+escapeNovoHtml(tituloNovoDocumento(f.name))+"' required style='border:2px solid #a78bfa;background:#faf5ff;font-weight:600'></label>" +
           "</div>"
         ).join('');
       }
@@ -6757,7 +6799,7 @@ const server = http.createServer(async (req, res) => {
         if (!files.length) { msg.textContent='Selecione pelo menos um arquivo.'; msg.style.color='#991b1b'; return; }
         if (files.length > 20) { msg.textContent='Selecione no máximo 20 documentos por vez.'; msg.style.color='#991b1b'; return; }
         if (files.some(f => portalArquivoAcimaDoLimite(f))) { msg.textContent='Cada arquivo deve ter no máximo 30 MB (vídeos: até 2 GB).'; msg.style.color='#991b1b'; return; }
-        if (titles.some(t => !t.value.trim())) { msg.textContent='Informe o nome de todos os documentos.'; msg.style.color='#991b1b'; return; }
+        if (titles.some(t => !t.value.trim())) { msg.textContent='Informe o título de todos os documentos.'; msg.style.color='#991b1b'; return; }
 
         btn.disabled=true; btn.textContent='Adicionando...'; msg.style.color='#475569';
         try {
