@@ -680,7 +680,11 @@ async function handlePublic(req, res, ctx) {
     if (!doc) { html(res, page('Documento não disponível', "<div class='vp-card'>Este documento não está disponível para este acesso.</div>", session), 404); return true; }
 
     if (action === 'pdf' && req.method === 'GET') {
-      const version = (await pg.query('SELECT * FROM portal_entrega_versions WHERE id=$1 LIMIT 1',[doc.version_id])).rows[0];
+      const requestedVersionId = url.searchParams.get('v') || doc.version_id;
+      const version = (await pg.query(
+        'SELECT * FROM portal_entrega_versions WHERE id=$1 AND entrega_id=$2 AND version_number<=$3 LIMIT 1',
+        [requestedVersionId, doc.id, Number(doc.version_number || 1)]
+      )).rows[0];
       if (!version) { res.writeHead(404); res.end(); return true; }
       let pdf;
       try {
@@ -850,14 +854,35 @@ async function handlePublic(req, res, ctx) {
           doc.validado_por_mim ? `<div class='vp-alert vp-ok'><strong>Sua validação está registrada.</strong>${signature ? `<br>CPF: ${escapeHtml(maskCpf(signature.validator_cpf))}<br>Registro: ${escapeHtml(signature.security_code)}` : ''}</div>` :
           doc.can_validate ? `<form method='post' action='/validacao/documentos/${doc.id}/decisao' style='margin-top:14px;border-top:1px solid #e2e8f0;padding-top:14px;${supportStyle}'${supportSubmit}><h3>Validação</h3><label style='display:flex;gap:8px;align-items:flex-start;font-weight:400'><input type='checkbox' name='noMoreAdjustments' required style='width:auto;margin-top:3px'${supportDisabled}> Confirmo que revisei o documento e não há mais ajustes necessários.</label><label style='display:flex;gap:8px;align-items:flex-start;font-weight:400'><input type='checkbox' name='acknowledgement' required style='width:auto;margin-top:3px'${supportDisabled}> Estou ciente de que esta confirmação registra minha validação eletrônica desta versão.</label><button class='vp-btn' type='submit' style='margin-top:10px'${supportDisabled}>Confirmar e registrar validação</button></form>` : "<div class='vp-alert vp-err'><strong>Este acesso não possui permissão para validar esta versão.</strong></div>"}
         </div>`;
+      const allVersions = (await pg.query(
+        'SELECT id,version_number,file_name,mime_type,status,uploaded_at FROM portal_entrega_versions WHERE entrega_id=$1 AND version_number<=$2 ORDER BY version_number ASC',
+        [doc.id, Number(doc.version_number || 1)]
+      )).rows;
+      const wantedNumber = Number(url.searchParams.get('versao') || doc.version_number || 1);
+      const shown = allVersions.find(v => Number(v.version_number) === wantedNumber)
+        || allVersions.find(v => String(v.id) === String(doc.version_id))
+        || { id: doc.version_id, version_number: doc.version_number, file_name: doc.file_name, mime_type: doc.mime_type };
+      const isCurrentShown = String(shown.id) === String(doc.version_id);
+      const fileSrc = `/validacao/documentos/${doc.id}/pdf?v=${encodeURIComponent(shown.id)}`;
+      const viewerStyle = 'width:100%;height:70vh;border:0;border-radius:8px;background:#e2e8f0';
+      const viewerHtml = (!shown.mime_type || shown.mime_type === 'application/pdf')
+        ? `<iframe src='${fileSrc}' style='${viewerStyle}'></iframe>`
+        : portalCanPreviewOffice(shown.file_name)
+        ? portalOfficeViewerHtml(fileSrc, `${fileSrc}&view=1`, viewerStyle)
+        : `<div style='padding:40px 20px;text-align:center'><div style='font-size:44px'>${/\.xls[xm]?$/i.test(shown.file_name || '') ? '📊' : '📝'}</div><div style='margin-top:8px;font-weight:700;word-break:break-all'>${escapeHtml(shown.file_name || 'Documento')}</div><div class='vp-muted' style='margin-top:6px;font-size:13px'>Este formato não pode ser exibido no navegador. Baixe o arquivo para analisá-lo.</div><a href='${fileSrc}' download style='display:inline-block;margin-top:14px;padding:10px 18px;border-radius:9px;background:#0f766e;color:#fff;font-weight:700;text-decoration:none'>Baixar arquivo</a></div>`;
+      const versionTabs = allVersions.length > 1 ? `<div style='display:flex;gap:8px;flex-wrap:wrap;margin:10px 0 12px'>${allVersions.map(v => {
+          const n = Number(v.version_number);
+          const label = n === 1 ? 'V1 · original' : (String(v.id) === String(doc.version_id) ? `V${n} · atual` : `V${n}`);
+          const active = String(v.id) === String(shown.id);
+          return `<a href='/validacao/documentos/${doc.id}?versao=${n}' style='padding:7px 14px;border-radius:999px;font-size:13px;font-weight:700;text-decoration:none;border:1px solid ${active ? '#3b1d8f' : '#cbd5e1'};background:${active ? '#3b1d8f' : '#fff'};color:${active ? '#fff' : '#334155'}'>${escapeHtml(label)}</a>`;
+        }).join('')}</div>` : '';
+      const oldNotice = isCurrentShown ? '' : `<div class='vp-alert vp-support' style='margin-bottom:10px'><strong>Você está vendo a V${Number(shown.version_number)}, uma versão anterior.</strong> Manifestações e validação valem para a versão atual. <a href='/validacao/documentos/${doc.id}'>Ver versão atual (V${Number(doc.version_number)})</a></div>`;
       html(res, page(doc.titulo, `
         <a href='/validacao/documentos'>← Voltar aos documentos</a>
-        <h1>${escapeHtml(doc.titulo)}</h1><p class='vp-muted'>Versão V${Number(doc.version_number || 1)}</p>
-        <div class='vp-card'>${(!doc.mime_type || doc.mime_type === 'application/pdf')
-          ? `<iframe src='/validacao/documentos/${doc.id}/pdf?v=${encodeURIComponent(doc.version_id)}' style='width:100%;height:70vh;border:0;border-radius:8px;background:#e2e8f0'></iframe>`
-          : portalCanPreviewOffice(doc.file_name)
-          ? portalOfficeViewerHtml(`/validacao/documentos/${doc.id}/pdf?v=${encodeURIComponent(doc.version_id)}`, `/validacao/documentos/${doc.id}/pdf?v=${encodeURIComponent(doc.version_id)}&view=1`, 'width:100%;height:70vh;border:0;border-radius:8px;background:#e2e8f0')
-          : `<div style='padding:40px 20px;text-align:center'><div style='font-size:44px'>${/\.xls[xm]?$/i.test(doc.file_name || '') ? '📊' : '📝'}</div><div style='margin-top:8px;font-weight:700;word-break:break-all'>${escapeHtml(doc.file_name || 'Documento')}</div><div class='vp-muted' style='margin-top:6px;font-size:13px'>Este formato não pode ser exibido no navegador. Baixe o arquivo para analisá-lo.</div><a href='/validacao/documentos/${doc.id}/pdf?v=${encodeURIComponent(doc.version_id)}' download style='display:inline-block;margin-top:14px;padding:10px 18px;border-radius:9px;background:#0f766e;color:#fff;font-weight:700;text-decoration:none'>Baixar arquivo</a></div>`}</div>
+        <h1>${escapeHtml(doc.titulo)}</h1><p class='vp-muted'>Versão atual: V${Number(doc.version_number || 1)}${allVersions.length > 1 ? ` · ${allVersions.length} versões no histórico` : ''}</p>
+        ${versionTabs}
+        ${oldNotice}
+        <div class='vp-card'><div class='vp-muted' style='font-size:12px;margin-bottom:8px'>V${Number(shown.version_number)} · ${escapeHtml(shown.file_name || '')}</div>${viewerHtml}</div>
         ${actionArea}
       `, session));
       return true;
