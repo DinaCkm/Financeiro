@@ -831,29 +831,6 @@ async function handlePublic(req, res, ctx) {
     }
 
     if (req.method === 'GET' && !action) {
-      const messages = (await pg.query(
-        'SELECT * FROM portal_entrega_messages WHERE version_id=$1 ORDER BY created_at ASC',[doc.version_id]
-      )).rows;
-      const signature = (await pg.query(
-        'SELECT * FROM portal_entrega_signatures WHERE version_id=$1 AND lower(validator_email)=lower($2) ORDER BY signed_at DESC LIMIT 1',
-        [doc.version_id,session.email]
-      )).rows[0] || null;
-      const msgHtml = messages.map(m => {
-        const raw = String(m.message || '');
-        const clean = raw.replace(/^ALTERAÇÃO SOLICITADA:\s*/i,'').replace(/^AJUSTES SOLICITADOS:\s*/i,'').replace(/^CONTRIBUIÇÃO:\s*/i,'');
-        return `<div style='padding:10px;border:1px solid #e2e8f0;border-radius:9px;margin:8px 0'><div class='vp-muted' style='font-size:12px'><strong>${escapeHtml(m.actor_name)}</strong> · ${escapeHtml(new Date(m.created_at).toLocaleString('pt-BR'))}</div><div style='white-space:pre-wrap;margin-top:4px'>${escapeHtml(clean)}</div></div>`;
-      }).join('');
-      const blockedByAdjustments = doc.status === 'ajustes_solicitados' || doc.version_status === 'ajustes_solicitados';
-      const readonly = !!session.read_only;
-      const supportDisabled = readonly ? " disabled aria-disabled='true' title='Modo de suporte: ação bloqueada'" : '';
-      const supportStyle = readonly ? "opacity:.72;pointer-events:none;" : '';
-      const supportSubmit = readonly ? " onsubmit='return false'" : '';
-      const actionArea =
-        `<div class='vp-card' style='margin-top:14px'><h3 style='margin-top:0'>Conversa</h3>${msgHtml || "<p class='vp-muted'>Nenhuma conversa registrada.</p>"}${(doc.can_comment || doc.can_request_changes) ? `<form method='post' action='/validacao/documentos/${doc.id}/manifestacao' style='${supportStyle}'${supportSubmit}><label>Mensagem</label><textarea name='message' rows='4' maxlength='5000' required${supportDisabled}></textarea><div style='display:flex;gap:8px;flex-wrap:wrap;margin-top:8px'>${doc.can_request_changes ? `<button class='vp-btn secondary' name='manifestationType' value='changes_requested'${supportDisabled}>Solicitar alteração</button>` : ''}${doc.can_comment ? `<button class='vp-btn' name='manifestationType' value='contribution'${supportDisabled}>Contribuição</button>` : ''}</div></form>` : ''}
-        ${blockedByAdjustments ? "<div class='vp-alert vp-support'><strong>Aguardando nova versão.</strong> A validação fica bloqueada enquanto esta versão possui alteração solicitada.</div>" :
-          doc.validado_por_mim ? `<div class='vp-alert vp-ok'><strong>Sua validação está registrada.</strong>${signature ? `<br>CPF: ${escapeHtml(maskCpf(signature.validator_cpf))}<br>Registro: ${escapeHtml(signature.security_code)}` : ''}</div>` :
-          doc.can_validate ? `<form method='post' action='/validacao/documentos/${doc.id}/decisao' style='margin-top:14px;border-top:1px solid #e2e8f0;padding-top:14px;${supportStyle}'${supportSubmit}><h3>Validação</h3><label style='display:flex;gap:8px;align-items:flex-start;font-weight:400'><input type='checkbox' name='noMoreAdjustments' required style='width:auto;margin-top:3px'${supportDisabled}> Confirmo que revisei o documento e não há mais ajustes necessários.</label><label style='display:flex;gap:8px;align-items:flex-start;font-weight:400'><input type='checkbox' name='acknowledgement' required style='width:auto;margin-top:3px'${supportDisabled}> Estou ciente de que esta confirmação registra minha validação eletrônica desta versão.</label><button class='vp-btn' type='submit' style='margin-top:10px'${supportDisabled}>Confirmar e registrar validação</button></form>` : "<div class='vp-alert vp-err'><strong>Este acesso não possui permissão para validar esta versão.</strong></div>"}
-        </div>`;
       const allVersions = (await pg.query(
         'SELECT id,version_number,file_name,mime_type,status,uploaded_at FROM portal_entrega_versions WHERE entrega_id=$1 AND version_number<=$2 ORDER BY version_number ASC',
         [doc.id, Number(doc.version_number || 1)]
@@ -863,6 +840,44 @@ async function handlePublic(req, res, ctx) {
         || allVersions.find(v => String(v.id) === String(doc.version_id))
         || { id: doc.version_id, version_number: doc.version_number, file_name: doc.file_name, mime_type: doc.mime_type };
       const isCurrentShown = String(shown.id) === String(doc.version_id);
+      const messages = (await pg.query(
+        'SELECT * FROM portal_entrega_messages WHERE version_id=$1 ORDER BY created_at ASC',[doc.version_id]
+      )).rows;
+      const renderMsg = m => {
+        const raw = String(m.message || '');
+        const clean = raw.replace(/^ALTERAÇÃO SOLICITADA:\s*/i,'').replace(/^AJUSTES SOLICITADOS:\s*/i,'').replace(/^CONTRIBUIÇÃO:\s*/i,'');
+        const tag = /^ALTERAÇÃO SOLICITADA:|^AJUSTES SOLICITADOS:/i.test(raw) ? "<span style='margin-left:6px;padding:1px 8px;border-radius:999px;background:#fff7ed;color:#9a3412;font-size:11px'>Alteração solicitada</span>"
+          : /^CONTRIBUIÇÃO:/i.test(raw) ? "<span style='margin-left:6px;padding:1px 8px;border-radius:999px;background:#ecfdf5;color:#065f46;font-size:11px'>Contribuição</span>" : '';
+        return `<div style='padding:10px;border:1px solid #e2e8f0;border-radius:9px;margin:8px 0'><div class='vp-muted' style='font-size:12px'><strong>${escapeHtml(m.actor_name)}</strong> · ${escapeHtml(new Date(m.created_at).toLocaleString('pt-BR'))}${tag}</div><div style='white-space:pre-wrap;margin-top:4px'>${escapeHtml(clean)}</div></div>`;
+      };
+      const previousVersions = allVersions.filter(v => Number(v.version_number) < Number(doc.version_number || 1));
+      const previousBlocks = [];
+      for (const v of previousVersions.slice().reverse()) {
+        const vm = (await pg.query('SELECT * FROM portal_entrega_messages WHERE version_id=$1 ORDER BY created_at ASC',[v.id])).rows;
+        const n = Number(v.version_number);
+        previousBlocks.push(`<details style='border:1px solid #e2e8f0;border-radius:10px;padding:10px 12px;margin:8px 0;background:#f8fafc'${String(v.id) === String(shown.id) ? ' open' : ''}>
+          <summary style='cursor:pointer;font-weight:700'>V${n}${n === 1 ? ' · original' : ''} — ${escapeHtml(v.file_name || '')} · ${vm.length} comentário(s)</summary>
+          <div style='margin:8px 0'><a href='/validacao/documentos/${doc.id}?versao=${n}'>Ver documento da V${n}</a></div>
+          ${vm.length ? vm.map(renderMsg).join('') : "<p class='vp-muted'>Nenhum comentário nesta versão.</p>"}
+        </details>`);
+      }
+      const previousHtml = previousBlocks.length ? `<div class='vp-card' style='margin-top:14px'><h3 style='margin-top:0'>Versões anteriores e comentários</h3><p class='vp-muted' style='margin-top:0'>Documento anterior e o que foi comentado em cada versão.</p>${previousBlocks.join('')}</div>` : '';
+      const signature = (await pg.query(
+        'SELECT * FROM portal_entrega_signatures WHERE version_id=$1 AND lower(validator_email)=lower($2) ORDER BY signed_at DESC LIMIT 1',
+        [doc.version_id,session.email]
+      )).rows[0] || null;
+      const msgHtml = messages.map(renderMsg).join('');
+      const blockedByAdjustments = doc.status === 'ajustes_solicitados' || doc.version_status === 'ajustes_solicitados';
+      const readonly = !!session.read_only;
+      const supportDisabled = readonly ? " disabled aria-disabled='true' title='Modo de suporte: ação bloqueada'" : '';
+      const supportStyle = readonly ? "opacity:.72;pointer-events:none;" : '';
+      const supportSubmit = readonly ? " onsubmit='return false'" : '';
+      const actionArea =
+        `<div class='vp-card' style='margin-top:14px'><h3 style='margin-top:0'>Conversa da versão atual (V${Number(doc.version_number || 1)})</h3>${msgHtml || "<p class='vp-muted'>Nenhuma conversa registrada.</p>"}${(doc.can_comment || doc.can_request_changes) ? `<form method='post' action='/validacao/documentos/${doc.id}/manifestacao' style='${supportStyle}'${supportSubmit}><label>Mensagem</label><textarea name='message' rows='4' maxlength='5000' required${supportDisabled}></textarea><div style='display:flex;gap:8px;flex-wrap:wrap;margin-top:8px'>${doc.can_request_changes ? `<button class='vp-btn secondary' name='manifestationType' value='changes_requested'${supportDisabled}>Solicitar alteração</button>` : ''}${doc.can_comment ? `<button class='vp-btn' name='manifestationType' value='contribution'${supportDisabled}>Contribuição</button>` : ''}</div></form>` : ''}
+        ${blockedByAdjustments ? "<div class='vp-alert vp-support'><strong>Aguardando nova versão.</strong> A validação fica bloqueada enquanto esta versão possui alteração solicitada.</div>" :
+          doc.validado_por_mim ? `<div class='vp-alert vp-ok'><strong>Sua validação está registrada.</strong>${signature ? `<br>CPF: ${escapeHtml(maskCpf(signature.validator_cpf))}<br>Registro: ${escapeHtml(signature.security_code)}` : ''}</div>` :
+          doc.can_validate ? `<form method='post' action='/validacao/documentos/${doc.id}/decisao' style='margin-top:14px;border-top:1px solid #e2e8f0;padding-top:14px;${supportStyle}'${supportSubmit}><h3>Validação</h3><label style='display:flex;gap:8px;align-items:flex-start;font-weight:400'><input type='checkbox' name='noMoreAdjustments' required style='width:auto;margin-top:3px'${supportDisabled}> Confirmo que revisei o documento e não há mais ajustes necessários.</label><label style='display:flex;gap:8px;align-items:flex-start;font-weight:400'><input type='checkbox' name='acknowledgement' required style='width:auto;margin-top:3px'${supportDisabled}> Estou ciente de que esta confirmação registra minha validação eletrônica desta versão.</label><button class='vp-btn' type='submit' style='margin-top:10px'${supportDisabled}>Confirmar e registrar validação</button></form>` : "<div class='vp-alert vp-err'><strong>Este acesso não possui permissão para validar esta versão.</strong></div>"}
+        </div>`;
       const fileSrc = `/validacao/documentos/${doc.id}/pdf?v=${encodeURIComponent(shown.id)}`;
       const viewerStyle = 'width:100%;height:70vh;border:0;border-radius:8px;background:#e2e8f0';
       const viewerHtml = (!shown.mime_type || shown.mime_type === 'application/pdf')
@@ -883,6 +898,7 @@ async function handlePublic(req, res, ctx) {
         ${versionTabs}
         ${oldNotice}
         <div class='vp-card'><div class='vp-muted' style='font-size:12px;margin-bottom:8px'>V${Number(shown.version_number)} · ${escapeHtml(shown.file_name || '')}</div>${viewerHtml}</div>
+        ${previousHtml}
         ${actionArea}
       `, session));
       return true;
