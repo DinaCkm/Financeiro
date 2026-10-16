@@ -8,9 +8,61 @@ function portalFileExt(fileName) {
   const m = String(fileName || '').toLowerCase().match(/\.([a-z0-9]+)$/);
   return m ? m[1] : '';
 }
+function portalIsSlides(fileName) {
+  const ext = portalFileExt(fileName);
+  return ext === 'pptx' || ext === 'ppt';
+}
 function portalCanPreviewOffice(fileName) {
   const ext = portalFileExt(fileName);
-  return ext === 'docx' || ext === 'xlsx' || ext === 'xlsm';
+  return ext === 'docx' || ext === 'xlsx' || ext === 'xlsm' || ext === 'pptx' || ext === 'ppt';
+}
+
+// ── PowerPoint → PDF (LibreOffice), com cache no armazenamento ──
+const pptConversions = new Map();
+let pptQueue = Promise.resolve();
+function convertSlidesToPdf(fileName, buffer) {
+  const fs = require('fs');
+  const os = require('os');
+  const path = require('path');
+  const { execFile } = require('child_process');
+  const job = async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ppt-'));
+    try {
+      const input = path.join(dir, `apresentacao.${portalFileExt(fileName) || 'pptx'}`);
+      fs.writeFileSync(input, buffer);
+      await new Promise((resolve, reject) => {
+        execFile(process.env.SOFFICE_PATH || 'soffice', [
+          '--headless', '--norestore', '--nolockcheck',
+          `-env:UserInstallation=file://${path.join(dir, 'profile')}`,
+          '--convert-to', 'pdf', '--outdir', dir, input
+        ], { timeout: 180000 }, (err) => err ? reject(err) : resolve());
+      });
+      const out = path.join(dir, 'apresentacao.pdf');
+      if (!fs.existsSync(out)) throw new Error('Conversão não gerou PDF.');
+      return fs.readFileSync(out);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  };
+  // Uma conversão por vez para não sobrecarregar o servidor.
+  const run = pptQueue.then(job, job);
+  pptQueue = run.catch(() => {});
+  return run;
+}
+async function getSlidesPdf(fileName, buffer) {
+  const crypto = require('crypto');
+  const storage = require('./portal-storage');
+  const hash = crypto.createHash('sha256').update(buffer).digest('hex');
+  const cacheKey = `portal-previews/${hash}.pdf`;
+  try { const cached = await storage.getPrivateObjectBuffer(cacheKey); if (cached && cached.length) return cached; } catch {}
+  if (pptConversions.has(hash)) return pptConversions.get(hash);
+  const p = (async () => {
+    const pdf = await convertSlidesToPdf(fileName, buffer);
+    storage.putPrivateObject(cacheKey, pdf, 'application/pdf').catch(e => console.warn('[entregas] Falha ao guardar visualização:', e.message));
+    return pdf;
+  })();
+  pptConversions.set(hash, p);
+  try { return await p; } finally { pptConversions.delete(hash); }
 }
 // Converte Word (.docx) ou Excel (.xlsx) em uma página HTML de leitura.
 async function portalOfficePreviewHtml(fileName, buffer) {
@@ -69,6 +121,24 @@ function portalWantsView(req) {
 // Responde com a visualização HTML. Retorna true se respondeu.
 async function portalSendOfficePreview(req, res, fileName, buffer) {
   if (!portalWantsView(req) || !portalCanPreviewOffice(fileName)) return false;
+  if (portalIsSlides(fileName)) {
+    try {
+      const pdf = await getSlidesPdf(fileName, buffer);
+      res.writeHead(200, {
+        'Content-Type': 'application/pdf',
+        'Content-Disposition': 'inline; filename="apresentacao.pdf"',
+        'Content-Length': pdf.length,
+        'Cache-Control': 'private, no-store',
+        'X-Content-Type-Options': 'nosniff'
+      });
+      res.end(pdf);
+    } catch (e) {
+      console.warn('[entregas] Falha ao converter PowerPoint:', e.message);
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'private, no-store' });
+      res.end("<!doctype html><meta charset='utf-8'><body style='font-family:Arial;padding:30px;color:#64748b'>Não foi possível gerar a visualização desta apresentação. Use o botão Baixar arquivo original.</body>");
+    }
+    return true;
+  }
   try {
     const page = await portalOfficePreviewHtml(fileName, buffer);
     res.writeHead(200, {

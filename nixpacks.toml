@@ -1,5 +1,6 @@
 [phases.setup]
 nixPkgs = ["nodejs_20", "python3"]
+aptPkgs = ["libreoffice-impress", "fonts-liberation", "fonts-dejavu-core"]
 
 [phases.install]
 cmds = ["npm install --production"]
