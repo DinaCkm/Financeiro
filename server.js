@@ -6908,7 +6908,7 @@ const server = http.createServer(async (req, res) => {
       await client.query(
         `INSERT INTO portal_entrega_versions
           (id, entrega_id, version_number, file_name, mime_type, file_size, file_hash, storage_key, file_data, uploaded_by, uploaded_at, status)
-         VALUES ($1,$2,$3,$4,$11,$5,$6,$7,$8,$9,$10,NOW(),'aguardando_cliente')`,
+         VALUES ($1,$2,$3,$4,$10,$5,$6,$7,$8,$9,NOW(),'aguardando_cliente')`,
         [versionId, entregaId, nextVersion, fileName, fileBuffer.length, hash, storageKey, Buffer.alloc(0), user.id, detectedFile.mime]
       );
       await client.query(
