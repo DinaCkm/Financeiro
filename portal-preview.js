@@ -113,15 +113,38 @@ function portalFileKindLabel(fileName) {
   if (portalIsVideo(fileName)) return { icon:'🎬', label:'Vídeo' };
   return { icon:'📝', label:'Documento Word' };
 }
-function portalDownloadCardHtml(src, fileName) {
+function portalDownloadCardHtml(src, fileName, aviso) {
   const k = portalFileKindLabel(fileName);
   return `<div style='padding:40px 20px;text-align:center;border:1px solid #e2e8f0;border-radius:10px;background:#f8fafc'>
     <div style='font-size:44px;line-height:1'>${k.icon}</div>
     <div style='margin-top:10px;font-weight:700'>${escapeHtml(k.label)}</div>
     <div style='margin-top:4px;font-size:13px;color:#64748b;word-break:break-all'>${escapeHtml(fileName || '')}</div>
-    <div style='margin-top:8px;font-size:13px;color:#64748b'>Este formato não pode ser exibido no navegador. Baixe o arquivo para analisá-lo.</div>
-    <a href='${src}' download style='display:inline-block;margin-top:14px;padding:10px 18px;border-radius:9px;background:#0f766e;color:#fff;font-weight:700;text-decoration:none'>Baixar arquivo</a>
+    <div style='margin-top:8px;font-size:13px;color:#64748b'>${escapeHtml(aviso || 'Este formato não pode ser exibido no navegador. Baixe o arquivo para analisá-lo.')}</div>
+    <a href='${src}${src.includes('?') ? '&' : '?'}download=1' download style='display:inline-block;margin-top:14px;padding:10px 18px;border-radius:9px;background:#0f766e;color:#fff;font-weight:700;text-decoration:none'>Baixar arquivo</a>
   </div>`;
+}
+// Arquivos acima deste tamanho ficam disponíveis somente para download.
+const PORTAL_INLINE_MAX_BYTES = 30 * 1024 * 1024;
+const PORTAL_AVISO_GRANDE = 'Arquivo grande: disponível somente para download.';
+function portalIsLargeFile(fileSize) {
+  return Number(fileSize || 0) > PORTAL_INLINE_MAX_BYTES;
+}
+// Envia arquivo grande direto do armazenamento (fluxo), sempre como download.
+async function portalStreamDownload(res, fileName, mime, fileSize, getStream) {
+  const safeName = String(fileName || 'arquivo').replace(/[\r\n"]/g, '');
+  const { body, contentLength } = await getStream();
+  const len = Number(contentLength || fileSize || 0);
+  res.writeHead(200, {
+    ...(len ? { 'Content-Length': len } : {}),
+    'Content-Type': mime || 'application/octet-stream',
+    'Content-Disposition': `attachment; filename="${safeName.replace(/[^\x20-\x7e]/g, '_')}"; filename*=UTF-8''${encodeURIComponent(safeName)}`,
+    'Cache-Control': 'private, no-store',
+    'X-Content-Type-Options': 'nosniff'
+  });
+  for await (const chunk of body) {
+    if (!res.write(chunk)) await new Promise(r => res.once('drain', r));
+  }
+  res.end();
 }
 // Envia o arquivo; vídeos abrem no player (com suporte a avanço/retrocesso via Range).
 function portalSendBuffer(req, res, fileName, mime, buffer) {
@@ -154,4 +177,4 @@ function portalSendBuffer(req, res, fileName, mime, buffer) {
   res.writeHead(200, { ...base, 'Content-Length': total });
   res.end(buffer);
 }
-module.exports = { portalCanPreviewOffice, portalOfficePreviewHtml, portalSendOfficePreview, portalOfficeViewerHtml, portalIsVideo, portalVideoViewerHtml, portalDownloadCardHtml, portalSendBuffer };
+module.exports = { portalCanPreviewOffice, portalOfficePreviewHtml, portalSendOfficePreview, portalOfficeViewerHtml, portalIsVideo, portalVideoViewerHtml, portalDownloadCardHtml, portalSendBuffer, portalIsLargeFile, portalStreamDownload, PORTAL_AVISO_GRANDE };

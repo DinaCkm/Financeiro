@@ -1,6 +1,6 @@
 const crypto = require('crypto');
-const { getPrivateObjectBuffer } = require('./portal-storage');
-const { portalCanPreviewOffice, portalSendOfficePreview, portalOfficeViewerHtml, portalIsVideo, portalVideoViewerHtml, portalDownloadCardHtml, portalSendBuffer } = require('./portal-preview');
+const { getPrivateObjectBuffer, getPrivateObjectStream } = require('./portal-storage');
+const { portalCanPreviewOffice, portalSendOfficePreview, portalOfficeViewerHtml, portalIsVideo, portalVideoViewerHtml, portalDownloadCardHtml, portalSendBuffer, portalIsLargeFile, portalStreamDownload, PORTAL_AVISO_GRANDE } = require('./portal-preview');
 const { sendPortalNotificationEmail } = require('./email-service');
 
 const SESSION_TTL_SECONDS = 60 * 60 * 12;
@@ -686,6 +686,12 @@ async function handlePublic(req, res, ctx) {
         [requestedVersionId, doc.id, Number(doc.version_number || 1)]
       )).rows[0];
       if (!version) { res.writeHead(404); res.end(); return true; }
+      if (version.storage_key && portalIsLargeFile(version.file_size)) {
+        await recordAudit(pg, req, { entregaId:doc.id, versionId:doc.version_id, actorType:session.read_only?'ckm':'cliente', actorId:session.support_user_id || session.email, action:session.read_only?'visualizacao_suporte_documento':'documento_visualizado', details:{via:'portal_permanente', download:true} });
+        try { await portalStreamDownload(res, version.file_name, version.mime_type, version.file_size, () => getPrivateObjectStream(version.storage_key)); }
+        catch (e) { if (!res.headersSent) { res.writeHead(503); res.end('Documento temporariamente indisponível.'); } else res.end(); }
+        return true;
+      }
       let pdf;
       try {
         pdf = version.storage_key ? await getPrivateObjectBuffer(version.storage_key) : version.file_data;
@@ -829,7 +835,7 @@ async function handlePublic(req, res, ctx) {
 
     if (req.method === 'GET' && !action) {
       const allVersions = (await pg.query(
-        'SELECT id,version_number,file_name,mime_type,status,uploaded_at FROM portal_entrega_versions WHERE entrega_id=$1 AND version_number<=$2 ORDER BY version_number ASC',
+        'SELECT id,version_number,file_name,mime_type,file_size,status,uploaded_at FROM portal_entrega_versions WHERE entrega_id=$1 AND version_number<=$2 ORDER BY version_number ASC',
         [doc.id, Number(doc.version_number || 1)]
       )).rows;
       const wantedNumber = Number(url.searchParams.get('versao') || doc.version_number || 1);
@@ -867,7 +873,9 @@ async function handlePublic(req, res, ctx) {
         </div>`;
       const fileSrc = `/validacao/documentos/${doc.id}/pdf?v=${encodeURIComponent(shown.id)}`;
       const viewerStyle = 'width:100%;height:70vh;border:0;border-radius:8px;background:#e2e8f0';
-      const viewerHtml = (!shown.mime_type || shown.mime_type === 'application/pdf')
+      const viewerHtml = portalIsLargeFile(shown.file_size)
+        ? portalDownloadCardHtml(fileSrc, shown.file_name, PORTAL_AVISO_GRANDE)
+        : (!shown.mime_type || shown.mime_type === 'application/pdf')
         ? `<iframe src='${fileSrc}' style='${viewerStyle}'></iframe>`
         : portalCanPreviewOffice(shown.file_name)
         ? portalOfficeViewerHtml(fileSrc, `${fileSrc}&view=1`, viewerStyle)

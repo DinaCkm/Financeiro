@@ -1,4 +1,4 @@
-const { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand } = require('@aws-sdk/client-s3');
+const { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand, CreateMultipartUploadCommand, UploadPartCommand, CompleteMultipartUploadCommand, AbortMultipartUploadCommand } = require('@aws-sdk/client-s3');
 
 function requireR2Env() {
   const accountId = process.env.R2_ACCOUNT_ID;
@@ -65,8 +65,47 @@ async function deletePrivateObject(key) {
   }));
 }
 
+// ── Envio em partes (arquivos grandes) ──
+async function startMultipartUpload(key, contentType) {
+  const { bucketName } = requireR2Env();
+  const r = await getClient().send(new CreateMultipartUploadCommand({
+    Bucket: bucketName, Key: key, ContentType: contentType, CacheControl: 'private, no-store',
+  }));
+  return r.UploadId;
+}
+async function uploadMultipartPart(key, uploadId, partNumber, data) {
+  const { bucketName } = requireR2Env();
+  const r = await getClient().send(new UploadPartCommand({
+    Bucket: bucketName, Key: key, UploadId: uploadId, PartNumber: partNumber, Body: data,
+  }));
+  return r.ETag;
+}
+async function completeMultipartUpload(key, uploadId, parts) {
+  const { bucketName } = requireR2Env();
+  await getClient().send(new CompleteMultipartUploadCommand({
+    Bucket: bucketName, Key: key, UploadId: uploadId,
+    MultipartUpload: { Parts: parts.map(p => ({ ETag: p.etag, PartNumber: p.number })) },
+  }));
+}
+async function abortMultipartUpload(key, uploadId) {
+  const { bucketName } = requireR2Env();
+  await getClient().send(new AbortMultipartUploadCommand({ Bucket: bucketName, Key: key, UploadId: uploadId }));
+}
+// Lê o arquivo como fluxo, sem carregar tudo na memória.
+async function getPrivateObjectStream(key) {
+  const { bucketName } = requireR2Env();
+  const r = await getClient().send(new GetObjectCommand({ Bucket: bucketName, Key: key }));
+  if (!r.Body) throw new Error('Arquivo não encontrado no R2.');
+  return { body: r.Body, contentLength: r.ContentLength };
+}
+
 module.exports = {
   isR2Configured,
+  startMultipartUpload,
+  uploadMultipartPart,
+  completeMultipartUpload,
+  abortMultipartUpload,
+  getPrivateObjectStream,
   putPrivateObject,
   getPrivateObjectBuffer,
   deletePrivateObject,

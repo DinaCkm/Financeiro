@@ -161,7 +161,7 @@ const {
 } = require('./auth-security');
 const { isSmtpConfigured, sendPasswordResetEmail, sendConsultantInviteEmail, sendDeliveryInviteEmail, sendPortalNotificationEmail, sendSmtpTestEmail } = require('./email-service');
 const portalValidator = require('./portal-validator');
-const { portalCanPreviewOffice, portalSendOfficePreview, portalOfficeViewerHtml, portalIsVideo, portalVideoViewerHtml, portalDownloadCardHtml, portalSendBuffer } = require('./portal-preview');
+const { portalCanPreviewOffice, portalSendOfficePreview, portalOfficeViewerHtml, portalIsVideo, portalVideoViewerHtml, portalDownloadCardHtml, portalSendBuffer, portalIsLargeFile, portalStreamDownload, PORTAL_AVISO_GRANDE } = require('./portal-preview');
 
 // ── Tipos de arquivo aceitos no portal Entregas e Validações ──
 const PORTAL_FILE_TYPES = {
@@ -221,7 +221,8 @@ async function portalSendDocument(req, res, fileName, mime, buffer) {
   if (await portalSendOfficePreview(req, res, fileName, buffer)) return;
   portalSendBuffer(req, res, fileName, mime || (PORTAL_FILE_TYPES[portalFileExt(fileName)] || {}).mime, buffer);
 }
-function portalDocumentViewer(src, fileName, mime, style) {
+function portalDocumentViewer(src, fileName, mime, style, fileSize) {
+  if (portalIsLargeFile(fileSize)) return portalDownloadCardHtml(src, fileName, PORTAL_AVISO_GRANDE);
   if (portalIsPdf(fileName, mime)) {
     return `<iframe src='${src}' title='Documento' style='${style}'></iframe>`;
   }
@@ -243,7 +244,97 @@ const {
   putPrivateObject,
   getPrivateObjectBuffer,
   deletePrivateObject,
+  startMultipartUpload,
+  uploadMultipartPart,
+  completeMultipartUpload,
+  abortMultipartUpload,
+  getPrivateObjectStream,
 } = require('./portal-storage');
+
+// ── Envio de vídeos grandes em partes (sem travar o navegador) ──
+const PORTAL_BIG_MAX_BYTES = 2 * 1024 * 1024 * 1024; // 2 GB
+const PORTAL_BIG_CHUNK = 10 * 1024 * 1024;            // 10 MB por parte
+const PORTAL_BIG_TTL_MS = 24 * 60 * 60 * 1000;
+const portalBigUploads = new Map();
+setInterval(() => {
+  const now = Date.now();
+  for (const [ref, u] of portalBigUploads) {
+    if (now - u.createdAt > PORTAL_BIG_TTL_MS) {
+      portalBigUploads.delete(ref);
+      if (!u.completed) abortMultipartUpload(u.key, u.uploadId).catch(() => {});
+    }
+  }
+}, 60 * 60 * 1000).unref();
+function portalIsVideoExt(ext) {
+  return ext === 'mp4' || ext === 'm4v' || ext === 'mov' || ext === 'webm';
+}
+// Devolve o envio concluído (ainda não usado) do mesmo usuário, ou null.
+function portalGetBigUpload(ref, user, fileName) {
+  const u = portalBigUploads.get(String(ref || ''));
+  if (!u || !u.completed || u.used || String(u.userId) !== String(user.id)) return null;
+  if (fileName && String(fileName) !== u.fileName) return null;
+  return u;
+}
+function readRawBody(req, maxBytes) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let size = 0;
+    req.on('data', chunk => {
+      size += chunk.length;
+      if (size > maxBytes) { reject(new Error('Parte acima do limite.')); req.destroy(); return; }
+      chunks.push(chunk);
+    });
+    req.on('end', () => resolve(Buffer.concat(chunks)));
+    req.on('error', reject);
+  });
+}
+// Função usada pelas telas de envio (inserida no <script> das páginas).
+const PORTAL_BIG_UPLOAD_JS = `
+      function portalEhVideo(nome) { return /[.](mp4|m4v|mov|webm)$/i.test(String(nome || '')); }
+      function portalLimiteArquivo(file) { return portalEhVideo(file.name) ? 2 * 1024 * 1024 * 1024 : 30 * 1024 * 1024; }
+      function portalArquivoAcimaDoLimite(file) { return file.size > portalLimiteArquivo(file); }
+      async function portalPrepararArquivo(file, onProgresso) {
+        if (portalEhVideo(file.name) && file.size > 30 * 1024 * 1024) {
+          const ini = await fetch('/api/entregas/upload-grande/iniciar', {
+            method:'POST', headers:{'content-type':'application/json'},
+            body: JSON.stringify({ fileName:file.name, fileSize:file.size })
+          });
+          const d = await ini.json().catch(() => ({}));
+          if (!ini.ok || d.error) throw new Error(d.error || 'Não foi possível iniciar o envio do vídeo.');
+          const total = Math.ceil(file.size / d.chunkSize);
+          for (let i = 0; i < total; i++) {
+            const parte = file.slice(i * d.chunkSize, Math.min(file.size, (i + 1) * d.chunkSize));
+            let ok = false, tentativa = 0, ultimoErro = null;
+            while (!ok && tentativa < 5) {
+              tentativa++;
+              try {
+                const r = await fetch('/api/entregas/upload-grande/' + d.ref + '/parte/' + (i + 1), {
+                  method:'PUT', headers:{'content-type':'application/octet-stream'}, body: parte
+                });
+                const j = await r.json().catch(() => ({}));
+                if (r.status === 400 || r.status === 404) { const fatal = new Error(j.error || ('HTTP ' + r.status)); fatal.fatal = true; throw fatal; }
+                if (!r.ok || j.error) throw new Error(j.error || ('HTTP ' + r.status));
+                ok = true;
+              } catch (e) {
+                if (e.fatal) throw e;
+                ultimoErro = e;
+                await new Promise(s => setTimeout(s, 2000 * tentativa));
+              }
+            }
+            if (!ok) throw new Error('Falha ao enviar "' + file.name + '": ' + (ultimoErro ? ultimoErro.message : 'erro de conexão'));
+            if (onProgresso) onProgresso(Math.round(((i + 1) / total) * 100));
+          }
+          const fim = await fetch('/api/entregas/upload-grande/' + d.ref + '/concluir', { method:'POST' });
+          const fd = await fim.json().catch(() => ({}));
+          if (!fim.ok || fd.error) throw new Error(fd.error || 'Não foi possível concluir o envio do vídeo.');
+          return { fileName:file.name, fileType:file.type || '', uploadRef:d.ref };
+        }
+        const bytes = new Uint8Array(await file.arrayBuffer());
+        let binary = '';
+        for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+        return { fileName:file.name, fileType:file.type || '', fileBase64:btoa(binary) };
+      }
+`;
 
 const COLUMN_ALIASES = {
   data: ['data', 'dt', 'date', 'data_movimento', 'data movimento', 'vencimento',
@@ -2329,7 +2420,7 @@ const server = http.createServer(async (req, res) => {
 
     const documentos = (await pg.query(
       `SELECT e.id, e.titulo, e.descricao, e.status, e.current_version,
-              v.id AS version_id, v.version_number, v.file_name, v.mime_type, v.status AS version_status, e.cancelled_at, e.cancelled_reason,
+              v.id AS version_id, v.version_number, v.file_name, v.mime_type, v.file_size, v.status AS version_status, e.cancelled_at, e.cancelled_reason,
               g.id AS convidado_id,
               s.security_code, s.validator_name AS signature_name, s.validator_cpf AS signature_cpf, s.signed_at,
               EXISTS(
@@ -2406,6 +2497,11 @@ const server = http.createServer(async (req, res) => {
         [selected.version_id, selected.id]
       )).rows[0];
       if (!version) return json(res, 404, { error:'Documento não encontrado.' });
+      if (version.storage_key && portalIsLargeFile(version.file_size)) {
+        try { await portalStreamDownload(res, version.file_name, version.mime_type, version.file_size, () => getPrivateObjectStream(version.storage_key)); }
+        catch (e) { if (!res.headersSent) return json(res, 503, { error:'Documento temporariamente indisponível.' }); res.end(); }
+        return;
+      }
       let pdfBuffer;
       try {
         pdfBuffer = version.storage_key ? await getPrivateObjectBuffer(version.storage_key) : version.file_data;
@@ -2706,7 +2802,7 @@ const server = http.createServer(async (req, res) => {
           <div style='font-size:13px;color:#64748b'>Versão V${Number(selected.version_number)}</div></div>
         </div>
         <div style='margin-top:14px;background:#fff;border:1px solid #e2e8f0;border-radius:14px;padding:14px'>
-          ${portalDocumentViewer(`/validar-lote/${token}/documento/${selected.id}/pdf`, selected.file_name, selected.mime_type, 'width:100%;height:70vh;border:0;border-radius:10px;background:#e2e8f0')}
+          ${portalDocumentViewer(`/validar-lote/${token}/documento/${selected.id}/pdf`, selected.file_name, selected.mime_type, 'width:100%;height:70vh;border:0;border-radius:10px;background:#e2e8f0', selected.file_size)}
         </div>
         <div id='conversa' style='margin-top:14px;background:#fff;border:1px solid #e2e8f0;border-radius:14px;padding:16px'>
           <h3 style='margin-top:0'>Conversa sobre este documento</h3>
@@ -2972,6 +3068,11 @@ const server = http.createServer(async (req, res) => {
         action:'documento_visualizado',
         details:{ via:'link_individual', email:guest.email }
       });
+      if (version.storage_key && portalIsLargeFile(version.file_size)) {
+        try { await portalStreamDownload(res, version.file_name, version.mime_type, version.file_size, () => getPrivateObjectStream(version.storage_key)); }
+        catch (e) { if (!res.headersSent) return json(res, 503, { error: 'Documento temporariamente indisponível.' }); res.end(); }
+        return;
+      }
       let pdfBuffer;
       try {
         pdfBuffer = version.storage_key
@@ -3509,7 +3610,7 @@ const server = http.createServer(async (req, res) => {
           ${erro ? "<div class='error'>Revise os dados informados e tente novamente.</div>" : ''}
           <div class='grid'>
             <div class='card'>
-              ${portalDocumentViewer(`/validar/${token}/pdf`, version.file_name, version.mime_type, 'width:100%;height:78vh;border:0;border-radius:10px;background:#e2e8f0')}
+              ${portalDocumentViewer(`/validar/${token}/pdf`, version.file_name, version.mime_type, 'width:100%;height:78vh;border:0;border-radius:10px;background:#e2e8f0', version.file_size)}
               ${portalIsPdf(version.file_name, version.mime_type) ? `<div style='margin-top:10px'><a href='/validar/${token}/pdf' target='_blank'>Abrir PDF em nova aba</a></div>` : ''}
             </div>
             <div>
@@ -4881,6 +4982,7 @@ const server = http.createServer(async (req, res) => {
         wrap.appendChild(row);
       }
 
+      ${PORTAL_BIG_UPLOAD_JS}
       function tituloDoArquivo(nome) {
         return String(nome || '')
           .replace(/\\.(pdf|docx?|xlsx?|xlsm|pptx?|mp4|m4v|mov|webm)$/i, '')
@@ -4959,8 +5061,8 @@ const server = http.createServer(async (req, res) => {
           msg.style.color = '#991b1b';
           return;
         }
-        if (files.some(file => file.size > 30 * 1024 * 1024)) {
-          msg.textContent = 'Cada arquivo deve ter no máximo 30 MB nesta fase.';
+        if (files.some(file => portalArquivoAcimaDoLimite(file))) {
+          msg.textContent = 'Cada arquivo deve ter no máximo 30 MB (vídeos: até 2 GB).';
           msg.style.color = '#991b1b';
           return;
         }
@@ -4978,19 +5080,10 @@ const server = http.createServer(async (req, res) => {
           for (let index = 0; index < files.length; index++) {
             const file = files[index];
             msg.textContent = 'Preparando documento ' + (index + 1) + ' de ' + files.length + ': ' + file.name;
-            const buffer = await file.arrayBuffer();
-            const bytes = new Uint8Array(buffer);
-            let binary = '';
-            const chunk = 0x8000;
-            for (let i=0;i<bytes.length;i+=chunk) {
-              binary += String.fromCharCode(...bytes.subarray(i, i+chunk));
-            }
-            documentos.push({
-              titulo: titleInputs[index].value.trim(),
-              fileName: file.name,
-              fileType: file.type || '',
-              fileBase64: btoa(binary)
+            const arquivo = await portalPrepararArquivo(file, pct => {
+              msg.textContent = 'Enviando vídeo ' + (index + 1) + ' de ' + files.length + ' (' + file.name + '): ' + pct + '%';
             });
+            documentos.push({ titulo: titleInputs[index].value.trim(), ...arquivo });
           }
 
           msg.textContent = 'Enviando lote para o servidor...';
@@ -5026,6 +5119,82 @@ const server = http.createServer(async (req, res) => {
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
     res.end(html);
     return;
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/entregas/upload-grande/iniciar') {
+    if (!isR2Configured()) return json(res, 503, { error: 'Armazenamento seguro de documentos não está configurado.' });
+    let body;
+    try { body = JSON.parse(await readBody(req, 64 * 1024) || '{}'); }
+    catch { return json(res, 400, { error: 'Dados inválidos.' }); }
+    const fileName = String(body.fileName || '').trim().slice(0, 255);
+    const fileSize = Number(body.fileSize || 0);
+    const ext = portalFileExt(fileName);
+    if (!fileName || !portalIsVideoExt(ext)) return json(res, 400, { error: 'O envio em partes é apenas para vídeos (.mp4, .mov, .webm).' });
+    if (!fileSize || fileSize > PORTAL_BIG_MAX_BYTES) return json(res, 400, { error: 'O vídeo deve ter no máximo 2 GB.' });
+    const ref = crypto.randomUUID();
+    const key = `portal-entregas/uploads/${ref}.${ext}`;
+    const mime = PORTAL_FILE_TYPES[ext].mime;
+    try {
+      const uploadId = await startMultipartUpload(key, mime);
+      portalBigUploads.set(ref, {
+        ref, key, uploadId, ext, mime, fileName, fileSize, userId: user.id,
+        parts: [], received: 0, nextPart: 1, hash: crypto.createHash('sha256'),
+        completed: false, used: false, createdAt: Date.now(), busy: false
+      });
+    } catch (e) {
+      console.warn('[entregas] Falha ao iniciar envio grande:', e.message);
+      return json(res, 503, { error: 'Não foi possível iniciar o envio do vídeo.' });
+    }
+    return json(res, 200, { ref, chunkSize: PORTAL_BIG_CHUNK });
+  }
+
+  const bigPartMatch = url.pathname.match(/^\/api\/entregas\/upload-grande\/([0-9a-f-]{36})\/parte\/(\d+)$/i);
+  if (req.method === 'PUT' && bigPartMatch) {
+    const up = portalBigUploads.get(bigPartMatch[1]);
+    if (!up || String(up.userId) !== String(user.id) || up.completed) return json(res, 404, { error: 'Envio não encontrado. Selecione o vídeo novamente.' });
+    const partNumber = Number(bigPartMatch[2]);
+    if (partNumber < up.nextPart) { req.resume(); return json(res, 200, { ok: true, repetida: true }); }
+    if (partNumber !== up.nextPart || up.busy) { req.resume(); return json(res, 409, { error: 'Parte fora de ordem.' }); }
+    up.busy = true;
+    try {
+      const data = await readRawBody(req, PORTAL_BIG_CHUNK + 1024);
+      if (!data.length) throw new Error('Parte vazia.');
+      if (up.received + data.length > up.fileSize) throw new Error('Tamanho maior que o informado.');
+      if (partNumber === 1 && !portalDetectFile(up.fileName, data)) {
+        abortMultipartUpload(up.key, up.uploadId).catch(() => {});
+        portalBigUploads.delete(up.ref);
+        return json(res, 400, { error: `O arquivo "${up.fileName}" não parece ser um vídeo válido.` });
+      }
+      const etag = await uploadMultipartPart(up.key, up.uploadId, partNumber, data);
+      up.parts.push({ number: partNumber, etag });
+      up.hash.update(data);
+      up.received += data.length;
+      up.nextPart += 1;
+      return json(res, 200, { ok: true, recebido: up.received });
+    } catch (e) {
+      console.warn('[entregas] Falha em parte do envio grande:', e.message);
+      return json(res, 503, { error: 'Falha ao gravar parte do vídeo. Tentando novamente...' });
+    } finally {
+      up.busy = false;
+    }
+  }
+
+  const bigDoneMatch = url.pathname.match(/^\/api\/entregas\/upload-grande\/([0-9a-f-]{36})\/concluir$/i);
+  if (req.method === 'POST' && bigDoneMatch) {
+    const up = portalBigUploads.get(bigDoneMatch[1]);
+    if (!up || String(up.userId) !== String(user.id)) return json(res, 404, { error: 'Envio não encontrado. Selecione o vídeo novamente.' });
+    if (up.completed) return json(res, 200, { ok: true, ref: up.ref });
+    if (up.received !== up.fileSize) return json(res, 400, { error: 'O vídeo não foi enviado por completo. Tente novamente.' });
+    try {
+      await completeMultipartUpload(up.key, up.uploadId, up.parts);
+      up.completed = true;
+      up.fileHash = up.hash.digest('hex');
+      up.hash = null;
+    } catch (e) {
+      console.warn('[entregas] Falha ao concluir envio grande:', e.message);
+      return json(res, 503, { error: 'Não foi possível concluir o envio do vídeo.' });
+    }
+    return json(res, 200, { ok: true, ref: up.ref });
   }
 
   if (req.method === 'POST' && url.pathname === '/api/entregas/lote') {
@@ -5080,11 +5249,17 @@ const server = http.createServer(async (req, res) => {
       const titulo = String(doc.titulo || '').trim();
       const fileName = String(doc.fileName || '').trim();
       const fileType = String(doc.fileType || 'application/pdf').trim();
-      if (!titulo || !fileName || !doc.fileBase64) {
+      if (!titulo || !fileName || (!doc.fileBase64 && !doc.uploadRef)) {
         return json(res, 400, { error: 'Todos os documentos precisam ter nome e arquivo.' });
       }
       if (!PORTAL_FILE_TYPES[portalFileExt(fileName)]) {
         return json(res, 400, { error: 'Os arquivos devem ser PDF, Word, Excel, PowerPoint ou vídeo (.mp4/.mov/.webm).' });
+      }
+      if (doc.uploadRef) {
+        const big = portalGetBigUpload(doc.uploadRef, user, fileName);
+        if (!big) return json(res, 400, { error: `O envio do vídeo "${fileName}" não foi concluído. Selecione o arquivo novamente.` });
+        prepared.push({ titulo, fileName, big, ext: big.ext, mime: big.mime, fileSize: big.fileSize });
+        continue;
       }
       let fileBuffer;
       try {
@@ -5100,7 +5275,7 @@ const server = http.createServer(async (req, res) => {
         return json(res, 400, { error: `O arquivo "${fileName}" não parece ser um PDF, Word, Excel, PowerPoint ou vídeo válido.` });
       }
       totalBytes += fileBuffer.length;
-      prepared.push({ titulo, fileName, fileBuffer, ext: detected.ext, mime: detected.mime });
+      prepared.push({ titulo, fileName, fileBuffer, ext: detected.ext, mime: detected.mime, fileSize: fileBuffer.length });
     }
     if (totalBytes > 60 * 1024 * 1024) {
       return json(res, 400, { error: 'O lote completo deve ter no máximo 60 MB.' });
@@ -5184,6 +5359,12 @@ const server = http.createServer(async (req, res) => {
       for (const doc of prepared) {
         const entregaId = crypto.randomUUID();
         const versionId = crypto.randomUUID();
+        if (doc.big) {
+          if (doc.big.used) throw new Error('Envio já utilizado.');
+          doc.big.used = true;
+          created.push({ ...doc, entregaId, versionId, fileHash: doc.big.fileHash, storageKey: doc.big.key });
+          continue;
+        }
         const fileHash = crypto.createHash('sha256').update(doc.fileBuffer).digest('hex');
         const storageKey = `portal-entregas/${entregaId}/v1-${versionId}.${doc.ext}`;
         await putPrivateObject(storageKey, doc.fileBuffer, doc.mime);
@@ -5271,7 +5452,7 @@ const server = http.createServer(async (req, res) => {
           `INSERT INTO portal_entrega_versions
             (id, entrega_id, version_number, file_name, mime_type, file_size, file_hash, storage_key, file_data, uploaded_by, uploaded_at, status)
            VALUES ($1,$2,1,$3,$10,$4,$5,$6,$7,$8,$9,'aguardando_cliente')`,
-          [doc.versionId, doc.entregaId, doc.fileName, doc.fileBuffer.length, doc.fileHash, doc.storageKey, Buffer.alloc(0), user.id, now, doc.mime]
+          [doc.versionId, doc.entregaId, doc.fileName, doc.fileSize, doc.fileHash, doc.storageKey, Buffer.alloc(0), user.id, now, doc.mime]
         );
 
         for (const guest of validGuests) {
@@ -5359,7 +5540,7 @@ const server = http.createServer(async (req, res) => {
     const fileType = String(body.fileType || 'application/pdf').trim();
     const convidados = Array.isArray(body.convidados) ? body.convidados : [];
 
-    if (!clienteId || !titulo || !descricao || !fileName || !body.fileBase64) {
+    if (!clienteId || !titulo || !descricao || !fileName || (!body.fileBase64 && !body.uploadRef)) {
       return json(res, 400, { error: 'Cliente, nome, descrição e arquivo são obrigatórios.' });
     }
     if (!(await userCanAccessPortalClient(user, clienteId))) {
@@ -5387,16 +5568,20 @@ const server = http.createServer(async (req, res) => {
       validGuests.push({ nome, email });
     }
 
-    let fileBuffer;
-    try {
-      fileBuffer = Buffer.from(String(body.fileBase64), 'base64');
-    } catch {
-      return json(res, 400, { error: 'Arquivo inválido.' });
+    const bigUpload = body.uploadRef ? portalGetBigUpload(body.uploadRef, user, fileName) : null;
+    if (body.uploadRef && !bigUpload) return json(res, 400, { error: 'O envio do vídeo não foi concluído. Selecione o arquivo novamente.' });
+    let fileBuffer = null;
+    if (!bigUpload) {
+      try {
+        fileBuffer = Buffer.from(String(body.fileBase64), 'base64');
+      } catch {
+        return json(res, 400, { error: 'Arquivo inválido.' });
+      }
+      if (!fileBuffer.length || fileBuffer.length > 30 * 1024 * 1024) {
+        return json(res, 400, { error: 'O arquivo deve ter entre 1 byte e 30 MB.' });
+      }
     }
-    if (!fileBuffer.length || fileBuffer.length > 30 * 1024 * 1024) {
-      return json(res, 400, { error: 'O arquivo deve ter entre 1 byte e 30 MB.' });
-    }
-    const detectedFile = portalDetectFile(fileName, fileBuffer);
+    const detectedFile = bigUpload ? { ext: bigUpload.ext, mime: bigUpload.mime } : portalDetectFile(fileName, fileBuffer);
     if (!detectedFile) {
       return json(res, 400, { error: 'O arquivo enviado não parece ser um PDF, Word, Excel, PowerPoint ou vídeo válido.' });
     }
@@ -5474,13 +5659,15 @@ const server = http.createServer(async (req, res) => {
 
     const entregaId = crypto.randomUUID();
     const versionId = crypto.randomUUID();
-    const fileHash = crypto.createHash('sha256').update(fileBuffer).digest('hex');
-    const storageKey = `portal-entregas/${entregaId}/v1-${versionId}.${detectedFile.ext}`;
+    const fileHash = bigUpload ? bigUpload.fileHash : crypto.createHash('sha256').update(fileBuffer).digest('hex');
+    const storageKey = bigUpload ? bigUpload.key : `portal-entregas/${entregaId}/v1-${versionId}.${detectedFile.ext}`;
+    const fileSize = bigUpload ? bigUpload.fileSize : fileBuffer.length;
     const now = new Date().toISOString();
     const invitations = [];
 
     try {
-      await putPrivateObject(storageKey, fileBuffer, detectedFile.mime);
+      if (bigUpload) { if (bigUpload.used) throw new Error('Envio já utilizado.'); bigUpload.used = true; }
+      else await putPrivateObject(storageKey, fileBuffer, detectedFile.mime);
     } catch (e) {
       console.warn('[entregas] Falha ao gravar V1 no R2:', e.message);
       return json(res, 503, { error: 'Não foi possível armazenar o documento com segurança.' });
@@ -5500,7 +5687,7 @@ const server = http.createServer(async (req, res) => {
         `INSERT INTO portal_entrega_versions
           (id, entrega_id, version_number, file_name, mime_type, file_size, file_hash, storage_key, file_data, uploaded_by, uploaded_at, status)
          VALUES ($1,$2,1,$3,$4,$5,$6,$7,$8,$9,$10,'aguardando_cliente')`,
-        [versionId, entregaId, fileName, detectedFile.mime, fileBuffer.length, fileHash, storageKey, Buffer.alloc(0), user.id, now]
+        [versionId, entregaId, fileName, detectedFile.mime, fileSize, fileHash, storageKey, Buffer.alloc(0), user.id, now]
       );
 
       for (const guest of validGuests) {
@@ -5578,8 +5765,14 @@ const server = http.createServer(async (req, res) => {
       const titulo = String(doc.titulo || '').trim().slice(0,255);
       const fileName = String(doc.fileName || '').trim();
       const fileType = String(doc.fileType || 'application/pdf').trim();
-      if (!titulo || !fileName || !doc.fileBase64) return json(res, 400, { error: 'Todos os documentos precisam ter nome e arquivo.' });
+      if (!titulo || !fileName || (!doc.fileBase64 && !doc.uploadRef)) return json(res, 400, { error: 'Todos os documentos precisam ter nome e arquivo.' });
       if (!PORTAL_FILE_TYPES[portalFileExt(fileName)]) return json(res, 400, { error: 'Os arquivos devem ser PDF, Word, Excel, PowerPoint ou vídeo (.mp4/.mov/.webm).' });
+      if (doc.uploadRef) {
+        const big = portalGetBigUpload(doc.uploadRef, user, fileName);
+        if (!big) return json(res, 400, { error: `O envio do vídeo "${fileName}" não foi concluído. Selecione o arquivo novamente.` });
+        prepared.push({ titulo, fileName, big, ext: big.ext, mime: big.mime, fileSize: big.fileSize });
+        continue;
+      }
       let fileBuffer;
       try { fileBuffer = Buffer.from(String(doc.fileBase64), 'base64'); }
       catch { return json(res, 400, { error: 'Um dos arquivos é inválido.' }); }
@@ -5588,7 +5781,7 @@ const server = http.createServer(async (req, res) => {
         return json(res, 400, { error: `O arquivo "${fileName}" é inválido ou ultrapassa 30 MB.` });
       }
       totalBytes += fileBuffer.length;
-      prepared.push({ titulo, fileName, fileBuffer, ext: detected.ext, mime: detected.mime });
+      prepared.push({ titulo, fileName, fileBuffer, ext: detected.ext, mime: detected.mime, fileSize: fileBuffer.length });
     }
     if (totalBytes > 60*1024*1024) return json(res, 400, { error: 'O conjunto de arquivos deve ter no máximo 60 MB.' });
 
@@ -5722,6 +5915,12 @@ const server = http.createServer(async (req, res) => {
       for (const doc of prepared) {
         const entregaId = crypto.randomUUID();
         const versionId = crypto.randomUUID();
+        if (doc.big) {
+          if (doc.big.used) throw new Error('Envio já utilizado.');
+          doc.big.used = true;
+          created.push({ ...doc, entregaId, versionId, fileHash: doc.big.fileHash, storageKey: doc.big.key });
+          continue;
+        }
         const fileHash = crypto.createHash('sha256').update(doc.fileBuffer).digest('hex');
         const storageKey = `portal-entregas/${entregaId}/v1-${versionId}.${doc.ext}`;
         await putPrivateObject(storageKey, doc.fileBuffer, doc.mime);
@@ -5748,7 +5947,7 @@ const server = http.createServer(async (req, res) => {
           `INSERT INTO portal_entrega_versions
             (id, entrega_id, version_number, file_name, mime_type, file_size, file_hash, storage_key, file_data, uploaded_by, uploaded_at, status)
            VALUES ($1,$2,1,$3,$10,$4,$5,$6,$7,$8,$9,'aguardando_cliente')`,
-          [doc.versionId, doc.entregaId, doc.fileName, doc.fileBuffer.length, doc.fileHash, doc.storageKey, Buffer.alloc(0), user.id, now, doc.mime]
+          [doc.versionId, doc.entregaId, doc.fileName, doc.fileSize, doc.fileHash, doc.storageKey, Buffer.alloc(0), user.id, now, doc.mime]
         );
         for (const v of validators) {
           const { tokenHash } = createGuestToken();
@@ -6138,6 +6337,11 @@ const server = http.createServer(async (req, res) => {
     const vr = await pg.query('SELECT * FROM portal_entrega_versions WHERE id=$1 AND entrega_id=$2 LIMIT 1', [versionId, entregaId]);
     if (!vr.rows.length) return json(res, 404, { error: 'Versão não encontrada.' });
     const v = vr.rows[0];
+    if (v.storage_key && portalIsLargeFile(v.file_size)) {
+      try { await portalStreamDownload(res, v.file_name, v.mime_type, v.file_size, () => getPrivateObjectStream(v.storage_key)); }
+      catch (e) { if (!res.headersSent) return json(res, 503, { error: 'Documento temporariamente indisponível.' }); res.end(); }
+      return;
+    }
     let pdfBuffer;
     try {
       pdfBuffer = v.storage_key ? await getPrivateObjectBuffer(v.storage_key) : v.file_data;
@@ -6354,7 +6558,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     const versions = (await pg.query(
-      'SELECT id, version_number, file_name, file_size, file_hash, uploaded_at, status FROM portal_entrega_versions WHERE entrega_id=$1 ORDER BY version_number DESC',
+      'SELECT id, version_number, file_name, mime_type, file_size, file_hash, uploaded_at, status FROM portal_entrega_versions WHERE entrega_id=$1 ORDER BY version_number DESC',
       [entregaId]
     )).rows;
     const currentVersion = versions.find(v => Number(v.version_number) === Number(entrega.current_version)) || versions[0] || null;
@@ -6517,7 +6721,7 @@ const server = http.createServer(async (req, res) => {
           <div id='add-doc-lista' style='margin-top:.65rem'></div>
           <div style='display:flex;align-items:center;gap:.75rem;flex-wrap:wrap;margin-top:.8rem'>
             <button id='btn-add-docs' type='button' onclick='adicionarDocumentosAoProjeto()'>Adicionar documentos e manter os mesmos validadores</button>
-            <span style='font-size:.75rem;color:#64748b'>Até 20 arquivos (PDF, Word, Excel, PowerPoint ou vídeo); máximo de 30 MB por arquivo.</span>
+            <span style='font-size:.75rem;color:#64748b'>Até 20 arquivos (PDF, Word, Excel, PowerPoint ou vídeo); máximo de 30 MB por arquivo (vídeos: até 2 GB, somente para download acima de 30 MB).</span>
           </div>
           <div id='add-doc-msg' style='margin-top:.65rem;font-size:.84rem'></div>
         `}
@@ -6542,6 +6746,7 @@ const server = http.createServer(async (req, res) => {
           "</div>"
         ).join('');
       }
+      ${PORTAL_BIG_UPLOAD_JS}
       async function adicionarDocumentosAoProjeto() {
         const input = document.getElementById('add-doc-arquivos');
         const files = [...(input.files || [])];
@@ -6551,7 +6756,7 @@ const server = http.createServer(async (req, res) => {
 
         if (!files.length) { msg.textContent='Selecione pelo menos um arquivo.'; msg.style.color='#991b1b'; return; }
         if (files.length > 20) { msg.textContent='Selecione no máximo 20 documentos por vez.'; msg.style.color='#991b1b'; return; }
-        if (files.some(f => f.size > 30*1024*1024)) { msg.textContent='Cada arquivo deve ter no máximo 30 MB.'; msg.style.color='#991b1b'; return; }
+        if (files.some(f => portalArquivoAcimaDoLimite(f))) { msg.textContent='Cada arquivo deve ter no máximo 30 MB (vídeos: até 2 GB).'; msg.style.color='#991b1b'; return; }
         if (titles.some(t => !t.value.trim())) { msg.textContent='Informe o nome de todos os documentos.'; msg.style.color='#991b1b'; return; }
 
         btn.disabled=true; btn.textContent='Adicionando...'; msg.style.color='#475569';
@@ -6559,16 +6764,10 @@ const server = http.createServer(async (req, res) => {
           const documentos=[];
           for (let i=0;i<files.length;i++) {
             msg.textContent='Preparando documento '+(i+1)+' de '+files.length+'...';
-            const ab=await files[i].arrayBuffer();
-            const bytes=new Uint8Array(ab);
-            let binary='';
-            for (let p=0;p<bytes.length;p+=0x8000) binary += String.fromCharCode(...bytes.subarray(p,p+0x8000));
-            documentos.push({
-              titulo:titles[i].value.trim(),
-              fileName:files[i].name,
-              fileType:files[i].type || '',
-              fileBase64:btoa(binary)
+            const arquivo = await portalPrepararArquivo(files[i], pct => {
+              msg.textContent='Enviando vídeo '+(i+1)+' de '+files.length+' ('+files[i].name+'): '+pct+'%';
             });
+            documentos.push({ titulo:titles[i].value.trim(), ...arquivo });
           }
           msg.textContent='Incluindo os documentos no projeto...';
           const r=await fetch('/api/entregas/${entregaId}/adicionar-documentos',{
@@ -6658,7 +6857,7 @@ const server = http.createServer(async (req, res) => {
           <a href='/entregas/${entregaId}/versoes/${currentVersion.id}/pdf' target='_blank' style='font-size:.85rem'>Abrir em nova aba ↗</a>
         </div>
         <div style='font-size:.8rem;color:#64748b;margin:.35rem 0 .75rem'>${escapeHtml(currentVersion.file_name || '')}</div>
-        ${portalDocumentViewer(`/entregas/${entregaId}/versoes/${currentVersion.id}/pdf`, currentVersion.file_name, currentVersion.mime_type, 'width:100%;height:75vh;border:1px solid #e2e8f0;border-radius:10px;background:#f1f5f9')}
+        ${portalDocumentViewer(`/entregas/${entregaId}/versoes/${currentVersion.id}/pdf`, currentVersion.file_name, currentVersion.mime_type, 'width:100%;height:75vh;border:1px solid #e2e8f0;border-radius:10px;background:#f1f5f9', currentVersion.file_size)}
       </section>
       ` : ''}
 
@@ -6745,23 +6944,23 @@ const server = http.createServer(async (req, res) => {
         <div id='nova-msg' style='margin-top:.5rem;font-size:.85rem'></div>
       </section>
       <script>
+      ${PORTAL_BIG_UPLOAD_JS}
       async function enviarNovaVersao() {
         const f = document.getElementById('nova-arquivo').files[0];
         const resumo = document.getElementById('nova-resumo').value.trim();
         const msg = document.getElementById('nova-msg');
         if (!f) { msg.textContent='Selecione o novo arquivo.'; msg.style.color='#991b1b'; return; }
-        if (f.size > 30*1024*1024) { msg.textContent='O arquivo deve ter no máximo 30 MB nesta fase.'; msg.style.color='#991b1b'; return; }
+        if (portalArquivoAcimaDoLimite(f)) { msg.textContent='O arquivo deve ter no máximo 30 MB (vídeos: até 2 GB).'; msg.style.color='#991b1b'; return; }
         const btn = document.getElementById('btn-nova-versao');
         btn.disabled=true; btn.textContent='Enviando...';
         try {
-          const ab = await f.arrayBuffer();
-          const bytes = new Uint8Array(ab);
-          let binary='';
-          for(let i=0;i<bytes.length;i+=0x8000) binary += String.fromCharCode(...bytes.subarray(i,i+0x8000));
+          const arquivo = await portalPrepararArquivo(f, pct => {
+            msg.textContent='Enviando vídeo: '+pct+'%'; msg.style.color='#475569';
+          });
           const r = await fetch('/api/entregas/${entregaId}/versoes', {
             method:'POST',
             headers:{'content-type':'application/json'},
-            body:JSON.stringify({fileName:f.name,fileType:f.type||'',fileBase64:btoa(binary),changeSummary:resumo})
+            body:JSON.stringify({ ...arquivo, changeSummary:resumo })
           });
           const d=await r.json();
           if(!r.ok||d.error) throw new Error(d.error||'Erro ao enviar nova versão.');
@@ -6866,12 +7065,15 @@ const server = http.createServer(async (req, res) => {
 
     const fileName = String(body.fileName || '').trim();
     const changeSummary = String(body.changeSummary || '').trim();
-    if (!fileName || !body.fileBase64 || !PORTAL_FILE_TYPES[portalFileExt(fileName)]) {
+    if (!fileName || (!body.fileBase64 && !body.uploadRef) || !PORTAL_FILE_TYPES[portalFileExt(fileName)]) {
       return json(res, 400, { error: 'Selecione um arquivo PDF, Word, Excel, PowerPoint ou vídeo válido.' });
     }
 
-    const fileBuffer = Buffer.from(String(body.fileBase64), 'base64');
-    const detectedFile = (fileBuffer.length && fileBuffer.length <= 30 * 1024 * 1024) ? portalDetectFile(fileName, fileBuffer) : null;
+    const bigUpload = body.uploadRef ? portalGetBigUpload(body.uploadRef, user, fileName) : null;
+    if (body.uploadRef && !bigUpload) return json(res, 400, { error: 'O envio do vídeo não foi concluído. Selecione o arquivo novamente.' });
+    const fileBuffer = bigUpload ? null : Buffer.from(String(body.fileBase64), 'base64');
+    const detectedFile = bigUpload ? { ext: bigUpload.ext, mime: bigUpload.mime }
+      : (fileBuffer.length && fileBuffer.length <= 30 * 1024 * 1024) ? portalDetectFile(fileName, fileBuffer) : null;
     if (!detectedFile) {
       return json(res, 400, { error: 'Arquivo inválido (use PDF, Word, Excel, PowerPoint ou vídeo) ou acima de 30 MB.' });
     }
@@ -6883,11 +7085,13 @@ const server = http.createServer(async (req, res) => {
     const currentVersion = Number(entrega.current_version || 1);
     const nextVersion = currentVersion + 1;
     const versionId = crypto.randomUUID();
-    const hash = crypto.createHash('sha256').update(fileBuffer).digest('hex');
-    const storageKey = `portal-entregas/${entregaId}/v${nextVersion}-${versionId}.${detectedFile.ext}`;
+    const hash = bigUpload ? bigUpload.fileHash : crypto.createHash('sha256').update(fileBuffer).digest('hex');
+    const storageKey = bigUpload ? bigUpload.key : `portal-entregas/${entregaId}/v${nextVersion}-${versionId}.${detectedFile.ext}`;
+    const fileSize = bigUpload ? bigUpload.fileSize : fileBuffer.length;
 
     try {
-      await putPrivateObject(storageKey, fileBuffer, detectedFile.mime);
+      if (bigUpload) { if (bigUpload.used) throw new Error('Envio já utilizado.'); bigUpload.used = true; }
+      else await putPrivateObject(storageKey, fileBuffer, detectedFile.mime);
     } catch (e) {
       console.warn('[entregas] Falha ao gravar nova versão no R2:', e.message);
       return json(res, 503, { error: 'Não foi possível armazenar a nova versão com segurança.' });
@@ -6918,7 +7122,7 @@ const server = http.createServer(async (req, res) => {
         `INSERT INTO portal_entrega_versions
           (id, entrega_id, version_number, file_name, mime_type, file_size, file_hash, storage_key, file_data, uploaded_by, uploaded_at, status)
          VALUES ($1,$2,$3,$4,$10,$5,$6,$7,$8,$9,NOW(),'aguardando_cliente')`,
-        [versionId, entregaId, nextVersion, fileName, fileBuffer.length, hash, storageKey, Buffer.alloc(0), user.id, detectedFile.mime]
+        [versionId, entregaId, nextVersion, fileName, fileSize, hash, storageKey, Buffer.alloc(0), user.id, detectedFile.mime]
       );
       await client.query(
         `UPDATE portal_entregas
