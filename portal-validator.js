@@ -615,7 +615,7 @@ async function handlePublic(req, res, ctx) {
 
     const formatDateTime = value => {
       if (!value) return '';
-      try { return new Date(value).toLocaleString('pt-BR',{day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit'}); }
+      try { return new Date(value).toLocaleString('pt-BR',{timeZone:'America/Sao_Paulo',day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit'}); }
       catch { return ''; }
     };
 
@@ -851,7 +851,7 @@ async function handlePublic(req, res, ctx) {
         const clean = raw.replace(/^ALTERAÇÃO SOLICITADA:\s*/i,'').replace(/^AJUSTES SOLICITADOS:\s*/i,'').replace(/^CONTRIBUIÇÃO:\s*/i,'');
         const tag = /^ALTERAÇÃO SOLICITADA:|^AJUSTES SOLICITADOS:/i.test(raw) ? "<span style='margin-left:6px;padding:1px 8px;border-radius:999px;background:#fff7ed;color:#9a3412;font-size:11px'>Alteração solicitada</span>"
           : /^CONTRIBUIÇÃO:/i.test(raw) ? "<span style='margin-left:6px;padding:1px 8px;border-radius:999px;background:#ecfdf5;color:#065f46;font-size:11px'>Contribuição</span>" : '';
-        return `<div style='padding:10px;border:1px solid #e2e8f0;border-radius:9px;margin:8px 0'><div class='vp-muted' style='font-size:12px'><strong>${escapeHtml(m.actor_name)}</strong> · ${escapeHtml(new Date(m.created_at).toLocaleString('pt-BR'))}${tag}</div><div style='white-space:pre-wrap;margin-top:4px'>${escapeHtml(clean)}</div></div>`;
+        return `<div style='padding:10px;border:1px solid #e2e8f0;border-radius:9px;margin:8px 0'><div class='vp-muted' style='font-size:12px'><strong>${escapeHtml(m.actor_name)}</strong> · ${escapeHtml(new Date(m.created_at).toLocaleString('pt-BR',{timeZone:'America/Sao_Paulo'}))}${tag}</div><div style='white-space:pre-wrap;margin-top:4px'>${escapeHtml(clean)}</div></div>`;
       };
       const signature = (await pg.query(
         'SELECT * FROM portal_entrega_signatures WHERE version_id=$1 AND lower(validator_email)=lower($2) ORDER BY signed_at DESC LIMIT 1',

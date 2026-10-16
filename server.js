@@ -568,7 +568,7 @@ function renderPreviousConversations(rows) {
       <div style='max-height:360px;overflow:auto;margin-top:.5rem'>
         ${msgs.map(m => `
           <div style='padding:.6rem .75rem;border:1px solid #e2e8f0;border-radius:10px;margin:.4rem 0;background:${m.actor_type === 'cliente' ? '#f8fafc' : '#f0fdf4'}'>
-            <div style='font-size:.74rem;color:#64748b;margin-bottom:.2rem'><strong>${escapeHtml(m.actor_name)}</strong> · ${escapeHtml(new Date(m.created_at).toLocaleString('pt-BR'))}</div>
+            <div style='font-size:.74rem;color:#64748b;margin-bottom:.2rem'><strong>${escapeHtml(m.actor_name)}</strong> · ${escapeHtml(new Date(m.created_at).toLocaleString('pt-BR',{timeZone:'America/Sao_Paulo'}))}</div>
             <div style='white-space:pre-wrap;font-size:.9rem'>${escapeHtml(m.message)}</div>
           </div>`).join('')}
       </div>
@@ -2759,7 +2759,7 @@ const server = http.createServer(async (req, res) => {
           <strong>Validado por:</strong> ${escapeHtml(d.signature_name || '')}<br>
           <strong>CPF:</strong> ${escapeHtml(maskCpf(d.signature_cpf))}<br>
           <strong>Registro:</strong> ${escapeHtml(d.security_code)}<br>
-          <strong>Data:</strong> ${escapeHtml(new Date(d.signed_at).toLocaleString('pt-BR'))}
+          <strong>Data:</strong> ${escapeHtml(new Date(d.signed_at).toLocaleString('pt-BR',{timeZone:'America/Sao_Paulo'}))}
         </div>` : d.validado_por_mim ? `<div style='margin-top:8px;font-size:11px;color:#92400e'>Validação anterior sem identificação reforçada.</div>` : ''}
       </a>`;
     }).join('');
@@ -2782,7 +2782,7 @@ const server = http.createServer(async (req, res) => {
             ? 'Contribuição' : '';
         const clean = raw.replace(/^ALTERAÇÃO SOLICITADA:\s*/i,'').replace(/^AJUSTES SOLICITADOS:\s*/i,'').replace(/^CONTRIBUIÇÃO:\s*/i,'');
         return `<div style='padding:12px;border:1px solid #e2e8f0;border-radius:10px;margin:8px 0;background:${m.actor_type==='cliente'?'#f8fafc':'#f0fdf4'}'>
-          <div style='font-size:12px;color:#64748b'><strong>${escapeHtml(m.actor_name)}</strong>${tipo ? " · "+escapeHtml(tipo) : ''} · ${escapeHtml(new Date(m.created_at).toLocaleString('pt-BR'))}</div>
+          <div style='font-size:12px;color:#64748b'><strong>${escapeHtml(m.actor_name)}</strong>${tipo ? " · "+escapeHtml(tipo) : ''} · ${escapeHtml(new Date(m.created_at).toLocaleString('pt-BR',{timeZone:'America/Sao_Paulo'}))}</div>
           <div style='white-space:pre-wrap;margin-top:4px'>${escapeHtml(clean)}</div>
         </div>`;
       }).join('');
@@ -2824,7 +2824,7 @@ const server = http.createServer(async (req, res) => {
               Validador: ${escapeHtml(selected.signature_name || '')}<br>
               CPF: ${escapeHtml(maskCpf(selected.signature_cpf))}<br>
               Registro: <strong>${escapeHtml(selected.security_code)}</strong><br>
-              Data: ${escapeHtml(new Date(selected.signed_at).toLocaleString('pt-BR'))}
+              Data: ${escapeHtml(new Date(selected.signed_at).toLocaleString('pt-BR',{timeZone:'America/Sao_Paulo'}))}
             </div>` : `<div style='margin-top:12px;padding:12px;border-radius:8px;background:#ecfdf5;color:#065f46'>
               <strong>Validação já registrada para este e-mail.</strong><br>
               Não é necessário validar novamente esta versão.
@@ -3564,7 +3564,7 @@ const server = http.createServer(async (req, res) => {
             : '';
         return `
           <div style='padding:.75rem;border:1px solid #e2e8f0;border-radius:10px;margin:.5rem 0;background:${m.actor_type === 'cliente' ? '#f8fafc' : '#f0fdf4'}'>
-            <div style='font-size:.76rem;color:#64748b;margin-bottom:.25rem'><strong>${escapeHtml(m.actor_name)}</strong>${typeBadge} · ${escapeHtml(new Date(m.created_at).toLocaleString('pt-BR'))}</div>
+            <div style='font-size:.76rem;color:#64748b;margin-bottom:.25rem'><strong>${escapeHtml(m.actor_name)}</strong>${typeBadge} · ${escapeHtml(new Date(m.created_at).toLocaleString('pt-BR',{timeZone:'America/Sao_Paulo'}))}</div>
             <div style='white-space:pre-wrap'>${escapeHtml(cleanMessage)}</div>
           </div>
         `;
@@ -3649,7 +3649,7 @@ const server = http.createServer(async (req, res) => {
               <div class='card' style='margin-top:14px'>
                 <h3 style='margin-top:0'>Decisão</h3>
                 ${validation ? `
-                  <div class='success'><strong>Entrega validada.</strong><br>Protocolo: ${escapeHtml(validation.protocol)}<br>Data: ${escapeHtml(new Date(validation.validated_at).toLocaleString('pt-BR'))}</div>
+                  <div class='success'><strong>Entrega validada.</strong><br>Protocolo: ${escapeHtml(validation.protocol)}<br>Data: ${escapeHtml(new Date(validation.validated_at).toLocaleString('pt-BR',{timeZone:'America/Sao_Paulo'}))}</div>
                 ` : version.status === 'ajustes_solicitados' ? `
                   <div class='error'>Esta versão possui alteração solicitada. Aguarde a CKM enviar uma nova versão.</div>
                 ` : `
@@ -3658,7 +3658,7 @@ const server = http.createServer(async (req, res) => {
                       Validador: ${escapeHtml(mySignature.validator_name)}<br>
                       CPF: ${escapeHtml(maskCpf(mySignature.validator_cpf))}<br>
                       Registro: <strong>${escapeHtml(mySignature.security_code)}</strong><br>
-                      Data: ${escapeHtml(new Date(mySignature.signed_at).toLocaleString('pt-BR'))}
+                      Data: ${escapeHtml(new Date(mySignature.signed_at).toLocaleString('pt-BR',{timeZone:'America/Sao_Paulo'}))}
                     </div>
                   ` : `
                     <form id='validacao' method='post' action='/validar/${token}/decisao'>
@@ -3909,7 +3909,7 @@ const server = http.createServer(async (req, res) => {
               ? 'Versão original · V1'
               : 'Versão atual · V' + Number(e.current_version) + ' · histórico com ' + Number(e.total_versoes || e.current_version) + ' versões';
             const accessText = e.ultimo_acesso_em
-              ? (e.nomes_acessaram ? escapeHtml(e.nomes_acessaram) + ' · ' : '') + 'último acesso em ' + escapeHtml(new Date(e.ultimo_acesso_em).toLocaleString('pt-BR'))
+              ? (e.nomes_acessaram ? escapeHtml(e.nomes_acessaram) + ' · ' : '') + 'último acesso em ' + escapeHtml(new Date(e.ultimo_acesso_em).toLocaleString('pt-BR',{timeZone:'America/Sao_Paulo'}))
               : 'Ainda não houve acesso registrado nesta versão';
             return `
               <a href='/entregas/${encodeURIComponent(e.id)}' style='display:block;text-decoration:none;color:inherit;border:1px solid #e2e8f0;border-radius:12px;padding:1rem;background:#fff'>
@@ -3919,7 +3919,7 @@ const server = http.createServer(async (req, res) => {
                 </div>
                 <div style='display:flex;gap:.4rem;flex-wrap:wrap;margin-top:.7rem'>
                   <span style='font-size:.72rem;padding:.25rem .5rem;border-radius:999px;background:#f8fafc;border:1px solid #e2e8f0'>${escapeHtml(versionLabel)}</span>
-                  ${e.sent_at ? `<span style='font-size:.72rem;padding:.25rem .5rem;border-radius:999px;background:#f8fafc;border:1px solid #e2e8f0'>Disponibilizado em ${escapeHtml(new Date(e.sent_at).toLocaleString('pt-BR'))}</span>` : ''}
+                  ${e.sent_at ? `<span style='font-size:.72rem;padding:.25rem .5rem;border-radius:999px;background:#f8fafc;border:1px solid #e2e8f0'>Disponibilizado em ${escapeHtml(new Date(e.sent_at).toLocaleString('pt-BR',{timeZone:'America/Sao_Paulo'}))}</span>` : ''}
                 </div>
                 <div style='font-size:.78rem;color:#64748b;margin-top:.75rem'><strong>Histórico do documento:</strong> ${accessText}</div>
                 <div style='display:flex;gap:1rem;flex-wrap:wrap;margin-top:.65rem;font-size:.76rem;color:#475569'>
@@ -4915,7 +4915,7 @@ const server = http.createServer(async (req, res) => {
           "<div style='overflow-x:auto'><table style='margin:0'><thead><tr><th>Documento</th><th>Versão</th><th>Status</th><th>Validadores</th><th>Enviado em</th><th></th></tr></thead><tbody>" +
           docs.map(d => {
             const st = statusDocumentoProjeto(d.status);
-            const data = d.sent_at ? new Date(d.sent_at).toLocaleString('pt-BR') : '-';
+            const data = d.sent_at ? new Date(d.sent_at).toLocaleString('pt-BR',{timeZone:'America/Sao_Paulo'}) : '-';
             return "<tr>" +
               "<td><strong>"+escapeHtmlClient(d.titulo || d.file_name || 'Documento')+"</strong>" +
                 (d.file_name ? "<div style='font-size:.7rem;color:#94a3b8'>"+escapeHtmlClient(d.file_name)+"</div>" : "") +
@@ -6615,7 +6615,7 @@ const server = http.createServer(async (req, res) => {
         <td>V${Number(v.version_number)}</td>
         <td><a href='/entregas/${entregaId}/versoes/${v.id}/pdf' target='_blank'>${escapeHtml(v.file_name)}</a></td>
         <td>${label}</td>
-        <td>${escapeHtml(new Date(v.uploaded_at).toLocaleString('pt-BR'))}</td>
+        <td>${escapeHtml(new Date(v.uploaded_at).toLocaleString('pt-BR',{timeZone:'America/Sao_Paulo'}))}</td>
         <td style='font-size:.72rem;font-family:monospace'>${escapeHtml(String(v.file_hash || '').slice(0,18))}…</td>
       </tr>`;
     }).join('');
@@ -6630,7 +6630,7 @@ const server = http.createServer(async (req, res) => {
         <td><strong>${escapeHtml(g.nome)}</strong></td>
         <td>${escapeHtml(g.email)}</td>
         <td>${state}</td>
-        <td>${g.last_access_at ? escapeHtml(new Date(g.last_access_at).toLocaleString('pt-BR')) : '-'}</td>
+        <td>${g.last_access_at ? escapeHtml(new Date(g.last_access_at).toLocaleString('pt-BR',{timeZone:'America/Sao_Paulo'})) : '-'}</td>
         <td>${g.revoked_at ? 'Revogado' : 'Ativo — sem expiração'}</td>
         <td>
           <div style='display:flex;gap:.35rem;flex-wrap:wrap'>
@@ -6650,7 +6650,7 @@ const server = http.createServer(async (req, res) => {
 
     const msgHtml = messages.map(m => `
       <div style='padding:.75rem;border:1px solid #e2e8f0;border-radius:10px;margin:.5rem 0;background:${m.actor_type === 'cliente' ? '#f8fafc' : '#f0fdf4'}'>
-        <div style='font-size:.76rem;color:#64748b;margin-bottom:.25rem'><strong>${escapeHtml(m.actor_name)}</strong> · ${escapeHtml(new Date(m.created_at).toLocaleString('pt-BR'))}</div>
+        <div style='font-size:.76rem;color:#64748b;margin-bottom:.25rem'><strong>${escapeHtml(m.actor_name)}</strong> · ${escapeHtml(new Date(m.created_at).toLocaleString('pt-BR',{timeZone:'America/Sao_Paulo'}))}</div>
         <div style='white-space:pre-wrap'>${escapeHtml(m.message)}</div>
       </div>
     `).join('');
@@ -6668,7 +6668,7 @@ const server = http.createServer(async (req, res) => {
           <div style='font-size:.82rem;color:#64748b'>Status</div>
           <strong>${entrega.status === 'validado' ? 'Validado / Entregue' : entrega.status === 'cancelado' ? 'Cancelado' : entrega.status === 'ajustes_solicitados' ? 'Alteração solicitada' : 'Aguardando cliente'}</strong>
           ${validation ? `<div style='font-size:.78rem;color:#065f46;margin-top:.3rem'>Protocolo: ${escapeHtml(validation.protocol)}</div>` : ''}
-          ${entrega.status === 'cancelado' ? `<div style='font-size:.78rem;color:#991b1b;margin-top:.3rem'>Cancelado em ${entrega.cancelled_at ? escapeHtml(new Date(entrega.cancelled_at).toLocaleString('pt-BR')) : '-'}<br>Motivo: ${escapeHtml(entrega.cancelled_reason || '-')}</div>` : ''}
+          ${entrega.status === 'cancelado' ? `<div style='font-size:.78rem;color:#991b1b;margin-top:.3rem'>Cancelado em ${entrega.cancelled_at ? escapeHtml(new Date(entrega.cancelled_at).toLocaleString('pt-BR',{timeZone:'America/Sao_Paulo'})) : '-'}<br>Motivo: ${escapeHtml(entrega.cancelled_reason || '-')}</div>` : ''}
         </div>
       </div>
 
@@ -6679,7 +6679,7 @@ const server = http.createServer(async (req, res) => {
         <p style='font-size:.84rem;color:#475569'>Enquanto houver uma solicitação ativa nesta versão, a validação fica bloqueada.</p>
         ${activeChangeRequests.map(reqAlt => `
           <div style='padding:.8rem;border:1px solid #fcd34d;border-radius:9px;background:#fff;margin:.55rem 0'>
-            <div style='font-size:.78rem;color:#64748b'><strong>${escapeHtml(reqAlt.nome || reqAlt.email)}</strong> · ${escapeHtml(new Date(reqAlt.created_at).toLocaleString('pt-BR'))}</div>
+            <div style='font-size:.78rem;color:#64748b'><strong>${escapeHtml(reqAlt.nome || reqAlt.email)}</strong> · ${escapeHtml(new Date(reqAlt.created_at).toLocaleString('pt-BR',{timeZone:'America/Sao_Paulo'}))}</div>
             <div style='margin-top:.35rem;white-space:pre-wrap'>${escapeHtml(reqAlt.decision_text || '')}</div>
             ${isFinancialAdmin(user) ? `
               <form method='post' action='/entregas/${entregaId}/solicitacoes/${encodeURIComponent(reqAlt.id)}/cancelar' style='margin-top:.65rem' onsubmit="return confirm('Cancelar esta solicitação de alteração? O histórico será preservado e, se não houver outra solicitação ativa, a validação será liberada novamente.');">
@@ -6844,7 +6844,7 @@ const server = http.createServer(async (req, res) => {
             <td><strong>${escapeHtml(s.validator_name)}</strong><div style='font-size:.72rem;color:#64748b'>${escapeHtml(s.validator_email)}</div></td>
             <td>${escapeHtml(maskCpf(s.validator_cpf))}</td>
             <td style='font-family:monospace;font-weight:700'>${escapeHtml(s.security_code)}</td>
-            <td>${escapeHtml(new Date(s.signed_at).toLocaleString('pt-BR'))}</td>
+            <td>${escapeHtml(new Date(s.signed_at).toLocaleString('pt-BR',{timeZone:'America/Sao_Paulo'}))}</td>
             <td>V${Number(currentVersion.version_number)}</td>
           </tr>`).join('')}</tbody>
         </table></div>
@@ -7244,7 +7244,7 @@ const server = http.createServer(async (req, res) => {
                     : '<span class="badge badge-amber">Convite pendente</span>'
               }</div>
             </div>
-            <div style='font-size:.82rem;color:#64748b'>Último acesso: ${u.lastLoginAt ? escapeHtml(new Date(u.lastLoginAt).toLocaleString('pt-BR')) : '-'}</div>
+            <div style='font-size:.82rem;color:#64748b'>Último acesso: ${u.lastLoginAt ? escapeHtml(new Date(u.lastLoginAt).toLocaleString('pt-BR',{timeZone:'America/Sao_Paulo'})) : '-'}</div>
           </div>
           <div style='display:flex;gap:.5rem;flex-wrap:wrap;margin-top:.8rem'>
             <form method='post' action='/acessos/consultor-status' style='margin:0'>
@@ -7296,7 +7296,7 @@ const server = http.createServer(async (req, res) => {
               <span class='badge' style='margin-left:.35rem;background:#e0e7ff;color:#3730a3'>Administrador</span>
             </div>
           </div>
-          <div style='font-size:.82rem;color:#64748b'>Último acesso: ${u.lastLoginAt ? escapeHtml(new Date(u.lastLoginAt).toLocaleString('pt-BR')) : '-'}</div>
+          <div style='font-size:.82rem;color:#64748b'>Último acesso: ${u.lastLoginAt ? escapeHtml(new Date(u.lastLoginAt).toLocaleString('pt-BR',{timeZone:'America/Sao_Paulo'})) : '-'}</div>
         </div>
         <div style='display:flex;gap:.5rem;flex-wrap:wrap;margin-top:.8rem'>
           <form method='post' action='/acessos/admin-status' style='margin:0'>
@@ -8404,7 +8404,7 @@ async function verHistoricoLancamento(eId){
     const resp=await fetch('/api/entries/'+eId+'/historico');
     const log=await resp.json();
     const LABELS={cliente:'Cliente / Fornecedor / Prestador',favorecido:'Favorecido',projeto:'Projeto',parceiro:'Parceiro',centroCusto:'Código (CC)',natureza:'Natureza (legado)',naturezaGerencial:'Natureza Gerencial',grupoDespesa:'Grupo da Despesa',tipoDespesa:'Tipo de Despesa',cpfCnpj:'CPF/CNPJ',documento:'Documento/Referência',descritivo:'Descritivo',categoria:'Categoria',detalhe:'Detalhe',conta:'Conta',formaPagamento:'Forma Pgto',status:'Status',descricao:'Histórico (legado)',valor:'Valor',dc:'D/C',data:'Data'};
-    const formatTs=ts=>{const d=new Date(ts);return d.toLocaleDateString('pt-BR')+' '+d.toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'});};
+    const formatTs=ts=>{const d=new Date(ts);return d.toLocaleDateString('pt-BR',{timeZone:'America/Sao_Paulo'})+' '+d.toLocaleTimeString('pt-BR',{timeZone:'America/Sao_Paulo',hour:'2-digit',minute:'2-digit'});};
     const content=document.getElementById('hist-content-'+eId);
     if(!log.length){ content.innerHTML='<em style="color:#94a3b8">Nenhuma alteração registrada para este lançamento.</em>'; return; }
     content.innerHTML='<strong style="font-size:.78rem;color:#1e293b">Histórico de alterações</strong>'
@@ -10905,7 +10905,7 @@ async function excluirLanc(id) {
         };
         const formatTs = ts => {
           const d = new Date(ts);
-          return d.toLocaleDateString('pt-BR') + ' ' + d.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+          return d.toLocaleDateString('pt-BR',{timeZone:'America/Sao_Paulo'}) + ' ' + d.toLocaleTimeString('pt-BR', {timeZone:'America/Sao_Paulo',  hour: '2-digit', minute: '2-digit' });
         };
         const buildPageUrl = (p) => '/historico?p=' + p + (qFilter ? '&q=' + encodeURIComponent(qFilter) : '');
         const pagination = totalPages <= 1 ? '' : `
@@ -10983,7 +10983,7 @@ async function excluirLanc(id) {
     };
     const formatTs = ts => {
       const d = new Date(ts);
-      return d.toLocaleDateString('pt-BR') + ' ' + d.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+      return d.toLocaleDateString('pt-BR',{timeZone:'America/Sao_Paulo'}) + ' ' + d.toLocaleTimeString('pt-BR', {timeZone:'America/Sao_Paulo',  hour: '2-digit', minute: '2-digit' });
     };
     const rows = pageLog.map(r => {
       const entry = r.entryId ? entryMap.get(r.entryId) : null;
@@ -11016,7 +11016,7 @@ async function excluirLanc(id) {
     const rowsExclusoes = exclusoes.slice(0, 200).map(r => {
       const numStr = r.numLanc ? `<strong style='font-family:monospace;color:#dc2626'>#${String(r.numLanc).padStart(6,'0')}</strong>` : '<em style="color:#94a3b8">sem nº</em>';
       const d = new Date(r.excluidoEm);
-      const tsStr = d.toLocaleDateString('pt-BR') + ' ' + d.toLocaleTimeString('pt-BR', {hour:'2-digit',minute:'2-digit'});
+      const tsStr = d.toLocaleDateString('pt-BR',{timeZone:'America/Sao_Paulo'}) + ' ' + d.toLocaleTimeString('pt-BR', {timeZone:'America/Sao_Paulo', hour:'2-digit',minute:'2-digit'});
       return `<tr style='border-bottom:1px solid #fee2e2'>
         <td style='font-size:.78rem;white-space:nowrap;padding:.4rem .6rem'>${tsStr}</td>
         <td style='padding:.4rem .6rem'>${numStr}</td>
@@ -13731,7 +13731,7 @@ async function saveConta() {
       <tr>
         <td>${h.banco_nome||'-'}</td>
         <td>${dataExtrFmt}</td>
-        <td>${new Date(h.data_upload).toLocaleString('pt-BR')}</td>
+        <td>${new Date(h.data_upload).toLocaleString('pt-BR',{timeZone:'America/Sao_Paulo'})}</td>
         <td>${h.total_lancamentos||0}</td>
         <td><span class='badge badge-green'>${h.total_conciliados||0} OK</span></td>
         <td><span class='badge badge-amber'>${h.total_divergentes||0} divergentes</span></td>
@@ -13852,7 +13852,7 @@ async function uploadExtrato() {
       const icone = d.total === 0 ? '\u26a0\ufe0f' : '\u2705';
       const fmtData = function(s){ if(!s) return '-'; var p=s.split('-'); return p.length===3?p[2]+'/'+p[1]+'/'+p[0]:s; };
       const dataExtr = d.data_fim ? fmtData(d.data_fim) : '-';
-      const dataUpload = new Date().toLocaleString('pt-BR');
+      const dataUpload = new Date().toLocaleString('pt-BR',{timeZone:'America/Sao_Paulo'});
       const linkDetalhe = d.id ? '<a href="/conciliacao/detalhe?id='+d.id+'" style="background:#1e40af;color:#fff;padding:.45rem 1rem;border-radius:.4rem;text-decoration:none;font-size:.85rem;font-weight:600">\ud83d\udd0d Ver detalhes</a>' : '';
       div.innerHTML = '<div style="padding:1rem 1.25rem;background:'+cor+';border:1px solid '+borda+';border-radius:.5rem">'
         + '<div style="font-size:1rem;font-weight:700;margin-bottom:.5rem">'+icone+' Extrato processado!</div>'
@@ -14302,7 +14302,7 @@ async function uploadExtrato() {
 
     const saldoFmt = fmtVal(extrato.saldo_extrato||0);
     const dataFmt = fmtData(extrato.data_fim);
-    const dataUpFmt = extrato.data_upload ? new Date(extrato.data_upload).toLocaleString('pt-BR') : '-';
+    const dataUpFmt = extrato.data_upload ? new Date(extrato.data_upload).toLocaleString('pt-BR',{timeZone:'America/Sao_Paulo'}) : '-';
 
     const EXTRATO_ID = extratoId;
     const body = '<h2 class="page-title">🏦 Detalhe da Conciliação #'+extratoId+'</h2>'
