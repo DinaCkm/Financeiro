@@ -2,6 +2,7 @@ const crypto = require('crypto');
 const { getPrivateObjectBuffer, getPrivateObjectStream } = require('./portal-storage');
 const { portalCanPreviewOffice, portalSendOfficePreview, portalOfficeViewerHtml, portalIsVideo, portalVideoViewerHtml, portalDownloadCardHtml, portalSendBuffer, portalIsLargeFile, portalStreamDownload, PORTAL_AVISO_GRANDE } = require('./portal-preview');
 const { sendPortalNotificationEmail } = require('./email-service');
+const { validatePasswordStrength, hashPassword, verifyPassword } = require('./auth-security');
 
 const SESSION_TTL_SECONDS = 60 * 60 * 12;
 const CODE_TTL_MINUTES = 10;
@@ -108,6 +109,9 @@ async function ensureSchema(pg) {
     ALTER TABLE portal_contatos_validacao ADD COLUMN IF NOT EXISTS cpf TEXT;
     ALTER TABLE portal_contatos_validacao ADD COLUMN IF NOT EXISTS cadastro_em TIMESTAMPTZ;
     ALTER TABLE portal_contatos_validacao ADD COLUMN IF NOT EXISTS aceite_lgpd_em TIMESTAMPTZ;
+    ALTER TABLE portal_contatos_validacao ADD COLUMN IF NOT EXISTS password_hash TEXT;
+    ALTER TABLE portal_contatos_validacao ADD COLUMN IF NOT EXISTS password_failed_attempts INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE portal_contatos_validacao ADD COLUMN IF NOT EXISTS password_blocked_until TIMESTAMPTZ;
 
     CREATE TABLE IF NOT EXISTS portal_validator_access_codes (
       id TEXT PRIMARY KEY,
@@ -116,7 +120,8 @@ async function ensureSchema(pg) {
       expires_at TIMESTAMPTZ NOT NULL,
       attempts INTEGER NOT NULL DEFAULT 0,
       consumed_at TIMESTAMPTZ,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      purpose TEXT NOT NULL DEFAULT 'first_access'
     );
 
     CREATE INDEX IF NOT EXISTS idx_portal_validator_access_codes_email
@@ -427,19 +432,92 @@ async function handlePublic(req, res, ctx) {
     const erro = String(url.searchParams.get('erro') || '');
     const msg = erro === 'nao-cadastrado'
       ? 'Este e-mail ainda não foi autorizado como validador.'
-      : erro === 'envio'
-        ? 'Não foi possível enviar o código. Tente novamente.'
-        : '';
+      : erro === 'senha'
+        ? 'E-mail ou senha inválidos.'
+        : erro === 'bloqueado'
+          ? 'Acesso temporariamente bloqueado após várias tentativas. Tente novamente em 15 minutos ou redefina sua senha.'
+          : erro === 'sem-senha'
+            ? 'Este acesso ainda não possui senha. Use Primeiro acesso / Esqueci minha senha.'
+            : erro === 'envio'
+              ? 'Não foi possível enviar o código. Tente novamente.'
+              : erro === 'senha-criada'
+                ? 'Senha cadastrada com sucesso. Entre com seu e-mail e sua senha.'
+                : '';
     html(res, page('Acesso', `
       <div class='vp-card' style='max-width:520px;margin:24px auto'>
         <h1 style='margin-top:0'>Portal de Validação</h1>
-        <p class='vp-muted'>Use sempre este endereço para acessar os documentos que foram disponibilizados para você.</p>
-        ${msg ? `<div class='vp-alert vp-err'>${escapeHtml(msg)}</div>` : ''}
-        <form method='post' action='/validacao/codigo'>
+        <p class='vp-muted'>Entre com seu e-mail e senha para acessar os documentos disponibilizados para você.</p>
+        ${msg ? `<div class='vp-alert ${erro === 'senha-criada' ? 'vp-ok' : 'vp-err'}'>${escapeHtml(msg)}</div>` : ''}
+        <form method='post' action='/validacao/login'>
           <label>E-mail</label>
           <input name='email' type='email' autocomplete='email' required>
-          <button class='vp-btn' type='submit' style='width:100%;margin-top:14px'>Receber código de acesso</button>
+          <label>Senha</label>
+          <input name='password' type='password' autocomplete='current-password' required>
+          <button class='vp-btn' type='submit' style='width:100%;margin-top:14px'>Entrar</button>
         </form>
+        <div style='margin-top:16px;padding-top:14px;border-top:1px solid #e2e8f0;text-align:center'>
+          <a href='/validacao/primeiro-acesso'>Primeiro acesso / Esqueci minha senha</a>
+        </div>
+      </div>`));
+    return true;
+  }
+
+  if (req.method === 'POST' && url.pathname === '/validacao/login') {
+    const form = new URLSearchParams(await readBody(req));
+    const email = String(form.get('email') || '').trim().toLowerCase();
+    const password = String(form.get('password') || '');
+    const contact = await getContactByEmail(pg, email);
+    if (!contact) { redirect(res, '/validacao?erro=senha'); return true; }
+    if (!contact.password_hash) { redirect(res, '/validacao?erro=sem-senha'); return true; }
+    if (contact.password_blocked_until && new Date(contact.password_blocked_until).getTime() > Date.now()) {
+      redirect(res, '/validacao?erro=bloqueado');
+      return true;
+    }
+    if (!verifyPassword(password, contact.password_hash)) {
+      const attempts = Number(contact.password_failed_attempts || 0) + 1;
+      const blocked = attempts >= 5;
+      await pg.query(
+        `UPDATE portal_contatos_validacao
+            SET password_failed_attempts=CASE WHEN $2 THEN 0 ELSE $1 END,
+                password_blocked_until=CASE WHEN $2 THEN NOW()+INTERVAL '15 minutes' ELSE password_blocked_until END,
+                updated_at=NOW()
+          WHERE lower(email)=lower($3) AND ativo=true`,
+        [attempts, blocked, email]
+      );
+      redirect(res, blocked ? '/validacao?erro=bloqueado' : '/validacao?erro=senha');
+      return true;
+    }
+    await pg.query(
+      `UPDATE portal_contatos_validacao
+          SET password_failed_attempts=0,password_blocked_until=NULL,updated_at=NOW()
+        WHERE lower(email)=lower($1) AND ativo=true`,
+      [email]
+    );
+    const sid = await createSession(pg, email, false, null);
+    await recordAudit(pg, req, { actorType:'cliente', actorId:email, action:'portal_login_senha', details:{email} });
+    redirect(res, '/validacao/documentos', { 'Set-Cookie': sessionCookie(req, sid) });
+    return true;
+  }
+
+  if (req.method === 'GET' && url.pathname === '/validacao/primeiro-acesso') {
+    const erro = String(url.searchParams.get('erro') || '');
+    const msg = erro === 'nao-cadastrado'
+      ? 'Este e-mail ainda não foi autorizado como validador.'
+      : erro === 'envio'
+        ? 'Não foi possível enviar o código. Tente novamente.'
+        : '';
+    html(res, page('Primeiro acesso', `
+      <div class='vp-card' style='max-width:520px;margin:24px auto'>
+        <h1 style='margin-top:0'>Primeiro acesso ou redefinição de senha</h1>
+        <p class='vp-muted'>Informe seu e-mail. Enviaremos um código de segurança para confirmar sua identidade.</p>
+        ${msg ? `<div class='vp-alert vp-err'>${escapeHtml(msg)}</div>` : ''}
+        <form method='post' action='/validacao/codigo'>
+          <input type='hidden' name='purpose' value='password_setup'>
+          <label>E-mail</label>
+          <input name='email' type='email' autocomplete='email' required>
+          <button class='vp-btn' type='submit' style='width:100%;margin-top:14px'>Enviar código de segurança</button>
+        </form>
+        <div style='margin-top:14px;text-align:center'><a href='/validacao'>Voltar ao login</a></div>
       </div>`));
     return true;
   }
@@ -447,6 +525,7 @@ async function handlePublic(req, res, ctx) {
   if (req.method === 'POST' && url.pathname === '/validacao/codigo') {
     const form = new URLSearchParams(await readBody(req));
     const email = String(form.get('email') || '').trim().toLowerCase();
+    const purpose = String(form.get('purpose') || 'password_setup').trim() === 'password_setup' ? 'password_setup' : 'password_setup';
     const contact = await getContactByEmail(pg, email);
     if (!contact) {
       redirect(res, '/validacao?erro=nao-cadastrado');
@@ -463,9 +542,9 @@ async function handlePublic(req, res, ctx) {
     );
     await pg.query(
       `INSERT INTO portal_validator_access_codes
-        (id,email,code_hash,expires_at)
-       VALUES ($1,lower($2),$3,NOW()+INTERVAL '10 minutes')`,
-      [crypto.randomUUID(), email, codeHash]
+        (id,email,code_hash,expires_at,purpose)
+       VALUES ($1,lower($2),$3,NOW()+INTERVAL '10 minutes',$4)`,
+      [crypto.randomUUID(), email, codeHash, purpose]
     );
 
     try {
@@ -530,8 +609,61 @@ async function handlePublic(req, res, ctx) {
     await pg.query('UPDATE portal_validator_access_codes SET consumed_at=NOW() WHERE id=$1', [access.id]);
     const sid = await createSession(pg, email, false, null);
     const contact = await getContactByEmail(pg, email);
-    const target = contact && contact.cpf ? '/validacao/documentos' : '/validacao/ativar';
+    const target = access.purpose === 'password_setup'
+      ? '/validacao/definir-senha'
+      : (contact && contact.cpf ? '/validacao/documentos' : '/validacao/ativar');
     redirect(res, target, { 'Set-Cookie': sessionCookie(req, sid) });
+    return true;
+  }
+
+  if (req.method === 'GET' && url.pathname === '/validacao/definir-senha') {
+    const session = await getSession(pg, req);
+    if (!session || session.read_only) { redirect(res, '/validacao'); return true; }
+    const contact = await getContactByEmail(pg, session.email);
+    if (!contact) { redirect(res, '/validacao?erro=nao-cadastrado'); return true; }
+    const erro = String(url.searchParams.get('erro') || '');
+    html(res, page('Definir senha', `
+      <div class='vp-card' style='max-width:560px;margin:24px auto'>
+        <h1 style='margin-top:0'>Defina sua senha de acesso</h1>
+        <p class='vp-muted'>Esta senha será usada nos próximos acessos. O código por e-mail ficará reservado para primeiro acesso e recuperação de senha.</p>
+        ${erro ? `<div class='vp-alert vp-err'>${escapeHtml(erro)}</div>` : ''}
+        <form method='post' action='/validacao/definir-senha'>
+          <label>Nova senha</label>
+          <input name='password' type='password' autocomplete='new-password' minlength='8' required>
+          <div class='vp-muted' style='font-size:12px;margin-top:5px'>Mínimo de 8 caracteres, com pelo menos 1 número e 1 caractere especial (! @ # $ %).</div>
+          <label>Confirmar nova senha</label>
+          <input name='confirm_password' type='password' autocomplete='new-password' minlength='8' required>
+          <button class='vp-btn' type='submit' style='width:100%;margin-top:14px'>Salvar senha</button>
+        </form>
+      </div>`, session));
+    return true;
+  }
+
+  if (req.method === 'POST' && url.pathname === '/validacao/definir-senha') {
+    const session = await getSession(pg, req);
+    if (!session || session.read_only) { redirect(res, '/validacao'); return true; }
+    const form = new URLSearchParams(await readBody(req));
+    const password = String(form.get('password') || '');
+    const confirmPassword = String(form.get('confirm_password') || '');
+    const strength = validatePasswordStrength(password);
+    if (!strength.isValid) {
+      redirect(res, '/validacao/definir-senha?erro=' + encodeURIComponent(strength.message));
+      return true;
+    }
+    if (password !== confirmPassword) {
+      redirect(res, '/validacao/definir-senha?erro=' + encodeURIComponent('As senhas não coincidem.'));
+      return true;
+    }
+    const passwordHash = hashPassword(password);
+    await pg.query(
+      `UPDATE portal_contatos_validacao
+          SET password_hash=$2,password_failed_attempts=0,password_blocked_until=NULL,updated_at=NOW()
+        WHERE lower(email)=lower($1) AND ativo=true`,
+      [session.email, passwordHash]
+    );
+    const contact = await getContactByEmail(pg, session.email);
+    await recordAudit(pg, req, { actorType:'cliente', actorId:session.email, action:'portal_senha_definida', details:{email:session.email} });
+    redirect(res, contact && contact.cpf ? '/validacao/documentos' : '/validacao/ativar');
     return true;
   }
 
@@ -541,6 +673,7 @@ async function handlePublic(req, res, ctx) {
     if (session.read_only) { redirect(res, '/validacao/documentos'); return true; }
     const contact = await getContactByEmail(pg, session.email);
     if (!contact) { redirect(res, '/validacao?erro=nao-cadastrado'); return true; }
+    if (!contact.password_hash) { redirect(res, '/validacao/definir-senha'); return true; }
     if (contact.cpf) { redirect(res, '/validacao/documentos'); return true; }
     const erro = String(url.searchParams.get('erro') || '');
     html(res, page('Ativar acesso', `
@@ -604,7 +737,8 @@ async function handlePublic(req, res, ctx) {
     const session = await getSession(pg, req);
     if (!session) { redirect(res, '/validacao'); return true; }
     const contact = await getContactByEmail(pg, session.email);
-    if (!session.read_only && (!contact || !contact.cpf)) { redirect(res, '/validacao/ativar'); return true; }
+    if (!session.read_only && (!contact || !contact.password_hash)) { redirect(res, '/validacao/definir-senha'); return true; }
+    if (!session.read_only && !contact.cpf) { redirect(res, '/validacao/ativar'); return true; }
     const docs = await getDocuments(pg, session.email);
     const groups = new Map();
     for (const d of docs) {
