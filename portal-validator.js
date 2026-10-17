@@ -124,6 +124,8 @@ async function ensureSchema(pg) {
       purpose TEXT NOT NULL DEFAULT 'first_access'
     );
 
+    ALTER TABLE portal_validator_access_codes ADD COLUMN IF NOT EXISTS purpose TEXT NOT NULL DEFAULT 'first_access';
+
     CREATE INDEX IF NOT EXISTS idx_portal_validator_access_codes_email
       ON portal_validator_access_codes(lower(email), created_at DESC);
 
@@ -528,7 +530,7 @@ async function handlePublic(req, res, ctx) {
     const purpose = String(form.get('purpose') || 'password_setup').trim() === 'password_setup' ? 'password_setup' : 'password_setup';
     const contact = await getContactByEmail(pg, email);
     if (!contact) {
-      redirect(res, '/validacao?erro=nao-cadastrado');
+      redirect(res, '/validacao/primeiro-acesso?erro=nao-cadastrado');
       return true;
     }
 
@@ -562,7 +564,7 @@ async function handlePublic(req, res, ctx) {
       });
     } catch (e) {
       console.warn('[portal-validator] envio do código:', e.message);
-      redirect(res, '/validacao?erro=envio');
+      redirect(res, '/validacao/primeiro-acesso?erro=envio');
       return true;
     }
 
